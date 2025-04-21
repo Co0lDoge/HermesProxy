@@ -384,9 +384,6 @@ namespace HermesProxy.World.Client
                     break;
                 case Opcode.SMSG_ADDON_INFO:
                     break; // don't need to handle
-                case Opcode.SMSG_TUTORIAL_FLAGS:
-                    break; // perhaps don't need to handle, can't handle without instance of RealmSocket
-                           // at the monent of receiving RealmSocket is null
                 default:
                     if (_packetHandlers.ContainsKey(universalOpcode))
                     {

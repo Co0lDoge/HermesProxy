@@ -97,20 +97,20 @@ namespace HermesProxy
             var restSocketServer = StartServer<BnetRestApiSession>(new IPEndPoint(bindIp, Settings.RestPort));
 
             // 3. Start the listener for realm connections
-            var realmSocketServer = StartServer<RealmSocket>(new IPEndPoint(bindIp, Settings.RealmPort));
+            //var realmSocketServer = StartServer<RealmSocket>(new IPEndPoint(bindIp, Settings.RealmPort));
 
-            // 4. Start the listener for world connections
-            var worldSocketServer = StartServer<WorldSocket>(new IPEndPoint(bindIp, Settings.InstancePort));
+            //// 4. Start the listener for world connections
+            //var worldSocketServer = StartServer<WorldSocket>(new IPEndPoint(bindIp, Settings.InstancePort));
 
-            while (restSocketServer.IsListening || bnetSocketServer.IsListening || realmSocketServer.IsListening || worldSocketServer.IsListening)
+            while (restSocketServer.IsListening || bnetSocketServer.IsListening)
             {
                 Thread.Sleep(TimeSpan.FromSeconds(10));
             }
 
-            Console.WriteLine($"(restSocketServer.IsListening: {restSocketServer.IsListening}");
-            Console.WriteLine($"(bnetSocketServer.IsListening: {bnetSocketServer.IsListening}");
-            Console.WriteLine($"(realmSocketServer.IsListening: {realmSocketServer.IsListening}");
-            Console.WriteLine($"(worldSocketServer.IsListening: {worldSocketServer.IsListening}");
+            //Console.WriteLine($"(restSocketServer.IsListening: {restSocketServer.IsListening}");
+            //Console.WriteLine($"(bnetSocketServer.IsListening: {bnetSocketServer.IsListening}");
+            //Console.WriteLine($"(realmSocketServer.IsListening: {realmSocketServer.IsListening}");
+            //Console.WriteLine($"(worldSocketServer.IsListening: {worldSocketServer.IsListening}");
         }
 
         private static SocketManager<TSocketType> StartServer<TSocketType>(IPEndPoint bindIp) where TSocketType : ISocket
@@ -147,10 +147,10 @@ namespace HermesProxy
                 var parsedJson = JsonSerializer.Deserialize<Dictionary<string, object>>(rawJson);
 
                 string commitDateStr = parsedJson!["created_at"].ToString();
-                DateTime commitDate = DateTime.Parse(commitDateStr!, CultureInfo.InvariantCulture).ToUniversalTime();;
+                DateTime commitDate = DateTime.Parse(commitDateStr!, CultureInfo.InvariantCulture).ToUniversalTime(); ;
 
                 string myCommitDateStr = GitVersionInformation.CommitDate;
-                DateTime myCommitDate = DateTime.Parse(myCommitDateStr, CultureInfo.InvariantCulture).ToUniversalTime();;
+                DateTime myCommitDate = DateTime.Parse(myCommitDateStr, CultureInfo.InvariantCulture).ToUniversalTime(); ;
 
                 if (commitDate > myCommitDate)
                 {

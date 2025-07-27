@@ -112,7 +112,7 @@ namespace HermesProxy.World.Server.Packets
         {
             _worldPacket.WriteUInt32((uint)Result);
             _worldPacket.WriteBit(SuccessInfo != null);
-            _worldPacket.WriteBit(WaitInfo != null);
+            _worldPacket.WriteBit(WaitInfo.HasValue);
             _worldPacket.FlushBits();
 
             if (SuccessInfo != null)
@@ -130,15 +130,15 @@ namespace HermesProxy.World.Server.Packets
 
                 foreach (var raceClassAvailability in SuccessInfo.AvailableClasses)
                 {
-                    _worldPacket.WriteUInt8((byte) raceClassAvailability.RaceID);
+                    _worldPacket.WriteUInt8((byte)raceClassAvailability.RaceID);
                     _worldPacket.WriteInt32(raceClassAvailability.Classes.Count);
 
                     foreach (var classAvailability in raceClassAvailability.Classes)
                     {
                         _worldPacket.WriteUInt8((byte)classAvailability.ClassID);
-                        _worldPacket.WriteUInt8(classAvailability.ActiveExpansionLevel);
-                        _worldPacket.WriteUInt8(classAvailability.AccountExpansionLevel);
-                        _worldPacket.WriteUInt8(classAvailability.MinActiveExpansionLevel);
+                        _worldPacket.WriteUInt8((byte)classAvailability.ActiveExpansionLevel);
+                        _worldPacket.WriteUInt8((byte)classAvailability.AccountExpansionLevel);
+                        _worldPacket.WriteUInt8((byte)classAvailability.MinActiveExpansionLevel);
                     }
                 }
 
@@ -147,6 +147,7 @@ namespace HermesProxy.World.Server.Packets
                 _worldPacket.WriteBit(SuccessInfo.NumPlayersHorde.HasValue);
                 _worldPacket.WriteBit(SuccessInfo.NumPlayersAlliance.HasValue);
                 _worldPacket.WriteBit(SuccessInfo.ExpansionTrialExpiration.HasValue);
+                _worldPacket.WriteBit(SuccessInfo.NewBuildKeys != null);
                 _worldPacket.FlushBits();
 
                 {
@@ -166,37 +167,46 @@ namespace HermesProxy.World.Server.Packets
                 if (SuccessInfo.NumPlayersAlliance.HasValue)
                     _worldPacket.WriteUInt16(SuccessInfo.NumPlayersAlliance.Value);
 
-                if (SuccessInfo.ExpansionTrialExpiration.HasValue)
-                    _worldPacket.WriteInt32(SuccessInfo.ExpansionTrialExpiration.Value);
+                if(SuccessInfo.ExpansionTrialExpiration.HasValue)
+                    _worldPacket.WriteInt64(SuccessInfo.ExpansionTrialExpiration.Value);
+
+                if (SuccessInfo.NewBuildKeys != null)
+                {
+                    for (int i = 0; i < 16; ++i)
+                    {
+                        _worldPacket.WriteUInt8(SuccessInfo.NewBuildKeys.NewBuildKey[i]);
+                        _worldPacket.WriteUInt8(SuccessInfo.NewBuildKeys.SomeKey[i]);
+                    }
+                }
 
                 foreach (VirtualRealmInfo virtualRealm in SuccessInfo.VirtualRealms)
                     virtualRealm.Write(_worldPacket);
 
-                foreach (var templat in SuccessInfo.Templates)
+                foreach (var characterTemplate in SuccessInfo.Templates)
                 {
-                    _worldPacket.WriteUInt32(templat.TemplateSetId);
-                    _worldPacket.WriteInt32(templat.Classes.Count);
-                    foreach (var templateClass in templat.Classes)
+                    _worldPacket.WriteInt32((int)characterTemplate.TemplateSetId);
+                    _worldPacket.WriteInt32(characterTemplate.Classes.Count);
+                    foreach (var templateClass in characterTemplate.Classes)
                     {
-                        _worldPacket.WriteUInt8(templateClass.ClassID);
+                        _worldPacket.WriteUInt8((byte)templateClass.ClassID);
                         _worldPacket.WriteUInt8((byte)templateClass.FactionGroup);
                     }
 
-                    _worldPacket.WriteBits(templat.Name.GetByteCount(), 7);
-                    _worldPacket.WriteBits(templat.Description.GetByteCount(), 10);
+                    _worldPacket.WriteBits(characterTemplate.Name.GetByteCount(), 7);
+                    _worldPacket.WriteBits(characterTemplate.Description.GetByteCount(), 10);
                     _worldPacket.FlushBits();
 
-                    _worldPacket.WriteString(templat.Name);
-                    _worldPacket.WriteString(templat.Description);
+                    _worldPacket.WriteString(characterTemplate.Name);
+                    _worldPacket.WriteString(characterTemplate.Description);
                 }
             }
 
-            if (WaitInfo != null)
-                WaitInfo.Write(_worldPacket);
+            if (WaitInfo.HasValue)
+                WaitInfo.Value.Write(_worldPacket);            
         }
 
         public AuthSuccessInfo SuccessInfo; // contains the packet data in case that it has account information (It is never set when WaitInfo is set), otherwise its contents are undefined.
-        public AuthWaitInfo WaitInfo; // contains the queue wait information in case the account is in the login queue.
+        public AuthWaitInfo? WaitInfo; // contains the queue wait information in case the account is in the login queue.
         public BattlenetRpcErrorCode Result; // the result of the authentication process, possible values are @ref BattlenetRpcErrorCode
 
 
@@ -261,7 +271,7 @@ namespace HermesProxy.World.Server.Packets
             public uint VirtualRealmAddress; // a special identifier made from the Index, BattleGroup and Region. @todo implement
             public uint TimeSecondsUntilPCKick; // @todo research
             public uint CurrencyID; // this is probably used for the ingame shop. @todo implement
-            public long Time;
+            public UnixTime64 Time;
 
             public GameTime GameTimeInfo;
 
@@ -274,7 +284,8 @@ namespace HermesProxy.World.Server.Packets
             public bool ForceCharacterTemplate; // forces the client to always use a character template when creating a new character. @see Templates. @todo implement
             public ushort? NumPlayersHorde; // number of horde players in this realm. @todo implement
             public ushort? NumPlayersAlliance; // number of alliance players in this realm. @todo implement
-            public int? ExpansionTrialExpiration; // expansion trial expiration unix timestamp
+            public long? ExpansionTrialExpiration; // expansion trial expiration unix timestamp
+            public NewBuild NewBuildKeys;
 
             public struct GameTime
             {
@@ -282,6 +293,12 @@ namespace HermesProxy.World.Server.Packets
                 public uint TimeRemain;
                 public uint Unknown735;
                 public bool InGameRoom;
+            }
+
+            public class NewBuild
+            {
+                public Array<byte> NewBuildKey = new Array<byte>(16);
+                public Array<byte> SomeKey = new Array<byte>(16);
             }
         }
     }
@@ -481,7 +498,7 @@ namespace HermesProxy.World.Server.Packets
     }
 
     //Structs
-    public class AuthWaitInfo
+    public struct AuthWaitInfo
     {
         public void Write(WorldPacket data)
         {

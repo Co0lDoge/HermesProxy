@@ -747,7 +747,7 @@ namespace HermesProxy.World.Server
                 response.SuccessInfo.ActiveExpansionLevel = (byte)(LegacyVersion.ExpansionVersion - 1);
                 response.SuccessInfo.AccountExpansionLevel = (byte)0;
                 response.SuccessInfo.VirtualRealmAddress = _realmId.GetAddress();
-                response.SuccessInfo.Time = (uint)Time.UnixTime;
+                response.SuccessInfo.Time = (UnixTime64)Time.UnixTime;
 
                 var realm = GetSession().RealmManager.GetRealm(_realmId);
 
@@ -848,8 +848,9 @@ namespace HermesProxy.World.Server
 
             if (queuePos != 0)
             {
-                response.WaitInfo = new AuthWaitInfo();
-                response.WaitInfo.WaitCount = queuePos;
+                AuthWaitInfo waitInfo = new();
+                waitInfo.WaitCount = queuePos;
+                response.WaitInfo = waitInfo;
             }
 
             SendPacket(response);

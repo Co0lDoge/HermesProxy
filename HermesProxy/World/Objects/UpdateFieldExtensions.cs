@@ -1,6 +1,6 @@
 ﻿using Framework.Util;
 using HermesProxy.Enums;
-using HermesProxy.World.Client;
+using HermesProxy.World.Update.V3_3_5_12340;
 using System;
 using System.Collections.Generic;
 using System.Globalization;

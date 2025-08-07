@@ -10,6 +10,7 @@ using System.Text;
 using Framework.Realm;
 using HermesProxy.World.Server.Packets;
 using ArenaTeamInspectData = HermesProxy.World.Server.Packets.ArenaTeamInspectData;
+using HermesProxy.World.Update.V3_3_5_12340;
 
 namespace HermesProxy
 {

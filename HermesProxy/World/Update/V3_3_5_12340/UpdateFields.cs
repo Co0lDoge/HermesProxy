@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace HermesProxy.World.Enums.V3_3_5_12340
+namespace HermesProxy.World.Update.V3_3_5_12340
 {
     // ReSharper disable InconsistentNaming
     // 3.3.5

@@ -19,9 +19,9 @@ using Framework.IO;
 using Framework.Constants;
 using System;
 using HermesProxy.World.Enums;
-using HermesProxy.World.Client;
 using Ionic.Zlib;
 using System.Collections.Generic;
+using HermesProxy.World.Update.V3_3_5_12340;
 
 namespace HermesProxy.World
 {

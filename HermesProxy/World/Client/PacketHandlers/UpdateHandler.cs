@@ -7,6 +7,7 @@ using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
+using HermesProxy.World.Update.V3_3_5_12340;
 using System;
 using System.Collections;
 using System.Collections.Generic;

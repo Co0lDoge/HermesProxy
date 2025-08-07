@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace HermesProxy.World.Client
+namespace HermesProxy.World.Update.V3_3_5_12340
 {
     [StructLayout(LayoutKind.Explicit)]
     public struct UpdateField

@@ -35,7 +35,6 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_MOVE_TOGGLE_COLLISION_CHEAT)]
     [PacketHandler(Opcode.MSG_MOVE_GRAVITY_CHNG)]
     [PacketHandler(Opcode.MSG_MOVE_ROOT)]
-    [PacketHandler(Opcode.MSG_MOVE_UNROOT)]
     [PacketHandler(Opcode.MSG_MOVE_START_SWIM)]
     [PacketHandler(Opcode.MSG_MOVE_STOP_SWIM)]
     [PacketHandler(Opcode.MSG_MOVE_START_SWIM_CHEAT)]
@@ -93,6 +92,40 @@ public partial class WorldClient
         control.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
         control.HasControl = packet.ReadBool();
         SendPacketToClient(control);
+    }
+
+    [PacketHandler(Opcode.MSG_MOVE_UNROOT)]
+    void HandleMoveUnrootBroadcast(WorldPacket packet)
+    {
+        WowGuid128 guid = packet.ReadPackedGuid().To128(GetSession().GameState);
+        MovementInfo moveInfo = new();
+        moveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
+        moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+        moveInfo.ValidateMovementInfo();
+
+        // Some vanilla backends (Kronos) finish a flight path by broadcasting
+        // MSG_MOVE_UNROOT for the player without an accompanying
+        // MSG_MOVE_TELEPORT_ACK, so HandleMoveTeleportAck never fires and the
+        // client stays in server-controlled flight state. Restore control here
+        // so the client can move again without relog — issue #73.
+        if (GetSession().GameState.IsInTaxiFlight &&
+            GetSession().GameState.CurrentPlayerGuid == guid)
+        {
+            ControlUpdate control = new ControlUpdate
+            {
+                Guid = guid,
+                HasControl = true,
+            };
+            SendPacketToClient(control);
+            GetSession().GameState.IsInTaxiFlight = false;
+        }
+
+        MoveUpdate moveUpdate = new MoveUpdate
+        {
+            MoverGUID = guid,
+            MoveInfo = moveInfo,
+        };
+        SendPacketToClient(moveUpdate);
     }
 
     [PacketHandler(Opcode.MSG_MOVE_TELEPORT_ACK)]

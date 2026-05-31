@@ -55,10 +55,6 @@ public partial class WorldClient
         moveUpdate.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
         moveUpdate.MoveInfo.Flags = (uint)(((MovementFlagWotLK)moveUpdate.MoveInfo.Flags).CastFlags<MovementFlagModern>());
         moveUpdate.MoveInfo.ValidateMovementInfo();
-        // Issue #73 diagnostic: which MSG_MOVE_* broadcast(s) arrive for the player at flight end
-        // (Kronos varies between MSG_MOVE_TELEPORT / heartbeat / fall-land, etc.).
-        if (moveUpdate.MoverGUID == GetSession().GameState.CurrentPlayerGuid && GetSession().GameState.IsInTaxiFlight)
-            Log.Print(LogType.Server, $"[Taxi73Diag] player MSG_MOVE during taxi: {packet.GetUniversalOpcode(false)} moveFlags=0x{moveUpdate.MoveInfo.Flags:X8}");
         SendPacketToClient(moveUpdate);
     }
 
@@ -96,9 +92,6 @@ public partial class WorldClient
         ControlUpdate control = new ControlUpdate();
         control.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
         control.HasControl = packet.ReadBool();
-        // Issue #73 diagnostic: does Kronos ever send HasControl=true at a same-map flight landing?
-        if (control.Guid == GetSession().GameState.CurrentPlayerGuid)
-            Log.Print(LogType.Server, $"[Taxi73Diag] SMSG_CONTROL_UPDATE player hasControl={control.HasControl} inTaxiState={GetSession().GameState.IsInTaxiFlight}");
         SendPacketToClient(control);
     }
 
@@ -106,10 +99,6 @@ public partial class WorldClient
     void HandleMoveTeleportAck(WorldPacket packet)
     {
         WowGuid128 guid = packet.ReadPackedGuid().To128(GetSession().GameState);
-
-        // Issue #73 diagnostic: does Kronos send MSG_MOVE_TELEPORT_ACK for the player at flight end?
-        if (guid == GetSession().GameState.CurrentPlayerGuid)
-            Log.Print(LogType.Server, $"[Taxi73Diag] MSG_MOVE_TELEPORT_ACK player inTaxiState={GetSession().GameState.IsInTaxiFlight}");
 
         if (GetSession().GameState.IsInTaxiFlight &&
             GetSession().GameState.CurrentPlayerGuid == guid)
@@ -368,10 +357,6 @@ public partial class WorldClient
         MoveSetFlag flag = new MoveSetFlag(packet.GetUniversalOpcode(false));
         flag.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
         flag.MoveCounter = packet.ReadUInt32();
-        // Issue #73 diagnostic: does Kronos send SMSG_MOVE_UNROOT / ENABLE_GRAVITY / UNSET_CAN_FLY
-        // for the player at flight end? (these are the force-flag opcodes the jimsproxy timer synthesizes)
-        if (flag.MoverGUID == GetSession().GameState.CurrentPlayerGuid && GetSession().GameState.IsInTaxiFlight)
-            Log.Print(LogType.Server, $"[Taxi73Diag] player SMSG_MOVE force-flag during taxi: {packet.GetUniversalOpcode(false)}");
         SendPacketToClient(flag);
     }
 
@@ -610,11 +595,6 @@ public partial class WorldClient
                 GetSession().GameState.IsWaitingForTaxiStart = false;
             }
             GetSession().GameState.IsInTaxiFlight = true;
-            // Issue #73 diagnostic: mark flight start + server-reported duration so the landing can
-            // be located in the capture and the expected flag-clear / control-restore window bounded.
-            Log.Print(LogType.Server,
-                $"[Taxi73Diag] takeoff player=0x{guid.Low:X} splineTimeFull={moveSpline.SplineTimeFull}ms " +
-                $"splineFlags=0x{(uint)moveSpline.SplineFlags:X8}");
         }
     }
 }

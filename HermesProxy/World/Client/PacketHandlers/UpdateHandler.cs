@@ -1856,6 +1856,19 @@ public partial class WorldClient
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                     updateData.UnitData.PvpFlags == null)
                     updateData.UnitData.PvpFlags = ReadPvPFlags(updates);
+
+                // Issue #73 DIAGNOSTIC (not a fix): log every player UNIT_FIELD_FLAGS update so a
+                // Kronos same-map flight-landing capture reveals whether/when UNIT_FLAG_TAXI_FLIGHT
+                // (0x00100000) actually clears on that custom fork, alongside the control/movement
+                // opcodes logged elsewhere ([Taxi73Diag]). Remove once the real flight-end signal
+                // on Kronos is identified.
+                if (guid == GetSession().GameState.CurrentPlayerGuid)
+                {
+                    bool taxiBit = updateData.UnitData.Flags.HasAnyFlag(UnitFlags.TaxiFlight);
+                    Log.Print(LogType.Server,
+                        $"[Taxi73Diag] player UNIT_FIELD_FLAGS=0x{updateData.UnitData.Flags:X8} " +
+                        $"taxiBit={taxiBit} inTaxiState={GetSession().GameState.IsInTaxiFlight} isCreate={isCreate}");
+                }
             }
             int UNIT_FIELD_FLAGS_2 = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS_2);
             if (UNIT_FIELD_FLAGS_2 >= 0 && updateMaskArray[UNIT_FIELD_FLAGS_2])

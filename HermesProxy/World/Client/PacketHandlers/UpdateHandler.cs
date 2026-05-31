@@ -1857,17 +1857,25 @@ public partial class WorldClient
                     updateData.UnitData.PvpFlags == null)
                     updateData.UnitData.PvpFlags = ReadPvPFlags(updates);
 
-                // Issue #73 DIAGNOSTIC (not a fix): log every player UNIT_FIELD_FLAGS update so a
-                // Kronos same-map flight-landing capture reveals whether/when UNIT_FLAG_TAXI_FLIGHT
-                // (0x00100000) actually clears on that custom fork, alongside the control/movement
-                // opcodes logged elsewhere ([Taxi73Diag]). Remove once the real flight-end signal
-                // on Kronos is identified.
-                if (guid == GetSession().GameState.CurrentPlayerGuid)
+                // Issue #73: Kronos signals flight-end ONLY by clearing UNIT_FLAG_TAXI_FLIGHT
+                // (0x00100000) in this UPDATE_OBJECT Values delta — it never sends
+                // MSG_MOVE_TELEPORT_ACK / MSG_MOVE_TELEPORT / MSG_MOVE_UNROOT at landing. Without
+                // reacting to the bit clearing, IsInTaxiFlight stays set and no SMSG_CONTROL_UPDATE
+                // is sent, so the client is held in server-controlled flight state until relog.
+                // Mirror HandleMoveTeleportAck here. Version-gated to pre-WotLK (vanilla/TBC) legacy
+                // backends — WotLK (V3_0_2+) ends flight via the proper MSG_MOVE_TELEPORT_ACK path,
+                // so V3_4_3 must not run this hook. Also self-gating: cMaNGOS/TC clear IsInTaxiFlight
+                // via MSG_MOVE_TELEPORT_ACK before this update arrives, so the guard is already false.
+                if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
+                    guid == GetSession().GameState.CurrentPlayerGuid &&
+                    GetSession().GameState.IsInTaxiFlight &&
+                    !updateData.UnitData.Flags.HasAnyFlag(UnitFlags.TaxiFlight))
                 {
-                    bool taxiBit = updateData.UnitData.Flags.HasAnyFlag(UnitFlags.TaxiFlight);
-                    Log.Print(LogType.Server,
-                        $"[Taxi73Diag] player UNIT_FIELD_FLAGS=0x{updateData.UnitData.Flags:X8} " +
-                        $"taxiBit={taxiBit} inTaxiState={GetSession().GameState.IsInTaxiFlight} isCreate={isCreate}");
+                    ControlUpdate control = new ControlUpdate();
+                    control.Guid = guid;
+                    control.HasControl = true;
+                    SendPacketToClient(control);
+                    GetSession().GameState.IsInTaxiFlight = false;
                 }
             }
             int UNIT_FIELD_FLAGS_2 = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS_2);

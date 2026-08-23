@@ -1,5 +1,7 @@
 using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
@@ -47,7 +49,12 @@ public partial class WorldClient
     {
         DFJoinResult result = new DFJoinResult();
         result.Ticket = MakeLfgTicket();
-        result.Result = (byte)packet.ReadUInt32();        // joinData.result
+        // The legacy and V3_4_3 LfgJoinResult enums do not share numbering, so forwarding the
+        // raw byte made every rejection invisible in the modern UI.
+        byte legacyResult = (byte)packet.ReadUInt32();    // joinData.result
+        result.Result = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            ? LfgJoinResults.ToModern(legacyResult)
+            : legacyResult;
         result.ResultDetail = (byte)packet.ReadUInt32();  // joinData.state
         if (packet.CanRead())
         {
@@ -279,13 +286,21 @@ public partial class WorldClient
         }
         info.BlackList = blackList;
 
+        // Both lists together are the full set of dungeons this backend understands.
+        var known = GetSession().GameState.LfgKnownDungeonIds;
+        foreach (var dungeon in info.Dungeons)
+            known.Add(dungeon.Slot & 0xFFFFFF);
+        foreach (var locked in blackList.Slots)
+            known.Add(locked.Slot & 0xFFFFFF);
+
         SendPacketToClient(info);
 
         if (!_lfgPlayerInfoLogged)
         {
             _lfgPlayerInfoLogged = true;
             Log.Print(LogType.Debug,
-                $"LFG[diag]: SMSG_LFG_PLAYER_INFO sent — Dungeons={info.Dungeons.Count} BlackListSlots={info.BlackList.Slots?.Count ?? 0} (one-shot)");
+                $"LFG[diag]: SMSG_LFG_PLAYER_INFO sent, Dungeons={info.Dungeons.Count} BlackListSlots={info.BlackList.Slots?.Count ?? 0} " +
+                $"offeredSlots=[{string.Join(", ", info.Dungeons.ConvertAll(x => x.Slot.ToString()))}] (one-shot)");
         }
     }
 

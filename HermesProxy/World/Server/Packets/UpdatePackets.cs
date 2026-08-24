@@ -98,6 +98,12 @@ public class ObjectUpdate
     public DynamicObjectData DynamicObjectData = null!;
     public CorpseData CorpseData = null!;
 
+    // GO_FLAG_MAP_OBJECT: the object is a WMO map object, i.e. a MO_TRANSPORT. No
+    // equivalent exists in the 3.3.5a flag set. Combined with the legacy GAMEOBJECT_FLAGS
+    // value (0x28 for these objects) it reproduces the 1048616 composite the previous code
+    // hardcoded for CSV-listed entries.
+    private const uint ModernTransportFlag = 0x100000u;
+
     public void InitializePlaceholders()
     {
         if (CreateData == null)
@@ -172,17 +178,38 @@ public class ObjectUpdate
             if (Guid.GetHighType() == HighGuidType.Transport)
             {
                 var transportTimer = CreateData.MoveInfo!.TransportPathTimer;
-                uint period = GameData.GetTransportPeriod((uint)ObjectData.EntryID!);
-                if (period != 0)
+                // A 3.3.5a backend puts the real loop period in GAMEOBJECT_LEVEL
+                // (AzerothCore Transport.h:81), which is authoritative. The CSV is the
+                // fallback for backends that leave the field unset.
+                uint period = GameObjectData.Level is > 0
+                    ? (uint)GameObjectData.Level.Value
+                    : GameData.GetTransportPeriod((uint)ObjectData.EntryID!);
+                if (period != 0 && GameObjectData.Level == null)
+                    GameObjectData.Level = (int)period;
+
+                // Only synthesize the path-progress fraction when the backend sent none;
+                // the legacy GAMEOBJECT_DYNAMIC high half already carries it otherwise.
+                if (ObjectData.DynamicFlags == null)
                 {
-                    if (GameObjectData.Level == null)
-                        GameObjectData.Level = (int)period;
-                    if (ObjectData.DynamicFlags == null)
-                        ObjectData.DynamicFlags = (((uint)(((float)(transportTimer % period) / (float)period) * System.UInt16.MaxValue)) << 16);
-                    GameObjectData.Flags = 1048616;
+                    ObjectData.DynamicFlags = period != 0
+                        ? (((uint)(((float)(transportTimer % period) / (float)period) * System.UInt16.MaxValue)) << 16)
+                        : ((transportTimer % System.UInt16.MaxValue) << 16);
                 }
-                else if (ObjectData.DynamicFlags == null)
-                    ObjectData.DynamicFlags = ((transportTimer % System.UInt16.MaxValue) << 16);
+
+                // MO_TRANSPORT only. GO_FLAG_MAP_OBJECT tells the client the object is a
+                // WMO map object; setting it on a type 11 elevator, which is an M2 doodad,
+                // makes the client load it as a WMO and render an untextured placeholder.
+                // The old code reached the same conclusion by accident, gating on presence
+                // in CSV/Transports*.csv — which only ever lists type 15 entries.
+                if (GameObjectData.TypeID == (sbyte)GameObjectTypeModern.MOTransport)
+                    GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
+
+                Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+                    $"[Transport] guid={Guid} entry={ObjectData.EntryID} typeID={GameObjectData.TypeID} " +
+                    $"pathProgress={transportTimer} period={period} level={GameObjectData.Level} " +
+                    $"dynFlags=0x{(ObjectData.DynamicFlags ?? 0):X8} goFlags={GameObjectData.Flags} " +
+                    $"pos=({CreateData.MoveInfo!.Position.X:F1},{CreateData.MoveInfo.Position.Y:F1},{CreateData.MoveInfo.Position.Z:F1}) " +
+                    $"o={CreateData.MoveInfo.Orientation:F3}");
             }
         }
         if (CorpseData != null)
@@ -432,6 +459,24 @@ public class UpdateObject : ServerPacket
             if (obj.DynamicFlags.HasValue) return false;
             if (obj.EntryID.HasValue) return false;
             if (obj.Scale.HasValue) return false;
+        }
+
+        // A moving transport's Values deltas carry GAMEOBJECT_LEVEL (the path period) and
+        // nothing else once GAMEOBJECT_DYNAMIC stops changing, so without this probe the
+        // filter classified them as empty and dropped them. Same for a door or chest whose
+        // only change is GAMEOBJECT_BYTES_1 (State/ArtKit).
+        var go = u.GameObjectData;
+        if (go != null)
+        {
+            if (go.Level.HasValue || go.State.HasValue || go.TypeID.HasValue) return false;
+            if (go.DisplayID.HasValue || go.Flags.HasValue || go.ArtKit.HasValue) return false;
+            if (go.FactionTemplate.HasValue || go.PercentHealth.HasValue) return false;
+            if (go.SpellVisualID.HasValue || go.StateSpellVisualID.HasValue) return false;
+            if (go.StateAnimID.HasValue || go.StateAnimKitID.HasValue || go.CustomParam.HasValue) return false;
+            if (go.CreatedBy != null || go.GuildGUID != null) return false;
+            if (go.ParentRotation != null)
+                for (int i = 0; i < go.ParentRotation.Length; i++)
+                    if (go.ParentRotation[i].HasValue) return false;
         }
 
         var unit = u.UnitData;

@@ -56,6 +56,7 @@ public partial class WorldSocket
         movement.MoveInfo.WriteMovementInfoLegacy(packet);
         SendPacketToServer(packet);
 
+
         CheckLegacyAreaTriggerProximity(movement.MoveInfo.Position);
     }
 

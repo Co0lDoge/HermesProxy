@@ -41,6 +41,54 @@ public partial class WorldClient
         }
     }
 
+    /// <summary>
+    /// Whether a legacy transport CreateObject may reach a V3_4_3 client. Covers both
+    /// legacy TRANSPORT (gameobject type 11: elevators, subway cars, ICC sleds) and
+    /// MO_TRANSPORT (type 15: zeppelins, boats). The V1_14 and V2_5 targets forward both
+    /// unconditionally; this filter exists only on the V3_4_3 path. Upstream issue #96.
+    /// </summary>
+    private bool MayForwardTransport(HighGuidTypeLegacy legacyHigh, ObjectUpdate updateData)
+    {
+        if (!GetSession().DiagnosticsOptions.ForwardTransportsV343)
+            return false;
+
+        // Gate on the condition the filter was actually written for. cMangos sends these
+        // creates with Position=(0,0,0) and defers the real position to GAMEOBJECT_POS_*
+        // deltas, and the client rejects a stationary GameObject at the origin with
+        // CMSG_OBJECT_UPDATE_FAILED, retrying forever and never finishing the loading
+        // screen. TrinityCore and AzerothCore use spawn-data position, so their creates
+        // carry a usable one. Testing the position rather than the backend keeps a
+        // placeholder create filtered wherever it comes from.
+        var position = updateData.CreateData?.MoveInfo?.Position;
+        if (position == null || (position.Value.X == 0f && position.Value.Y == 0f && position.Value.Z == 0f))
+            return false;
+
+        return true;
+    }
+
+    // The modern client never sends CMSG_QUERY_GAME_OBJECT for a transport it is merely
+    // looking at, so it never learns gameobject_template.Data0 — the taxi path id a
+    // MO_TRANSPORT flies along. Ask the legacy server ourselves the first time we forward
+    // one; SMSG_QUERY_GAME_OBJECT_RESPONSE is relayed to the client unconditionally.
+    private static readonly HashSet<uint> _queriedTransportTemplates = [];
+
+    private void RequestTransportTemplate(uint entry)
+    {
+        if (entry == 0)
+            return;
+        lock (_queriedTransportTemplates)
+        {
+            if (!_queriedTransportTemplates.Add(entry))
+                return;
+        }
+
+        var query = new WorldPacket(Opcode.CMSG_QUERY_GAME_OBJECT);
+        query.WriteUInt32(entry);
+        query.WriteGuid(new WowGuid64(HighGuidTypeLegacy.GameObject, entry, 1));
+        SendPacketToServer(query);
+        Log.Print(LogType.Trace, $"[Transport] requested gameobject template for transport entry={entry}");
+    }
+
     [PacketHandler(Opcode.SMSG_UPDATE_OBJECT)]
     void HandleUpdateObject(WorldPacket packet)
     {
@@ -226,9 +274,11 @@ public partial class WorldClient
                             if (legacyHigh == HighGuidTypeLegacy.Transport ||
                                 legacyHigh == HighGuidTypeLegacy.MOTransport)
                             {
+                                filtered = !MayForwardTransport(legacyHigh, updateData);
+                                if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
+                                    RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
                                 Log.Print(LogType.Trace,
-                                    $"Skipping {legacyHigh} for V3_4_3 (Position=0 placeholder; pending MOTransport position fix) guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
-                                filtered = true;
+                                    $"{(filtered ? "Skipping" : "Forwarding")} {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -288,9 +338,11 @@ public partial class WorldClient
                             if (legacyHigh == HighGuidTypeLegacy.Transport ||
                                 legacyHigh == HighGuidTypeLegacy.MOTransport)
                             {
+                                filtered = !MayForwardTransport(legacyHigh, updateData);
+                                if (!filtered && legacyHigh == HighGuidTypeLegacy.MOTransport)
+                                    RequestTransportTemplate((uint)(updateData.ObjectData.EntryID ?? 0));
                                 Log.Print(LogType.Trace,
-                                    $"Skipping CreateObject2 for {legacyHigh} for V3_4_3 (Position=0 placeholder; pending MOTransport position fix) guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
-                                filtered = true;
+                                    $"{(filtered ? "Skipping" : "Forwarding")} CreateObject2 for {legacyHigh} for V3_4_3 guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
                             }
                             else if (legacyHigh == HighGuidTypeLegacy.GameObject)
                             {
@@ -330,7 +382,14 @@ public partial class WorldClient
             }
         }
 
+        // Destroys still have to reach the client mid-transfer. A transport that does not
+        // follow the player to the new map is destroyed by a batch carrying nothing but
+        // out-of-range guids (AzerothCore MovementHandler.cpp:132-138, "Client was never
+        // told to destroy its own transport / Destroy it now or it keeps a phantom copy of
+        // the transport on the new map") — swallowing it strands a ghost zeppelin.
         if (updateObject.ObjectUpdates.Count == 0 &&
+            updateObject.OutOfRangeGuids.Count == 0 &&
+            updateObject.DestroyedGuids.Count == 0 &&
             GetSession().GameState.IsWaitingForNewWorld)
             return;
 
@@ -589,6 +648,19 @@ public partial class WorldClient
         // remaining Values reach the client.
         if (createsToSplit != null)
         {
+            // Transports have to be created before anything standing on them. The legacy
+            // batch orders the player ahead of the transport it is riding, which is fine
+            // in one envelope but not once the split turns it into separate packets: the
+            // client got "this player is on transport X" before it had X, dropped the
+            // attachment, and the player fell through the deck on arriving in a new map.
+            // Transports reference nothing themselves, so hoisting them is safe.
+            int transportCreates = TransportCreateOrdering.CountTransports(createsToSplit, u => u.Guid);
+            createsToSplit = TransportCreateOrdering.TransportsFirst(createsToSplit, u => u.Guid);
+
+            if (transportCreates != 0)
+                Log.Print(LogType.Trace,
+                    $"[UpdateObjectTrace] V3_4_3 CreateObject split: hoisted {transportCreates} transport create(s) ahead of {createsToSplit.Count - transportCreates} other create(s)");
+
             foreach (var create in createsToSplit)
             {
                 UpdateObject perCreate = new UpdateObject(GetSession().GameState);
@@ -748,6 +820,8 @@ public partial class WorldClient
                 SendPacketToClient(updateObject2);
 
             }
+            if (guid.IsTransport())
+                Log.Print(LogType.Trace, $"[Transport] destroy (out of range) for transport {guid}");
             updateObject.OutOfRangeGuids.Add(guid);
         }
     }
@@ -1453,6 +1527,16 @@ public partial class WorldClient
             var rotation = packet.ReadPackedQuaternion();
             if (moveInfo != null)
                 moveInfo.Rotation = rotation;
+        }
+
+        // Only when the object claims to be riding something — this is the state that
+        // decides whether a passenger ends up on the deck or on the ground.
+        if (updateData != null && moveInfo != null && moveInfo.TransportGuid != default)
+        {
+            Log.Print(LogType.Trace,
+                $"[Transport] passenger create: guid={guid} transport={moveInfo.TransportGuid} " +
+                $"clientKnowsTransport={GetSession().GameState.ClientKnownGuids.Contains(moveInfo.TransportGuid)} " +
+                $"offset=({moveInfo.TransportOffset.X:F2},{moveInfo.TransportOffset.Y:F2},{moveInfo.TransportOffset.Z:F2}) seat={moveInfo.TransportSeat}");
         }
 
         if (updateData != null && moveInfo != null)
@@ -3787,13 +3871,19 @@ public partial class WorldClient
                     oldDynSource = stripHighBits ? "v343NoSeed" : "transport0";
                 }
 
-                GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)effectiveLegacyRaw;
+                // CastFlags remaps by enum name, so anything outside the named low-16
+                // bitmask is dropped. For a transport the high 16 bits are the path
+                // progress fraction the client animates from (AzerothCore
+                // GameObject.cpp:2835-2838 writes uint16 dynFlags then int16 pathProgress),
+                // so carry them across verbatim instead of losing them to the remap.
+                GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)(effectiveLegacyRaw & 0x0000FFFFu);
                 uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsModern>();
-                updateData.ObjectData.DynamicFlags = (oldValue | newLow);
+                uint preservedHigh = guid.IsTransport() ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
+                updateData.ObjectData.DynamicFlags = (oldValue | preservedHigh | newLow);
                 Log.Print(LogType.Trace,
                     $"[Trace][GO DYN_FLAGS] guid={guid} entry={updateData.ObjectData.EntryID} " +
                     $"legacyRaw=0x{legacyRaw:X8} effective=0x{effectiveLegacyRaw:X8} ({flags}) " +
-                    $"-> modernLow=0x{newLow:X8}, oldDyn=0x{oldValue:X8} oldDynSource={oldDynSource}, finalDyn=0x{updateData.ObjectData.DynamicFlags.Value:X8}");
+                    $"-> modernLow=0x{newLow:X8} high=0x{preservedHigh:X8}, oldDyn=0x{oldValue:X8} oldDynSource={oldDynSource}, finalDyn=0x{updateData.ObjectData.DynamicFlags.Value:X8}");
             }
             int GAMEOBJECT_FACTION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_FACTION);
             if (GAMEOBJECT_FACTION >= 0 && updateMaskArray[GAMEOBJECT_FACTION])

@@ -2,6 +2,7 @@
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
@@ -208,6 +209,20 @@ public partial class WorldClient
             state.PendingCreateCharLegacyResult = null;
             state.IsInternalCharEnumPending = false;
             return;
+        }
+
+        var realmName = GetSession().Realm?.Name;
+        if (!string.IsNullOrEmpty(realmName))
+        {
+            var saved = GetSession().AccountMetaDataMgr.LoadCharacterListOrder(realmName);
+            var pruned = CharacterListOrder.Apply(charEnum.Characters, saved);
+            if (pruned.Count != saved.Count)
+            {
+                GetSession().AccountMetaDataMgr.SaveCharacterListOrder(realmName, CharacterListOrder.Normalize(pruned));
+                Log.Print(LogType.Debug, $"[CharEnum] pruned {saved.Count - pruned.Count} missing character(s) from list order");
+            }
+            Log.Print(LogType.Debug,
+                $"[CharEnum] applied order=[{string.Join(", ", charEnum.Characters.ConvertAll(c => $"{c.Name}:{c.ListPosition}"))}]");
         }
 
         SendPacketToClient(charEnum);

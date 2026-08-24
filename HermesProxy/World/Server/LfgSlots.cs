@@ -10,8 +10,9 @@ public static class LfgSlots
 {
     private const uint DungeonIdMask = 0xFFFFFF;
 
-    // 3.3.5a LFGDungeons.dbc tops out well below this. V3_4_3 added Titan Rune Protocol
-    // (2447 / 2470 / 2485) and remapped those headers' children into the 2400s. A legacy
+    // 3.3.5a LFGDungeons.dbc tops out well below this: 195 rows, highest ID 262. The
+    // ceiling is deliberate slack rather than the table size, so a legacy ID we never
+    // enumerated still forwards. V3_4_3 added Titan Rune Protocol above it, and a legacy
     // backend drops CMSG_LFG_JOIN for those IDs with no reply, hanging the DF UI.
     //
     // Do not whitelist against SMSG_LFG_PLAYER_INFO: that packet only lists randoms +
@@ -22,6 +23,17 @@ public static class LfgSlots
     public const uint LfgTypeDungeon = 1;
     public const uint LfgTypeRandom = 6;
 
+    // Titan Rune Protocol, added to LFGDungeons.db2 in 3.4.3.54261 and absent from 3.3.5a.
+    // Each category is a header row followed by a contiguous block of child dungeons, so a
+    // header ID doubles as the first ID of its block. The header is what the client sends
+    // when the category itself is picked, which is why it queues as LfgTypeRandom.
+    public const uint TitanRuneGammaHeaderId = 2447;
+    public const uint TitanRuneGammaLastDungeonId = 2463;
+    public const uint TitanRuneBetaHeaderId = 2470;
+    public const uint TitanRuneBetaLastDungeonId = 2483;
+    public const uint TitanRuneAlphaHeaderId = 2485;
+    public const uint TitanRuneAlphaLastDungeonId = 2497;
+
     public static uint GetDungeonId(uint slot) => slot & DungeonIdMask;
 
     public static uint PackSlot(uint type, uint dungeonId) => (type << 24) | (dungeonId & DungeonIdMask);
@@ -29,17 +41,18 @@ public static class LfgSlots
     public static bool IsLegacyDungeon(uint dungeonId) => dungeonId <= MaxLegacyDungeonId;
 
     public static uint TypeForUnserviceable(uint dungeonId) =>
-        dungeonId is 2447 or 2470 or 2485 ? LfgTypeRandom : LfgTypeDungeon;
+        dungeonId is TitanRuneGammaHeaderId or TitanRuneBetaHeaderId or TitanRuneAlphaHeaderId
+            ? LfgTypeRandom
+            : LfgTypeDungeon;
 
-    // Titan Rune Gamma 2447-2463, Beta 2470-2483, Alpha 2485-2497. The only
-    // LFGDungeons.db2 rows above MaxLegacyDungeonId on 3.4.3.54261.
+    // The only LFGDungeons.db2 rows above MaxLegacyDungeonId on 3.4.3.54261.
     public static IEnumerable<uint> EnumerateUnserviceableDungeonIds()
     {
-        for (uint id = 2447; id <= 2463; id++)
+        for (uint id = TitanRuneGammaHeaderId; id <= TitanRuneGammaLastDungeonId; id++)
             yield return id;
-        for (uint id = 2470; id <= 2483; id++)
+        for (uint id = TitanRuneBetaHeaderId; id <= TitanRuneBetaLastDungeonId; id++)
             yield return id;
-        for (uint id = 2485; id <= 2497; id++)
+        for (uint id = TitanRuneAlphaHeaderId; id <= TitanRuneAlphaLastDungeonId; id++)
             yield return id;
     }
 

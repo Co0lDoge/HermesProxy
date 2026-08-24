@@ -383,6 +383,18 @@ public class QuestGiverCloseQuest : ClientPacket
     public int QuestID;
 }
 
+public class CloseInteraction : ClientPacket
+{
+    public CloseInteraction(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Guid = _worldPacket.ReadPackedGuid128();
+    }
+
+    public WowGuid128 Guid;
+}
+
 public class QuestPOIQuery : ClientPacket
 {
     public QuestPOIQuery(WorldPacket packet) : base(packet) { }

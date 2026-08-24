@@ -264,7 +264,8 @@ public class GossipComplete : ServerPacket, ISpanWritable
 
     public override void Write()
     {
-        if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            || ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
         {
             _worldPacket.WriteBit(SuppressSound);
             _worldPacket.FlushBits();
@@ -277,7 +278,8 @@ public class GossipComplete : ServerPacket, ISpanWritable
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
-        if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            || ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
         {
             writer.WriteBit(SuppressSound);
             writer.FlushBits();

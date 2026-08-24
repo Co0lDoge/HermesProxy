@@ -333,19 +333,6 @@ public partial class WorldSocket
         Log.Print(LogType.Trace,
             $"[ActionBarTrace] CMSG_SET_ACTION_BAR_TOGGLES mask=0x{bars.Mask:X2} ({Convert.ToString(bars.Mask, 2).PadLeft(8, '0')}b) → forwarding to legacy server");
 
-        // V3_4_3 fires this with mask=0 a few seconds after every login (its modern
-        // UI starts in the "no extra bars" CVar state and pushes that to the server,
-        // wiping the legacy DB). Only persist non-zero masks so the next login can
-        // re-inject CVars matching the user's last real toggle.
-        if (bars.Mask != 0)
-        {
-            var settings = GetSession().GameState.CurrentPlayerStorage.Settings;
-            if (settings != null)
-                settings.SetMultiActionBarsMask(bars.Mask);
-            else
-                Log.Print(LogType.Warn, "[Login] CMSG_SET_ACTION_BAR_TOGGLES arrived before the player was loaded, mask not persisted.");
-        }
-
         WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_ACTION_BAR_TOGGLES);
         packet.WriteUInt8(bars.Mask);
         SendPacketToServer(packet);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -54,7 +54,7 @@ public class CurrentPlayerStorageTests : IDisposable
 
         // _internalStorage must carry a usable default; before the fix it was null! and
         // every one of these reads was a NullReferenceException.
-        Assert.Null(settings.MultiActionBarsMask);
+        Assert.False(settings.NeedToForcePatchFlags);
 
         PlayerFlags flags = PlayerFlags.None;
         settings.PatchFlags(ref flags);
@@ -79,8 +79,12 @@ public class CurrentPlayerStorageTests : IDisposable
 
         Assert.NotNull(storage.Settings);
         Assert.NotNull(storage.CompletedQuests);
-        Assert.Null(storage.Settings.MultiActionBarsMask);
         Assert.True(File.Exists(SettingsPath));
+
+        // Freshly loaded settings carry defaults, not a half-built storage.
+        PlayerFlags flags = PlayerFlags.None;
+        storage.Settings.PatchFlags(ref flags);
+        Assert.Equal(PlayerFlags.None, flags & PlayerFlags.AutoDeclineGuild);
     }
 
     [Fact]
@@ -89,12 +93,14 @@ public class CurrentPlayerStorageTests : IDisposable
         var session = CreateSession();
         var storage = new CurrentPlayerStorage(session);
         storage.LoadCurrentPlayer();
-        storage.Settings.SetMultiActionBarsMask(0x0B);
+        storage.Settings.SetAutoBlockGuildInvites(true);
 
         var reloaded = new CurrentPlayerStorage(session);
         reloaded.LoadCurrentPlayer();
 
-        Assert.Equal((byte)0x0B, reloaded.Settings.MultiActionBarsMask);
+        PlayerFlags flags = PlayerFlags.None;
+        reloaded.Settings.PatchFlags(ref flags);
+        Assert.Equal(PlayerFlags.AutoDeclineGuild, flags & PlayerFlags.AutoDeclineGuild);
     }
 
     [Fact]
@@ -102,7 +108,7 @@ public class CurrentPlayerStorageTests : IDisposable
     {
         var storage = new CurrentPlayerStorage(CreateSession());
         storage.LoadCurrentPlayer();
-        storage.Settings.SetMultiActionBarsMask(0x05);
+        storage.Settings.SetAutoBlockGuildInvites(true);
 
         PlayerSettings loaded = storage.Settings;
         CompletedQuestTracker loadedQuests = storage.CompletedQuests;
@@ -116,6 +122,9 @@ public class CurrentPlayerStorageTests : IDisposable
         // half-built PlayerSettings was already visible with a null _internalStorage.
         Assert.Same(loaded, storage.Settings);
         Assert.Same(loadedQuests, storage.CompletedQuests);
-        Assert.Equal((byte)0x05, storage.Settings.MultiActionBarsMask);
+
+        PlayerFlags flags = PlayerFlags.None;
+        storage.Settings.PatchFlags(ref flags);
+        Assert.Equal(PlayerFlags.AutoDeclineGuild, flags & PlayerFlags.AutoDeclineGuild);
     }
 }

@@ -103,8 +103,8 @@ AzerothCore column added 2026-08-24. It is marked ❓ rather than assumed-equal-
 | Shapeshift / form cancel (Bear Form verified) | ✅ | ❓ | ❓ | `7cbc550` — re-emit player auras after CreateObject; other Druid forms / Rogue Stealth not exhaustively tested |
 | Action bar — main bar populated on login | ✅ | ✅ | ✅ | embedded `ActivePlayer.ActionButtons` descriptor populated |
 | Action bar — drag spell / macro / item to any bar (incl. Bar 4) | ✅ | ❓ | ✅ | 2026-05-10 — V3_4_3 wire is `int32 packed (low24=action, high8=type) + uint8 idx`, mis-decoded as `Int16 Action + Int16 Type`. Macros / items / mounts / equipment-sets / companions all collapsed to "spell with truncated id" and crashed the V3_4_3 client (`reason=7`) when rendered on a side bar. Fix is version-gated to V3_4_3 only — V1_14/V2_5 keep the old direct-pack path. cMangos retest pending |
-| Action bar — Always Show Action Bars checkbox persistence | ✅ | ✅ | ✅ | Natural account-data round-trip; the `alwaysShowActionBars` CVar is in GlobalConfigCache (type 0) which the V3_4_3 client uploads + reads back **Fixed 2026-08-24 on AzerothCore.** Root cause was proxy-side and not the Edit Mode theory below: SendAccountDataTimes bumped the type-0 timestamp to `now` on every login to force the client to re-request GlobalConfigCache, so the client dropped its local cache and applied the config blob *late*, after the action bars had already been built — leaving the checkbox ticked but unapplied until re-toggled. The bump existed only to deliver synthesised `bottomLeftActionBar` / `rightActionBar` CVars, which this client never uses: the type-0 blob it uploads carries `alwaysShowActionBars` and `lockActionBars` and none of those four. Removing the bump fixes both rows. Also disproved: the client only ever uploads account-data types 0, 1, 4, 7 and 9 — never the 13/14 Edit Mode slots, which are advertised but untouched. The setting round-trips on its own, and the login CreateObject already carries MultiActionBars with bit 0x10 = alwaysShow. |
-| Action bar — Bar 2 / 3 / 4 / 5 visibility checkbox persistence | ⚠️ | ❓ | ✅ | 2026-05-10 — user must re-tick each session. The V3_4_3 client UI ignores the legacy `bottomLeftActionBar` / `rightActionBar` etc. CVars for these bars (almost certainly uses Edit Mode account-data types 13/14 added in V3_4_4+, which V3_4_3.54261's HermesProxy enum doesn't yet wire). Phase 7 augmenter + Phase 8 timestamp bump inject the legacy CVars defensively (no harm, no help). See the "Action bar visibility & macro persistence (V3_4_3) — May 2026" section below **Fixed 2026-08-24 on AzerothCore.** Root cause was proxy-side and not the Edit Mode theory below: SendAccountDataTimes bumped the type-0 timestamp to `now` on every login to force the client to re-request GlobalConfigCache, so the client dropped its local cache and applied the config blob *late*, after the action bars had already been built — leaving the checkbox ticked but unapplied until re-toggled. The bump existed only to deliver synthesised `bottomLeftActionBar` / `rightActionBar` CVars, which this client never uses: the type-0 blob it uploads carries `alwaysShowActionBars` and `lockActionBars` and none of those four. Removing the bump fixes both rows. Also disproved: the client only ever uploads account-data types 0, 1, 4, 7 and 9 — never the 13/14 Edit Mode slots, which are advertised but untouched. The setting round-trips on its own, and the login CreateObject already carries MultiActionBars with bit 0x10 = alwaysShow. |
+| Action bar — Always Show Action Bars checkbox persistence | ✅ | ✅ | ✅ | Natural account-data round-trip; the `alwaysShowActionBars` CVar lives in GlobalConfigCache (type 0), which the V3_4_3 client uploads and reads back. **Fixed 2026-08-24 (#121) — verified on AzerothCore and TrinityCore.** Root cause was proxy-side, not the Edit Mode theory: `SendAccountDataTimes` bumped the type-0 timestamp to `now` on every login. Advertising a timestamp *newer* than the client's cache makes the client discard that cache and defer to the server copy, so the config blob applied **after** the action bars were built — checkbox ticked, empty bars unshown until re-toggled. A merely mismatched timestamp is harmless; only server-newer breaks it. The bump existed to deliver synthesised `bottomLeftActionBar` / `rightActionBar` CVars that this client discards every time — its own type-0 upload carries only `alwaysShowActionBars` and `lockActionBars`. Bump and augmenter both removed. Also disproved: the client only ever uploads account-data types 0, 1, 4, 7 and 9 — 13/14 are advertised (count 15) and never touched. |
+| Action bar — Bar 2 / 3 / 4 / 5 visibility checkbox persistence | ✅ | ❓ | ✅ | **Fixed 2026-08-24 (#121) — verified on AzerothCore and TrinityCore.** Same root cause as the row above: the type-0 timestamp bump made the client apply its config after the bars were built, so an *empty* bar never came back until re-toggled — a bar holding an ability always returned, which is what made this look like a contents-vs-visibility split. Visibility now survives a logout/login cycle untouched. The login `CreateObject` carries `MultiActionBars` bits 0-3 and the client adopts them, overriding only bit 4 from its own `alwaysShowActionBars` CVar (observed live: server sent `0x1E`, client corrected to `0x0E` and pushed it back). The old Edit Mode 13/14 theory is disproved, and the Phase 7 augmenter / Phase 8 timestamp bump it motivated are gone. |
 | Sporadic V3_4_3 client `CMSG_LOG_DISCONNECT(reason=7)` under load | ❌ | ❓ | ❓ | Not introduced by anything proxy-side — ring buffer dump in `WorldSocket` (search log for `[ActionBarTrace] reason=7`) shows only routine combat / hotfix-burst traffic before each crash. Client × HermesProxy stability issue, needs client-side telemetry to pin down |
 | Inventory equip / unequip / drag-drop | ✅ | ✅ | ✅ | |
 | Inventory — "on use" items | ✅ | ❌ | ✅ | cMangos: food / consumables don't trigger |
@@ -492,34 +492,39 @@ The source tree carries 23 distributed `CLAUDE.md` files acting as a curated loo
   this CVar to `GlobalConfigCache` (account-data type 0) and reads it back.
   No proxy work needed; verified in `data-0.bin`.
 
+- **Action Bar 2 / 3 / 4 / 5 visibility checkboxes persist across
+  logout/login.** Fixed 2026-08-24 (#121); the May 2026 Edit Mode theory
+  was wrong. `SendAccountDataTimes` bumped the GlobalConfigCache
+  (type 0) timestamp to `now` on every login so the client would re-request
+  the blob and pick up synthesised CVars. Advertising a timestamp *newer*
+  than the client's own cache makes it drop that cache and wait for the
+  server copy, which lands after the action bars have already been built —
+  so an empty bar stayed hidden until the checkbox was re-toggled. A merely
+  mismatched timestamp is harmless: only server-newer defers frame init.
+
+  The synthesised CVars were never used. Across repeated sessions the
+  client's own type-0 upload carries `alwaysShowActionBars` and
+  `lockActionBars` and none of `bottomLeftActionBar` /
+  `bottomRightActionBar` / `rightActionBar` / `rightActionBar2` — it
+  discards all four every time. The bump, the Phase 7 augmenter
+  (`AugmentGlobalConfigBlob`) and the `MultiActionBarsMask` that fed it are
+  all removed.
+
+  Also disproved: the client only ever uploads account-data types 0, 1, 4, 7
+  and 9. Types 13 / 14 are advertised (count 15, correct for 3.4.3) and
+  never touched, so the Edit Mode enum gap was never the cause.
+
 - **`MultiActionBars` legacy descriptor field** is correctly extracted from
   `PLAYER_FIELD_BYTES` byte 2 and written to the V3_4_3 modern descriptor at
   bit 72 in block 70 (matching `trinitywotlk` reference, *not* the newer
-  `wotlk_classic` repo's bit 78 which is V3_4_4+). Bit 4 of this byte
-  (`alwaysShowActionBars`) IS read by the V3_4_3 client UI; bits 0-3 (the
-  four extra bars) are not.
+  `wotlk_classic` repo's bit 78 which is V3_4_4+). Corrected 2026-08-24: the
+  V3_4_3 client reads bits 0-3 (the four extra bars) too and adopts them at
+  login. Bit 4 (`alwaysShowActionBars`) is the one it overrides from its own
+  cached CVar — observed live as the client answering a server `0x1E` with
+  `CMSG_SET_ACTION_BAR_TOGGLES 0x0E`, keeping bits 1-3 and clearing only
+  bit 4.
 
 ### Open / not solved
-
-- **Action Bar 2 / 3 / 4 / 5 visibility checkboxes do NOT persist.** User
-  must re-tick each bar after every login. Cause: the V3_4_3 client UI does
-  not use the legacy `bottomLeftActionBar` / `bottomRightActionBar` /
-  `rightActionBar` / `rightActionBar2` CVars for bar visibility — strongly
-  suspected to be the Edit Mode account-data system that V3_4_4+ formalises
-  via types 13 (`GLOBAL_EDIT_MODE_CACHE`) and 14
-  (`PER_CHARACTER_EDIT_MODE_CACHE`). HermesProxy's `AccountDataType` enum
-  tops out at 12, so these new types aren't wired.
-
-  We injected the legacy CVars defensively (Phase 7 augmenter +
-  Phase 8 timestamp bump in `ClientConfigHandler` /
-  `WorldSocket.SendAccountDataTimes`, both V3_4_3-gated). The push reaches
-  the client (verified by the `[ActionBarTrace] augmented type-0 response
-  with action-bar CVars` log line) but the bar-visibility UI ignores it.
-
-  Real fix needs a packet capture showing the V3_4_3 client's actual Edit
-  Mode wire format — out of scope until that capture exists.
-
-  Workaround: user re-toggles each session.
 
 - **Sporadic `CMSG_LOG_DISCONNECT(reason=7)` under load** (combat / hotfix
   bursts / bar toggles). The ring buffer in `WorldSocket` dumps the last 40

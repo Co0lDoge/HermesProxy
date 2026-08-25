@@ -46,3 +46,20 @@ public class LFGRoleCheckUpdate : ServerPacket
         }
     }
 }
+
+public class RoleChosen : ServerPacket
+{
+    public RoleChosen() : base(Opcode.SMSG_ROLE_CHOSEN) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Player);
+        _worldPacket.WriteUInt8(RoleMask);
+        _worldPacket.WriteBit(Accepted);
+        _worldPacket.FlushBits();
+    }
+
+    public WowGuid128 Player = WowGuid128.Empty;
+    public byte RoleMask;
+    public bool Accepted;
+}

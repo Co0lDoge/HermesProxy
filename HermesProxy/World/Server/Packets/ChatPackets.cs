@@ -290,18 +290,11 @@ public class ChatMessageWhisper : ClientPacket
     {
         Language = _worldPacket.ReadUInt32();
 
-        // V3_4_3.54261 uses the V8.1+ whisper layout (per WPP
-        // V8_0_1_27101/Parsers/ChannelHandler.cs:78-90). The V3_4_4 build
-        // (59817) added TargetGUID + TargetVirtualRealmAddress and
-        // narrowed/widened the lengths — those changes do NOT apply to
-        // V3_4_3.54261 because WPP gates them at V3_4_4_59817. An earlier
-        // attempt at the V3_4_4 layout caused the proxy to read TargetGUID
-        // bytes that didn't exist on the wire, garbling target/text — log
-        // showed `to="y" textLen=0` for a `/w Xii gooday`.
+        // V3_4_3 has no TargetGUID (V3_4_4+). Text length is 11 bits, same as SAY.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
         {
             uint targetLen = _worldPacket.ReadBits<uint>(9);
-            uint textLen = _worldPacket.ReadBits<uint>(10);
+            uint textLen = _worldPacket.ReadBits<uint>(11);
             Target = _worldPacket.ReadString(targetLen);
             Text = _worldPacket.ReadString(textLen);
         }

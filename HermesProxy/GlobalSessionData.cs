@@ -141,6 +141,9 @@ public sealed class GameSessionData
     public int GroupUpdateCounter;
     public uint GroupReadyCheckResponses;
     public World.Server.Packets.PartyUpdate?[] CurrentGroups = new World.Server.Packets.PartyUpdate?[2];
+    // Raid-frame tank/healer/dps assignments. AC never accepts CMSG_GROUP_SET_ROLES,
+    // so the proxy keeps the last CMSG_SET_ROLE per guid and overlays it on GROUP_LIST.
+    public Dictionary<WowGuid128, byte> GroupAssignedRoles = new();
     public bool WeWantToLeaveGroup; // Only send kick message when we dont initiated the group-leave
     public List<OwnCharacterInfo> OwnCharacters = [];
 

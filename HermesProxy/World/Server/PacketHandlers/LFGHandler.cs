@@ -45,10 +45,11 @@ public partial class WorldSocket
         //   uint8  needsCount (always 3)
         //   uint8  Needs[3]
         //   cstr   Comment
+        byte roles = OverlayAssignedLfgRoles(packet.Roles);
         Log.Print(LogType.Debug,
-            $"LFG[diag]: CMSG_DF_JOIN roles=0x{packet.Roles:X8} slots=[{string.Join(", ", packet.Slots)}]");
+            $"LFG[diag]: CMSG_DF_JOIN roles=0x{roles:X2} slots=[{string.Join(", ", packet.Slots)}]");
 
-        GetSession().GameState.LfgRequestedRoles = (byte)(packet.Roles & 0xFF);
+        GetSession().GameState.LfgRequestedRoles = roles;
 
         // Titan Rune / other post-3.3.5 LFGDungeons IDs. A legacy backend drops
         // CMSG_LFG_JOIN for those with no SMSG_LFG_JOIN_RESULT, so the client sits
@@ -63,7 +64,7 @@ public partial class WorldSocket
         }
 
         WorldPacket legacy = new WorldPacket(Opcode.CMSG_LFG_JOIN);
-        legacy.WriteUInt32(packet.Roles);
+        legacy.WriteUInt32(roles);
         legacy.WriteUInt8(0); // NoPartialClear
         legacy.WriteUInt8(0); // Achievements
         legacy.WriteUInt8((byte)packet.Slots.Length);
@@ -135,12 +136,27 @@ public partial class WorldSocket
         if (!LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
             return;
 
+        byte roles = OverlayAssignedLfgRoles(packet.Roles);
         WorldPacket legacy = new WorldPacket(Opcode.CMSG_LFG_SET_ROLES);
-        Log.Print(LogType.Debug, $"LFG[diag]: CMSG_DF_SET_ROLES roles=0x{packet.Roles:X2}");
+        Log.Print(LogType.Debug, $"LFG[diag]: CMSG_DF_SET_ROLES roles=0x{roles:X2}");
 
-        GetSession().GameState.LfgRequestedRoles = packet.Roles;
-        legacy.WriteUInt8(packet.Roles);
+        GetSession().GameState.LfgRequestedRoles = roles;
+        legacy.WriteUInt8(roles);
         SendPacketToServer(legacy);
+    }
+
+    byte OverlayAssignedLfgRoles(byte roles)
+    {
+        const byte tankHealerDamage = 0x0E;
+        if ((roles & tankHealerDamage) != 0)
+            return roles;
+
+        var guid = GetSession().GameState.CurrentPlayerGuid;
+        if (GetSession().GameState.GroupAssignedRoles.TryGetValue(guid, out var assigned) && assigned != 0)
+            return (byte)((roles & ~tankHealerDamage) | (assigned & tankHealerDamage));
+        if (GetSession().GameState.LfgRequestedRoles != 0)
+            return (byte)((roles & ~tankHealerDamage) | (GetSession().GameState.LfgRequestedRoles & tankHealerDamage));
+        return roles;
     }
 
     [PacketHandler(Opcode.CMSG_DF_PROPOSAL_RESPONSE)]

@@ -105,8 +105,42 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     // the trigger packet and the disconnect dump; smaller windows aged the suspect out.
     private const int RecentSentCap = 512;
     private const int RecentSentHexPreviewBytes = 48; // first ~48 bytes of each packet body in the reason=7 dump
-    private readonly Queue<string> _recentSentOpcodes = new(RecentSentCap + 1);
+
+    /// One captured send. Kept as a struct in a preallocated ring so the capture costs
+    /// no allocation: the old Queue&lt;string&gt; formatted a timestamp + 143-char hex string
+    /// for every outbound packet (~500 bytes each, held alive by the 512-entry cap), which
+    /// showed up as steady gen1/gen2 pressure under battleground packet rates. The bytes
+    /// live in a flat companion buffer; formatting happens only when a dump is requested.
+    private struct SentPacketRecord
+    {
+        public long TimestampTicksUtc;
+        public Opcode UniversalOpcode;
+        public ushort RawOpcode;
+        public int Size;
+        public byte PreviewLength;
+    }
+
+    private readonly SentPacketRecord[] _recentSent = new SentPacketRecord[RecentSentCap];
+    private readonly byte[] _recentSentPreview = new byte[RecentSentCap * RecentSentHexPreviewBytes];
+    private int _recentSentHead;   // next slot to write
+    private int _recentSentCount;  // filled slots, capped at RecentSentCap
     private long _actionButtonWatchUntilTicks;
+
+    /// Renders one ring slot in the same shape the old string entries used.
+    private string FormatRecentSent(int index)
+    {
+        ref SentPacketRecord record = ref _recentSent[index];
+        // Dump path only, so the copy here is free of consequence; BitConverter keeps the
+        // original dashed "0A-1B-2C" shape the reason=7 dumps have always used.
+        string hex = record.PreviewLength > 0
+            ? BitConverter.ToString(_recentSentPreview, index * RecentSentHexPreviewBytes, record.PreviewLength)
+            : "(empty)";
+
+        string timestamp = new DateTime(record.TimestampTicksUtc, DateTimeKind.Utc).ToLocalTime().ToString("HH:mm:ss.fff");
+        return record.Size > record.PreviewLength
+            ? $"{timestamp} {record.UniversalOpcode}({record.RawOpcode}) sz={record.Size} hex[{record.PreviewLength}/{record.Size}]={hex}…"
+            : $"{timestamp} {record.UniversalOpcode}({record.RawOpcode}) sz={record.Size} hex={hex}";
+    }
 
     public void MarkActionButtonWatchWindow()
     {
@@ -350,13 +384,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 // "client rejected a server packet"; the offending packet is
                 // almost always within the last ~30 sends. The dump only fires
                 // on the disconnect path, so it doesn't add per-packet cost.
-                if (reason == 7 && _recentSentOpcodes.Count > 0)
+                if (reason == 7 && _recentSentCount > 0)
                 {
                     Log.Print(LogType.Trace,
-                        $"[ActionBarTrace] reason=7 — last {_recentSentOpcodes.Count} SMSG packets sent to this client (oldest first):");
-                    int n = 0;
-                    foreach (var entry in _recentSentOpcodes)
-                        Log.Print(LogType.Trace, $"[ActionBarTrace]   #{++n,2} {entry}");
+                        $"[ActionBarTrace] reason=7 — last {_recentSentCount} SMSG packets sent to this client (oldest first):");
+                    int oldest = (_recentSentHead - _recentSentCount + RecentSentCap) % RecentSentCap;
+                    for (int n = 0; n < _recentSentCount; n++)
+                        Log.Print(LogType.Trace, $"[ActionBarTrace]   #{n + 1,2} {FormatRecentSent((oldest + n) % RecentSentCap)}");
                 }
                 if (_connectType == ConnectionType.Realm)
                 {
@@ -509,17 +543,24 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             // packet body so reason=7 dumps reveal *what* (not just which opcode)
             // was sent — needed when we don't have a known-good wire-format
             // reference to compare against.
+            long nowTicksUtc = DateTime.UtcNow.Ticks;
             int hexBytes = Math.Min(data.Length, RecentSentHexPreviewBytes);
-            string hex = hexBytes > 0 ? BitConverter.ToString(data, 0, hexBytes) : "(empty)";
-            string entry = data.Length > hexBytes
-                ? $"{DateTime.Now:HH:mm:ss.fff} {universalOpcode}({opcode}) sz={data.Length} hex[{hexBytes}/{data.Length}]={hex}…"
-                : $"{DateTime.Now:HH:mm:ss.fff} {universalOpcode}({opcode}) sz={data.Length} hex={hex}";
-            _recentSentOpcodes.Enqueue(entry);
-            while (_recentSentOpcodes.Count > RecentSentCap)
-                _recentSentOpcodes.Dequeue();
+            int slot = _recentSentHead;
+            ref SentPacketRecord record = ref _recentSent[slot];
+            record.TimestampTicksUtc = nowTicksUtc;
+            record.UniversalOpcode = universalOpcode;
+            record.RawOpcode = opcode;
+            record.Size = data.Length;
+            record.PreviewLength = (byte)hexBytes;
+            if (hexBytes > 0)
+                data.AsSpan(0, hexBytes).CopyTo(_recentSentPreview.AsSpan(slot * RecentSentHexPreviewBytes, hexBytes));
 
-            if (DateTime.UtcNow.Ticks < _actionButtonWatchUntilTicks)
-                Log.Print(LogType.Trace, $"[ActionBarTrace] inWatchWindow → {entry}");
+            _recentSentHead = (_recentSentHead + 1) % RecentSentCap;
+            if (_recentSentCount < RecentSentCap)
+                _recentSentCount++;
+
+            if (nowTicksUtc < _actionButtonWatchUntilTicks)
+                Log.Print(LogType.Trace, $"[ActionBarTrace] inWatchWindow → {FormatRecentSent(slot)}");
 
             // Trace-level enrichment for the modern V3_4_3 SMSG_UPDATE_OBJECT envelope.
             // Layout: u32 NumObjUpdates, u16 MapID, then per-update body. Read the first
@@ -533,8 +574,6 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                     $"[UpdateObjectTrace][C<P] SMSG_UPDATE_OBJECT bytes={data.Length} NumObjUpdates={numObjUpdates} MapID={mapId}");
             }
 
-            ByteBuffer buffer = new();
-
             int packetSize = data.Length;
             // V3_4_3 has no SMSG_COMPRESSED_PACKET opcode mapping (only
             // SMSG_COMPRESSED_UPDATE_OBJECT exists), so wrapping a >1KB packet via
@@ -546,38 +585,41 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             ushort compressedOpcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
             if (packetSize > 0x400 && _worldCrypt.IsInitialized && compressedOpcode != 0)
             {
-                buffer.WriteInt32(packetSize + 2);
+                using ByteBuffer compressed = new();
+                compressed.WriteInt32(packetSize + 2);
                 Span<byte> opcodeBytes = stackalloc byte[2];
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
-                buffer.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
+                compressed.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
 
                 byte[] compressedData;
                 uint compressedSize = CompressPacket(data, opcode, out compressedData);
-                buffer.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
-                buffer.WriteBytes(compressedData, compressedSize);
+                compressed.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
+                compressed.WriteBytes(compressedData, compressedSize);
 
                 packetSize = (int)(compressedSize + 12);
                 opcode = compressedOpcode;
 
-                data = buffer.GetData();
+                data = compressed.GetData();
             }
 
-            buffer = new ByteBuffer();
-            buffer.WriteUInt16(opcode);
-            buffer.WriteBytes(data);
-            packetSize += 2 /*opcode*/;
+            using (ByteBuffer body = new())
+            {
+                body.WriteUInt16(opcode);
+                body.WriteBytes(data);
+                packetSize += 2 /*opcode*/;
 
-            data = buffer.GetData();
+                data = body.GetData();
+            }
 
             PacketHeader header = new();
             header.Size = packetSize;
             _worldCrypt.Encrypt(data, header.Tag);
 
-            ByteBuffer byteBuffer = new();
-            header.Write(byteBuffer);
-            byteBuffer.WriteBytes(data);
+            using ByteBuffer framed = new();
+            header.Write(framed);
+            framed.WriteBytes(data);
 
-            AsyncWrite(byteBuffer.GetData());
+            AsyncWrite(framed.GetData());
         }
     }
 

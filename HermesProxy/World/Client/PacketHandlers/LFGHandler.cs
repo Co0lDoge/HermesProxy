@@ -255,13 +255,27 @@ public partial class WorldClient
             LFGBlackListEntry entry = new LFGBlackListEntry();
             entry.PlayerGuid = packet.ReadGuid().To128(GetSession().GameState);
             uint lockCount = packet.ReadUInt32();
+            var alreadyListed = new HashSet<uint>((int)lockCount);
             for (uint j = 0; j < lockCount; j++)
             {
                 LFGLockInfoData li = new LFGLockInfoData();
                 li.Slot = packet.ReadUInt32();
                 li.LockStatus = packet.ReadUInt32();
+                li.SoftLock = LfgSlots.ToSoftLock(li.LockStatus);
                 entry.Locks.Add(li);
+                alreadyListed.Add(LfgSlots.GetDungeonId(li.Slot));
                 GetSession().GameState.RememberLfgSlot(li.Slot);
+            }
+            // Party Type dropdown reads this list, not PLAYER_INFO. Same
+            // hide-rows as solo or Titan Rune / out-of-range randoms stay greyed.
+            foreach (uint packed in LfgSlots.GetTitanRuneHideSlots(alreadyListed))
+            {
+                entry.Locks.Add(new LFGLockInfoData
+                {
+                    Slot = packed,
+                    LockStatus = (uint)LFGLockStatus.NotInSeason,
+                    SoftLock = (uint)LFGSoftLock.Unk2,
+                });
             }
             info.Players.Add(entry);
         }
@@ -334,14 +348,7 @@ public partial class WorldClient
             slot.Reason = packet.ReadUInt32();
             // Map legacy LFGLockStatus → modern LFGSoftLock per TC
             // wotlk_classic LFGMgr.cpp:1807-1823.
-            slot.SoftLock = (uint)((LFGLockStatus)slot.Reason switch
-            {
-                LFGLockStatus.InsufficientExpansion
-                or LFGLockStatus.TooLowLevel
-                or LFGLockStatus.TooHighLevel
-                or LFGLockStatus.NotInSeason => LFGSoftLock.Unk2,
-                _ => LFGSoftLock.None,
-            });
+            slot.SoftLock = LfgSlots.ToSoftLock(slot.Reason);
             blackList.Slots.Add(slot);
         }
 

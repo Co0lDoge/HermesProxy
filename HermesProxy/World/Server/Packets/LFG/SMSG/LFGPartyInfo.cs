@@ -10,6 +10,7 @@ public class LFGLockInfoData
     public uint LockStatus;
     public uint SubReason1;
     public uint SubReason2;
+    public uint SoftLock;
 }
 
 public class LFGBlackListEntry
@@ -41,7 +42,7 @@ public class LFGPartyInfo : ServerPacket
                 _worldPacket.WriteUInt32(l.LockStatus);
                 _worldPacket.WriteInt32((int)l.SubReason1);
                 _worldPacket.WriteInt32((int)l.SubReason2);
-                _worldPacket.WriteUInt32(0); // SoftLock
+                _worldPacket.WriteUInt32(l.SoftLock);
             }
         }
     }

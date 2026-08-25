@@ -88,11 +88,16 @@ public partial class WorldSocket
             SendPacket(prepare2);
         }
 
+        // V3_4_3 RequiresSpellFocus is 123, the same number as Classic SpellInProgress.
+        uint inProgress = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            ? (uint)SpellCastResultV343.SpellInProgress
+            : (uint)SpellCastResultClassic.SpellInProgress;
+
         if (isPet)
         {
             PetCastFailed failed = new();
             failed.SpellID = castRequest.SpellId;
-            failed.Reason = (uint)SpellCastResultClassic.SpellInProgress;
+            failed.Reason = inProgress;
             failed.CastID = castRequest.ServerGUID;
             SendPacket(failed);
         }
@@ -101,7 +106,7 @@ public partial class WorldSocket
             CastFailed failed = new();
             failed.SpellID = castRequest.SpellId;
             failed.SpellXSpellVisualID = castRequest.SpellXSpellVisualId;
-            failed.Reason = (uint)SpellCastResultClassic.SpellInProgress;
+            failed.Reason = inProgress;
             failed.CastID = castRequest.ServerGUID;
             SendPacket(failed);
         }    

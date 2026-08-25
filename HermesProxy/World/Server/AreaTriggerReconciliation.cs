@@ -48,6 +48,46 @@ internal static class AreaTriggerReconciliation
         new(LegacyId: 4352, ModernId: 4356, MapId: 530,
             Center: new Vector3(-248f, 905f, 84f),
             Radius: 10f),
+
+        // Warsong Gulch flag rooms. 3646 (Silverwing Hold) and 3647 (Warsong Lumber
+        // Mill) do not exist in the 3.4.3 client's AreaTrigger.db2 at all — verified
+        // against wago.tools build 3.4.3.54261, which has zero rows for either id.
+        // They were replaced by box-shaped triggers 4628 / 4629 sitting on the same
+        // two flag rooms (map 489, 4628 at 1470,1475,373.7 and 4629 at 973,1445,367).
+        //
+        // 3.3.5a cores gate flag capture on the old ids — BattlegroundWS::HandleAreaTrigger
+        // switches on 3646/3647 and explicitly no-ops 4628/4629 — so without this remap the
+        // client fires a trigger the server discards and returning the flag never scores.
+        //
+        // The remap alone is not enough. The client fires CMSG_AREA_TRIGGER once, on
+        // entry into its box, while the server re-validates against the *legacy* volume
+        // (WorldSession::HandleAreaTriggerOpcode -> Player::IsInAreaTriggerRadius). The
+        // modern boxes sit ~60-70 units from the legacy triggers, which sit on the flags
+        // themselves, so the single client-fired event is frequently rejected as "too
+        // far" and nothing retries — observed as having to stand on the flag for ~30s
+        // until some stray step re-crossed the box boundary.
+        //
+        // So these also get proximity synthesis, centred on the flag spawns themselves
+        // (AzerothCore BattlegroundWS.cpp:445-446, matching TrinityCore) with a sphere
+        // wide enough to cover the flag room. While inside, the legacy id is re-fired
+        // every LegacyAreaTriggerResendIntervalMs; the server's volume + flag-state
+        // checks decide when it actually scores, so repeats are harmless.
+        //
+        // Map 489 = Warsong Gulch.
+
+        // Silverwing Hold — the Alliance flag room, at the south end of the map.
+        // An Alliance player carrying the Horde flag scores here, provided the
+        // Alliance flag is on its base.
+        new(LegacyId: 3646, ModernId: 4628, MapId: 489,
+            Center: new Vector3(1540.423f, 1481.325f, 351.828f), // BG_WS_OBJECT_A_FLAG
+            Radius: 25f),
+
+        // Warsong Lumber Mill — the Horde flag room, at the north end of the map.
+        // A Horde player carrying the Alliance flag scores here, provided the
+        // Horde flag is on its base.
+        new(LegacyId: 3647, ModernId: 4629, MapId: 489,
+            Center: new Vector3(916.023f, 1434.405f, 345.413f), // BG_WS_OBJECT_H_FLAG
+            Radius: 25f),
     ];
 
     internal static readonly FrozenDictionary<uint, uint> ModernToLegacy =

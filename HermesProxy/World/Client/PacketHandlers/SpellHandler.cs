@@ -383,12 +383,6 @@ public partial class WorldClient
                 });
                 pendingCast.PrepareSent = true;
             }
-            ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: false);
-            Log.Print(LogType.Debug,
-                $"[SpellStart] spell={spell.Cast.SpellID} pending=hit flags=0x{spell.Cast.CastFlags:X8} " +
-                $"castTime={spell.Cast.CastTime} visual={spell.Cast.SpellXSpellVisualID} " +
-                $"clientCast={pendingCast.ClientGUID} serverCast={spell.Cast.CastID} " +
-                $"caster={spell.Cast.CasterUnit}");
 
             // Clear non-started casts and send failures for them
             // (keeps the started cast so SPELL_GO can dequeue it)
@@ -414,13 +408,6 @@ public partial class WorldClient
             foreach (var failed in failedPetCasts)
                 GetSession().InstanceSocket.SendCastRequestFailed(failed, true);
         }
-        else
-        {
-            Log.Print(LogType.Debug,
-                $"[SpellStart] spell={spell.Cast.SpellID} pending=miss flags=0x{spell.Cast.CastFlags:X8} " +
-                $"visual={spell.Cast.SpellXSpellVisualID} castId={spell.Cast.CastID} " +
-                $"caster={spell.Cast.CasterUnit} player={GetSession().GameState.CurrentPlayerGuid}");
-        }
 
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
@@ -443,11 +430,9 @@ public partial class WorldClient
         spell.Cast = HandleSpellStartOrGo(packet, true);
 
         // Dequeue completed cast (queue-based, FIFO order)
-        bool pendingHit = false;
         if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
             GetSession().GameState.TryDequeuePendingNormalCast((uint)spell.Cast.SpellID, out var pendingCast))
         {
-            pendingHit = true;
             spell.Cast.CastID = pendingCast!.ServerGUID;
             spell.Cast.SpellXSpellVisualID = pendingCast.SpellXSpellVisualId;
             // SoM-renumbered item: rewrite the legacy spell id back to the modern one the client expects.
@@ -520,12 +505,6 @@ public partial class WorldClient
         }
 
         ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: true);
-        Log.Print(LogType.Debug,
-            $"[SpellGo] spell={spell.Cast.SpellID} pending={(pendingHit ? "hit" : "miss")} " +
-            $"flags=0x{spell.Cast.CastFlags:X8} travel={spell.Cast.MissileTrajectory.TravelTime} " +
-            $"visual={spell.Cast.SpellXSpellVisualID} castId={spell.Cast.CastID} " +
-            $"hits={spell.Cast.HitTargets.Count}");
-
         SendPacketToClient(spell);
     }
 

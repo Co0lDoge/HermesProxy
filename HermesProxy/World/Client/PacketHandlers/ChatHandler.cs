@@ -1,5 +1,6 @@
 ﻿using Framework;
 using HermesProxy.Enums;
+using HermesProxy.World.Chat;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -232,6 +233,11 @@ public partial class WorldClient
         if (!ChatPkt.CheckAddonPrefix(GetSession().GameState.AddonPrefixes, ref language, ref text, ref addonPrefix))
             return;
 
+        // No-op until a vanilla codec is registered. Counterpart to the outbound rewrite in
+        // SendMessageChatVanilla. Issue 139.
+        if (addonPrefix.Length == 0)
+            text = ItemLinkTranslator.LegacyToModern(text);
+
         ChatMessageTypeModern chatTypeModern = chatType.CastEnum<ChatMessageTypeModern>();
         ChatPkt chat = new ChatPkt(GetSession(), chatTypeModern, text, language, sender, senderName, receiver, "", channelName, chatFlags, addonPrefix);
         SendPacketToClient(chat);
@@ -372,6 +378,13 @@ public partial class WorldClient
         if (!ChatPkt.CheckAddonPrefix(GetSession().GameState.AddonPrefixes, ref language, ref text, ref addonPrefix))
             return;
 
+        // Counterpart to the outbound rewrite: the server broadcasts links in the legacy
+        // layout, where the random-property id is signed and sits at a different index than
+        // the modern client reads. Without this a suffix lands in a gem slot and the tooltip
+        // renders the base item. Addon payloads are left untouched.
+        if (addonPrefix.Length == 0)
+            text = ItemLinkTranslator.LegacyToModern(text);
+
         ChatMessageTypeModern chatTypeModern = chatType.CastEnum<ChatMessageTypeModern>();
         ChatPkt chat = new ChatPkt(GetSession(), chatTypeModern, text, language, sender, senderName, receiver, receiverName, channelName, chatFlags, addonPrefix, achievementId);
 
@@ -386,11 +399,17 @@ public partial class WorldClient
 
     public void SendMessageChatVanilla(ChatMessageTypeVanilla type, uint lang, string msg, string channel, string to)
     {
+        // No-op until a vanilla codec is registered — see ItemLinkTranslator.LegacyCodec.
+        // Wired here so enabling that era is a one-line change there rather than a hunt
+        // through the chat handlers. Issue 139.
+        if (lang != (uint)Language.Addon)
+            msg = ItemLinkTranslator.ModernToLegacy(msg);
+
         if (HandleHermesInternalChatCommand(msg))
         {
             return; // was handled by us
         }
-        
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_MESSAGECHAT);
         packet.WriteUInt32((uint)type);
         packet.WriteUInt32(lang);
@@ -462,6 +481,15 @@ public partial class WorldClient
 
     public void SendMessageChatWotLK(ChatMessageTypeWotLK type, uint lang, string msg, string channel, string to)
     {
+        // Modern item links use a field layout the legacy chat validator rejects, which makes
+        // it drop the entire message without a reply. Addon traffic is exempt on the server
+        // side and carries arbitrary payloads, so it is left untouched. See issue 139.
+        //
+        // Rewritten before the trace below so the log shows what is actually put on the wire.
+        // Chat commands never contain item links, so the internal-command check is unaffected.
+        if (lang != (uint)Language.Addon)
+            msg = ItemLinkTranslator.ModernToLegacy(msg);
+
         var preview = msg.Length > 30 ? msg.Substring(0, 30) + "…" : msg;
         Log.Print(LogType.Trace,
             $"[ChatTrace] -> legacy CMSG_MESSAGECHAT (WotLK): type={type} lang={lang} " +

@@ -296,15 +296,32 @@ public class BinderConfirm : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 wire-opcode 10378 is SMSG_NPC_INTERACTION_OPEN_RESULT
+        // (Guid + Int32 InteractionType + bit Success). Same shape as
+        // ShowBank / SpiritHealerConfirm. WPP V3_4_3_51666 has no
+        // SMSG_BINDER_CONFIRM; type Binder (20) opens the innkeeper dialog.
         _worldPacket.WritePackedGuid128(Guid);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteInt32((int)PlayerInteractionType.Binder);
+            _worldPacket.WriteBit(true);
+            _worldPacket.FlushBits();
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size
+        + (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 5 : 0);
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(Guid.Low, Guid.High);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteInt32((int)PlayerInteractionType.Binder);
+            writer.WriteBit(true);
+            writer.FlushBits();
+        }
         return writer.Position;
     }
 

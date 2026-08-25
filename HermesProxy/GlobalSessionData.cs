@@ -1440,6 +1440,7 @@ public sealed class GameSessionData
 public class ClientCastRequest
 {
     public bool HasStarted;
+    public bool PrepareSent;
     public uint SpellId;
     public uint LegacySpellId; // 0 = same as SpellId; non-zero when modern client used a renumbered spell (e.g. SoM 1.14.1+ items)
     public uint SpellXSpellVisualId;

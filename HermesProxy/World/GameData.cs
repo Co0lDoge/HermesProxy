@@ -54,6 +54,8 @@ public static partial class GameData
     public static Dictionary<uint, uint> LegacyToModernSpellId = [];
     public static FrozenDictionary<uint, uint> ItemEnchantVisuals = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> SpellVisuals = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenDictionary<uint, uint> SpellXSpellVisualToSpellVisual = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenSet<uint> MissileSpellVisuals = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, uint> LearnSpells = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> TotemSpells = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
@@ -318,6 +320,15 @@ public static partial class GameData
         if (SpellVisuals.TryGetValue(spellId, out visual))
             return visual;
         return 0;
+    }
+
+    public static bool IsMissileSpellVisual(uint spellXSpellVisualId)
+    {
+        if (spellXSpellVisualId == 0)
+            return false;
+        if (!SpellXSpellVisualToSpellVisual.TryGetValue(spellXSpellVisualId, out var visualId))
+            return false;
+        return MissileSpellVisuals.Contains(visualId);
     }
 
     /// <summary>
@@ -1614,6 +1625,7 @@ public static partial class GameData
             LoadSpellMiscHotfixes,
             LoadSpellEffectHotfixes,
             LoadSpellXSpellVisualHotfixes,
+            LoadSpellVisualMissileFlags,
             LoadItemSparseHotfixes,
             LoadItemHotfixes,
             LoadItemEffectHotfixes,
@@ -2123,6 +2135,7 @@ public static partial class GameData
         var path = Path.Combine("CSV", "Hotfix", $"SpellXSpellVisual{ModernVersion.ExpansionVersion}.csv");
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
         var dict = new Dictionary<uint, uint>(SpellVisuals);
+        var sxsvToVisual = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
         uint counter = 0;
         foreach (var row in reader)
@@ -2132,6 +2145,7 @@ public static partial class GameData
             uint id = uint.Parse(row[0].Span);
             byte difficultyId = byte.Parse(row[1].Span);
             uint spellVisualId = uint.Parse(row[2].Span);
+            sxsvToVisual[id] = spellVisualId;
             float probability = float.Parse(row[3].Span);
             byte flags = byte.Parse(row[4].Span);
             byte priority = byte.Parse(row[5].Span);
@@ -2171,7 +2185,25 @@ public static partial class GameData
         }
 
         SpellVisuals = dict.ToFrozenDictionary();
+        SpellXSpellVisualToSpellVisual = sxsvToVisual.ToFrozenDictionary();
     }
+
+    public static void LoadSpellVisualMissileFlags()
+    {
+        var path = Path.Combine("CSV", "Hotfix", $"SpellVisualMissile{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+        {
+            MissileSpellVisuals = FrozenSet<uint>.Empty;
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 8));
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+        MissileSpellVisuals = set.ToFrozenSet();
+    }
+
     public static void LoadItemSparseHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");

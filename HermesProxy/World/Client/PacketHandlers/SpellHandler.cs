@@ -374,10 +374,21 @@ public partial class WorldClient
             if (pendingCast.LegacySpellId != 0)
                 spell.Cast.SpellID = (int)pendingCast.SpellId;
 
-            SpellPrepare prepare = new();
-            prepare.ClientCastID = pendingCast.ClientGUID;
-            prepare.ServerCastID = spell.Cast.CastID;
-            SendPacketToClient(prepare);
+            if (!pendingCast.PrepareSent)
+            {
+                SendPacketToClient(new SpellPrepare
+                {
+                    ClientCastID = pendingCast.ClientGUID,
+                    ServerCastID = spell.Cast.CastID,
+                });
+                pendingCast.PrepareSent = true;
+            }
+            ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: false);
+            Log.Print(LogType.Debug,
+                $"[SpellStart] spell={spell.Cast.SpellID} pending=hit flags=0x{spell.Cast.CastFlags:X8} " +
+                $"castTime={spell.Cast.CastTime} visual={spell.Cast.SpellXSpellVisualID} " +
+                $"clientCast={pendingCast.ClientGUID} serverCast={spell.Cast.CastID} " +
+                $"caster={spell.Cast.CasterUnit}");
 
             // Clear non-started casts and send failures for them
             // (keeps the started cast so SPELL_GO can dequeue it)
@@ -403,6 +414,13 @@ public partial class WorldClient
             foreach (var failed in failedPetCasts)
                 GetSession().InstanceSocket.SendCastRequestFailed(failed, true);
         }
+        else
+        {
+            Log.Print(LogType.Debug,
+                $"[SpellStart] spell={spell.Cast.SpellID} pending=miss flags=0x{spell.Cast.CastFlags:X8} " +
+                $"visual={spell.Cast.SpellXSpellVisualID} castId={spell.Cast.CastID} " +
+                $"caster={spell.Cast.CasterUnit} player={GetSession().GameState.CurrentPlayerGuid}");
+        }
 
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
@@ -411,6 +429,7 @@ public partial class WorldClient
                 GetSession().GameState.LastDispellSpellId = (uint)spell.Cast.SpellID;
         }
 
+        ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: false);
         SendPacketToClient(spell);
     }
 
@@ -423,29 +442,26 @@ public partial class WorldClient
         SpellGo spell = new SpellGo();
         spell.Cast = HandleSpellStartOrGo(packet, true);
 
-        // 3.3.5a SpellGo doesn't set HasTrajectory but the V3_4_3 client requires it
-        // on SpellGo (not SpellStart) to render projectile/missile visuals.
-        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-            spell.Cast.CastFlags |= (uint)CastFlag.HasTrajectory;
-
         // Dequeue completed cast (queue-based, FIFO order)
+        bool pendingHit = false;
         if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
             GetSession().GameState.TryDequeuePendingNormalCast((uint)spell.Cast.SpellID, out var pendingCast))
         {
+            pendingHit = true;
             spell.Cast.CastID = pendingCast!.ServerGUID;
             spell.Cast.SpellXSpellVisualID = pendingCast.SpellXSpellVisualId;
             // SoM-renumbered item: rewrite the legacy spell id back to the modern one the client expects.
             if (pendingCast.LegacySpellId != 0)
                 spell.Cast.SpellID = (int)pendingCast.SpellId;
 
-            // For instant spells that skip SPELL_START, we need to send SpellPrepare
-            // before SpellGo so the client knows which cast completed
-            if (!pendingCast.HasStarted)
+            if (!pendingCast.HasStarted && !pendingCast.PrepareSent)
             {
-                SpellPrepare prepare = new();
-                prepare.ClientCastID = pendingCast.ClientGUID;
-                prepare.ServerCastID = spell.Cast.CastID;
-                SendPacketToClient(prepare);
+                SendPacketToClient(new SpellPrepare
+                {
+                    ClientCastID = pendingCast.ClientGUID,
+                    ServerCastID = spell.Cast.CastID,
+                });
+                pendingCast.PrepareSent = true;
             }
         }
         else if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
@@ -503,7 +519,36 @@ public partial class WorldClient
             }
         }
 
+        ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: true);
+        Log.Print(LogType.Debug,
+            $"[SpellGo] spell={spell.Cast.SpellID} pending={(pendingHit ? "hit" : "miss")} " +
+            $"flags=0x{spell.Cast.CastFlags:X8} travel={spell.Cast.MissileTrajectory.TravelTime} " +
+            $"visual={spell.Cast.SpellXSpellVisualID} castId={spell.Cast.CastID} " +
+            $"hits={spell.Cast.HitTargets.Count}");
+
         SendPacketToClient(spell);
+    }
+
+    // Native 3.4.3 (Xian55 + CypherCore) and AzerothCore share the same flag
+    // shape: Start ALWAYS has HasTrajectory (no traj payload), Go NEVER does
+    // unless ADJUST_MISSILE. AC never sets ADJUST_MISSILE for DBC-speed
+    // missiles (Wrath/Fireball). On V3_4_3 that leaves the missile SpellVisual
+    // (3860) looping, so those Start/Go packets drop HasTrajectory. Non-missile
+    // visuals (HT 58) keep the native flags and keep SpellXSpellVisual on both
+    // packets — zeroing it kills the cast anim and leaves the action bar lit.
+    static void ApplyV343NativeCastPolicy(SpellCastData cast, bool isSpellGo)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        if (GameData.IsMissileSpellVisual(cast.SpellXSpellVisualID))
+        {
+            cast.CastFlags &= ~(uint)CastFlag.HasTrajectory;
+            return;
+        }
+
+        if (isSpellGo)
+            cast.CastFlags &= ~(uint)CastFlag.HasTrajectory;
     }
 
     SpellCastData HandleSpellStartOrGo(WorldPacket packet, bool isSpellGo)

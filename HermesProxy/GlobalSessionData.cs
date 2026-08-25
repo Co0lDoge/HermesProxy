@@ -216,6 +216,10 @@ public sealed class GameSessionData
     public ConcurrentQueue<ClientCastRequest> PendingNormalCasts = new();  // regular spell casts (queue for proper FIFO handling)
     public ClientCastRequest? CurrentClientNextMeleeCast; // next melee spells (Raptor Strike, Heroic Strike, etc.)
     public ClientCastRequest? CurrentClientAutoRepeatCast; // auto repeat spells (Auto Shot, Shoot, etc.)
+    // SPELL_GO dequeues the pending cast. AC EffectDuel (and other hit-time
+    // checks) then send SMSG_CAST_FAILED. Keep the last completed one so that
+    // fail can still be forwarded instead of disappearing.
+    public ClientCastRequest? LastCompletedNormalCast;
     public ConcurrentQueue<ClientCastRequest> PendingPetCasts = new();  // pet spell casts (queue for proper FIFO handling)
     public WowGuid64 LastLootTargetGuid;
     public List<WowGuid128>? MasterLootCandidates;

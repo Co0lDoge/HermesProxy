@@ -88,4 +88,16 @@ public class LfgSlotsTests
         Assert.DoesNotContain(TitanRuneChild, slots);
         Assert.Equal(42, slots.Count);
     }
+
+    [Theory]
+    [InlineData(1u, 2u)]   // InsufficientExpansion
+    [InlineData(2u, 2u)]   // TooLowLevel
+    [InlineData(3u, 2u)]   // TooHighLevel
+    [InlineData(1031u, 2u)] // NotInSeason
+    [InlineData(0u, 0u)]
+    [InlineData(6u, 0u)]   // RaidLocked stays visible
+    public void ToSoftLock_HidesExpansionLevelAndSeason(uint lockStatus, uint expected)
+    {
+        Assert.Equal(expected, LfgSlots.ToSoftLock(lockStatus));
+    }
 }

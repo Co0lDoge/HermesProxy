@@ -224,6 +224,21 @@ public partial class WorldClient
             failed.FailedArg2 = arg2;
             SendPacketToClient(failed);
         }
+        // AC EffectDuel (SPELL_FAILED_NO_DUELING) and similar hit-time checks
+        // send CAST_FAILED after SPELL_GO already dequeued the pending cast.
+        else if (GetSession().GameState.LastCompletedNormalCast is { } completed &&
+                 (completed.SpellId == spellId || (completed.LegacySpellId != 0 && completed.LegacySpellId == spellId)))
+        {
+            CastFailed failed = new();
+            failed.SpellID = completed.SpellId;
+            failed.SpellXSpellVisualID = completed.SpellXSpellVisualId;
+            failed.Reason = LegacyVersion.ConvertSpellCastResult(reason);
+            failed.CastID = completed.ServerGUID;
+            failed.FailedArg1 = arg1;
+            failed.FailedArg2 = arg2;
+            SendPacketToClient(failed);
+            GetSession().GameState.LastCompletedNormalCast = null;
+        }
     }
 
     [PacketHandler(Opcode.SMSG_PET_CAST_FAILED, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
@@ -448,6 +463,8 @@ public partial class WorldClient
                 });
                 pendingCast.PrepareSent = true;
             }
+
+            GetSession().GameState.LastCompletedNormalCast = pendingCast;
         }
         else if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
             GetSession().GameState.CurrentClientNextMeleeCast != null &&

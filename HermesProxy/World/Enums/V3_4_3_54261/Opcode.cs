@@ -339,7 +339,11 @@ public enum Opcode : uint
 	SMSG_BATTLEFIELD_STATUS = 10533u,
 	SMSG_BATTLEGROUND_PLAYER_JOINED = 10539u,
 	SMSG_BATTLEGROUND_PLAYER_LEFT = 10540u,
-	SMSG_BINDER_CONFIRM = 0u,
+	// Same wire as SMSG_SHOW_BANK / SMSG_SPIRIT_HEALER_CONFIRM
+	// (SMSG_NPC_INTERACTION_OPEN_RESULT, 10378). V3_4_3 dropped
+	// the dedicated binder-confirm packet; the innkeeper dialog
+	// is InteractionType=Binder (20). See BinderConfirm.Write.
+	SMSG_BINDER_CONFIRM = 10378u,
 	SMSG_BIND_POINT_UPDATE = 9597u,
 	SMSG_CONNECT_TO = 12365u,
 	SMSG_SUSPEND_COMMS = 12362u,
@@ -545,13 +549,14 @@ public enum Opcode : uint
 	SMSG_SHOW_BANK = 10378u,
 	SMSG_SHOW_RATINGS = 0u,
 	SMSG_SOCKET_GEMS_SUCCESS = 10023u,
-	// Same wire opcode as SMSG_SHOW_BANK (SMSG_NPC_INTERACTION_OPEN_RESULT, 10378).
+	// Same wire opcode as SMSG_SHOW_BANK / SMSG_BINDER_CONFIRM
+	// (SMSG_NPC_INTERACTION_OPEN_RESULT, 10378).
 	// V3_4_3 dropped the dedicated SMSG_SPIRIT_HEALER_CONFIRM packet; the modern
 	// spirit-healer res dialog is driven by NPC_INTERACTION_OPEN_RESULT with
 	// InteractionType=SpiritHealer. The generated universal->wire table keys on the
-	// universal name, so SHOW_BANK and SPIRIT_HEALER_CONFIRM each map to 10378
-	// independently. The reverse wire->universal slot for 10378 is server-to-client
-	// only (the client never sends it), so the alias on that side is harmless.
+	// universal name, so SHOW_BANK, BINDER_CONFIRM and SPIRIT_HEALER_CONFIRM each
+	// map to 10378 independently. The reverse wire->universal slot for 10378 is
+	// server-to-client only (the client never sends it), so the alias is harmless.
 	SMSG_SPIRIT_HEALER_CONFIRM = 10378u,
 	SMSG_SPELL_COOLDOWN = 11285u,
 	SMSG_SPELL_DAMAGE_SHIELD = 11310u,

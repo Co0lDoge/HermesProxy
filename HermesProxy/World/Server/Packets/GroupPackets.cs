@@ -814,9 +814,9 @@ class PartyMemberPartialState : ServerPacket
         _worldPacket.WriteBit(ZoneID.HasValue);
         _worldPacket.WriteBit(WmoGroupID.HasValue);
         _worldPacket.WriteBit(WmoDoodadPlacementID.HasValue);
-        _worldPacket.WriteBit(Position != null);
+        _worldPacket.WriteBit(Position.HasValue);
         _worldPacket.WriteBit(VehicleSeatRecID.HasValue);
-        _worldPacket.WriteBit(Auras.Count > 0);
+        _worldPacket.WriteBit(Auras is { Count: > 0 });
         _worldPacket.WriteBit(Pet != null);
         _worldPacket.WriteBit(Phase != null);
         _worldPacket.WriteBit(Unk901_2 != null);
@@ -856,15 +856,15 @@ class PartyMemberPartialState : ServerPacket
             _worldPacket.WriteUInt16(WmoGroupID.Value);
         if (WmoDoodadPlacementID.HasValue)
             _worldPacket.WriteUInt32(WmoDoodadPlacementID.Value);
-        if (Position != null)
+        if (Position.HasValue)
         {
-            _worldPacket.WriteInt16(Position.X);
-            _worldPacket.WriteInt16(Position.Y);
-            _worldPacket.WriteInt16(Position.Z);
+            _worldPacket.WriteInt16(Position.Value.X);
+            _worldPacket.WriteInt16(Position.Value.Y);
+            _worldPacket.WriteInt16(Position.Value.Z);
         }
         if (VehicleSeatRecID.HasValue)
             _worldPacket.WriteUInt32(VehicleSeatRecID.Value);
-        if (Auras.Count > 0)
+        if (Auras is { Count: > 0 })
         {
             _worldPacket.WriteInt32(Auras.Count);
             foreach (var aura in Auras)
@@ -894,9 +894,12 @@ class PartyMemberPartialState : ServerPacket
     public ushort? ZoneID;
     public ushort? WmoGroupID;
     public uint? WmoDoodadPlacementID;
-    public Vector3_UInt16 Position = null!;
+    public Vector3_UInt16? Position;
     public uint? VehicleSeatRecID;
-    public List<PartyMemberAuraStates> Auras = new();
+    // Left null until a packet actually carries auras. The parse paths already guard with
+    // `??= new`, so the old `= new()` initializer only ever allocated a list that stayed
+    // empty on the ~95% of updates that carry position/health alone.
+    public List<PartyMemberAuraStates>? Auras;
     public PartyMemberPetStats Pet = null!;
     public PartyMemberPhaseStates Phase = null!;
     public UnkStruct901_2 Unk901_2 = null!;
@@ -906,7 +909,11 @@ class PartyMemberPartialState : ServerPacket
         public byte PartyType1;
         public byte PartyType2;
     }
-    public class Vector3_UInt16
+    /// Struct, not a class: one of these is built for nearly every partial state (position is
+    /// the flag AzerothCore sets on every player tick), so a heap object here was a per-packet
+    /// allocation on the hottest path in the proxy. Held as Vector3_UInt16? — a nullable value
+    /// type, so the "is present" gate costs no allocation either.
+    public struct Vector3_UInt16
     {
         public short X;
         public short Y;

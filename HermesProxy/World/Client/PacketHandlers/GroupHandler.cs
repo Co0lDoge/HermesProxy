@@ -589,9 +589,10 @@ public partial class WorldClient
 
         if (updateFlags.HasFlag(GroupUpdateFlagVanilla.Position))
         {
-            state.Position = new PartyMemberPartialState.Vector3_UInt16();
-            state.Position.X = packet.ReadInt16();
-            state.Position.Y = packet.ReadInt16();
+            PartyMemberPartialState.Vector3_UInt16 position = default;
+            position.X = packet.ReadInt16();
+            position.Y = packet.ReadInt16();
+            state.Position = position;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagVanilla.Auras))
@@ -860,9 +861,10 @@ public partial class WorldClient
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Position))
         {
             if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Position), 4, state);
-            state.Position = new PartyMemberPartialState.Vector3_UInt16();
-            state.Position.X = packet.ReadInt16();
-            state.Position.Y = packet.ReadInt16();
+            PartyMemberPartialState.Vector3_UInt16 position = default;
+            position.X = packet.ReadInt16();
+            position.Y = packet.ReadInt16();
+            state.Position = position;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Auras))

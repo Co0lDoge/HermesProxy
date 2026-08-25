@@ -52,15 +52,20 @@ public class AccountMetaDataManager
         if (!File.Exists(path))
             return null;
 
-        var rawContent = File.ReadAllText(path, Encoding.UTF8);
+        var rawContent = File.ReadAllText(path, Encoding.UTF8).Trim();
+        if (rawContent.Length == 0)
+            return null;
+
         var content = rawContent.Split(',');
-        if (content.Length != 4)
+        if (content.Length != 4
+            || !ulong.TryParse(content[2], out ulong charLowerGuid)
+            || !long.TryParse(content[3], out long lastLoginUnixSec))
         {
-            Log.Print(LogType.Error, $"Invalid split size in 'GetLastSelectedCharacter' for account '{_accountName}'");
+            Log.Print(LogType.Error, $"Invalid last_character.txt for account '{_accountName}'");
             return null;
         }
-        
-        return (content[0], content[1], ulong.Parse(content[3]), long.Parse(content[2]));
+
+        return (content[0], content[1], charLowerGuid, lastLoginUnixSec);
     }
 
     public void SaveLastSelectedCharacter(string realmName, string charName, ulong charLowerGuid, long lastLoginUnixSec)
@@ -72,6 +77,25 @@ public class AccountMetaDataManager
         Log.Print(LogType.Debug, $"Saved last selected char in '{path}'");
     }
 
+    public void RememberRealmFromCharacterList(string realmName, IReadOnlyList<(string Name, ulong GuidLow)> characters)
+    {
+        if (string.IsNullOrEmpty(realmName) || characters.Count == 0)
+            return;
+
+        var existing = GetLastSelectedCharacter();
+        var pick = characters[0];
+        if (existing.HasValue)
+        {
+            var match = characters.FirstOrDefault(c =>
+                c.GuidLow == existing.Value.charLowerGuid
+                || string.Equals(c.Name, existing.Value.charName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(match.Name))
+                pick = match;
+        }
+
+        SaveLastSelectedCharacter(realmName, pick.Name, pick.GuidLow, Time.UnixTime);
+    }
+
     public void InvalidateLastSelectedCharacter()
     {
         var dir = GetAccountMetaDataDirectory();
@@ -80,7 +104,7 @@ public class AccountMetaDataManager
         if (!File.Exists(path))
             return;
 
-        File.WriteAllText(path, "");
+        File.Delete(path);
         Log.Print(LogType.Debug, $"Invalidated last selected character entry in '{path}'");
     }
 

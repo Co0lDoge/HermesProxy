@@ -251,6 +251,26 @@ public class PartyUpdate : ServerPacket
     public PartyLFGInfo LfgInfos = null!;
     public PartyLootSettings LootSettings = null!;
     public PartyDifficultySettings DifficultySettings = null!;
+
+    // SendPacket writes then disposes the buffer. Clone before a second emit.
+    public PartyUpdate CloneUnwritten()
+    {
+        return new PartyUpdate
+        {
+            PartyFlags = PartyFlags,
+            PartyIndex = PartyIndex,
+            PartyType = PartyType,
+            PartyGUID = PartyGUID,
+            LeaderGUID = LeaderGUID,
+            LeaderFactionGroup = LeaderFactionGroup,
+            MyIndex = MyIndex,
+            SequenceNum = SequenceNum,
+            PlayerList = new List<PartyPlayerInfo>(PlayerList),
+            LfgInfos = LfgInfos,
+            LootSettings = LootSettings,
+            DifficultySettings = DifficultySettings,
+        };
+    }
 }
 
 public struct PartyPlayerInfo
@@ -480,6 +500,65 @@ class SetPartyLeader : ClientPacket
 
     public sbyte PartyIndex;
     public WowGuid128 TargetGUID;
+}
+
+public class SetRole : ClientPacket
+{
+    public SetRole(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            bool hasPartyIndex = _worldPacket.HasBit();
+            ChangedUnit = _worldPacket.ReadPackedGuid128();
+            Role = _worldPacket.ReadUInt8();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
+        PartyIndex = (byte)_worldPacket.ReadInt8();
+        ChangedUnit = _worldPacket.ReadPackedGuid128();
+        Role = (byte)_worldPacket.ReadInt32();
+    }
+
+    public byte PartyIndex;
+    public WowGuid128 ChangedUnit;
+    public byte Role;
+}
+
+public class RoleChangedInform : ServerPacket, ISpanWritable
+{
+    public RoleChangedInform() : base(Opcode.SMSG_ROLE_CHANGED_INFORM) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteUInt8(PartyIndex);
+        _worldPacket.WritePackedGuid128(From);
+        _worldPacket.WritePackedGuid128(ChangedUnit);
+        _worldPacket.WriteUInt8(OldRole);
+        _worldPacket.WriteUInt8(NewRole);
+    }
+
+    public int MaxSize => 1 + PackedGuidHelper.MaxPackedGuid128Size * 2 + 2;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WriteUInt8(PartyIndex);
+        writer.WritePackedGuid128(From.Low, From.High);
+        writer.WritePackedGuid128(ChangedUnit.Low, ChangedUnit.High);
+        writer.WriteUInt8(OldRole);
+        writer.WriteUInt8(NewRole);
+        return writer.Position;
+    }
+
+    public byte PartyIndex;
+    public WowGuid128 From;
+    public WowGuid128 ChangedUnit;
+    public byte OldRole;
+    public byte NewRole;
 }
 
 class GroupNewLeader : ServerPacket, ISpanWritable

@@ -235,6 +235,16 @@ public partial class WorldClient
         SendPacketToClient(roleCheck);
     }
 
+    [PacketHandler(Opcode.SMSG_LFG_ROLE_CHOSEN)]
+    void HandleLFGRoleChosen(WorldPacket packet)
+    {
+        var chosen = new RoleChosen();
+        chosen.Player = packet.ReadGuid().To128(GetSession().GameState);
+        chosen.Accepted = packet.ReadUInt8() != 0;
+        chosen.RoleMask = (byte)packet.ReadUInt32();
+        SendPacketToClient(chosen);
+    }
+
     [PacketHandler(Opcode.SMSG_LFG_PARTY_INFO)]
     void HandleLFGPartyInfo(WorldPacket packet)
     {

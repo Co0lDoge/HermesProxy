@@ -158,6 +158,8 @@ public partial class WorldClient
             party.LeaderGUID = WowGuid128.Empty;
             party.MyIndex = -1;
             GetSession().GameState.CurrentGroups[party.PartyIndex] = null;
+            if (GetSession().GameState.CurrentGroups[0] == null && GetSession().GameState.CurrentGroups[1] == null)
+                GetSession().GameState.GroupAssignedRoles.Clear();
 
             if (!GetSession().GameState.WeWantToLeaveGroup)
                 SendPacketToClient(new GroupUninvite()); // Send kick message
@@ -181,8 +183,9 @@ public partial class WorldClient
         bool isLfg = (groupType & 0x08) != 0;
         byte ownSubGroup = packet.ReadUInt8();
         byte ownGroupFlags = packet.ReadUInt8();
+        byte ownRoles = 0;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
-            packet.ReadUInt8(); // own LFG roles
+            ownRoles = packet.ReadUInt8(); // own LFG roles
         byte lfgDungeonStatus = 0;
         uint lfgDungeonId = 0;
         if (isLfg)
@@ -278,6 +281,7 @@ public partial class WorldClient
             player.Subgroup = ownSubGroup;
             player.Flags = (GroupMemberFlags)ownGroupFlags;
             player.Status = GroupMemberOnlineStatus.Online;
+            player.RolesAssigned = ResolveAssignedRole(player.GUID, ownRoles);
             party.PlayerList.Add(player);
 
             bool allAssist = true;
@@ -289,8 +293,10 @@ public partial class WorldClient
                 member.Status = (GroupMemberOnlineStatus)packet.ReadUInt8();
                 member.Subgroup = packet.ReadUInt8();
                 member.Flags = (GroupMemberFlags)packet.ReadUInt8();
+                byte memberRoles = 0;
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
-                    packet.ReadUInt8(); // member LFG roles
+                    memberRoles = packet.ReadUInt8(); // member LFG roles
+                member.RolesAssigned = ResolveAssignedRole(member.GUID, memberRoles);
                 member.ClassId = GetSession().GameState.GetUnitClass(member.GUID);
                 if (!member.Flags.HasAnyFlag(GroupMemberFlags.Assistant))
                     allAssist = false;
@@ -330,6 +336,7 @@ public partial class WorldClient
             GetSession().GameState.WeWantToLeaveGroup = false;
             GetSession().GameState.LastAnnouncedPartyIndex = party.PartyIndex;
             GetSession().GameState.CurrentGroups[party.PartyIndex] = party;
+            PruneAssignedRoles(party.PlayerList);
         }
         else
         {
@@ -347,6 +354,8 @@ public partial class WorldClient
             party.LeaderGUID = WowGuid128.Empty;
             party.MyIndex = -1;
             GetSession().GameState.CurrentGroups[party.PartyIndex] = null;
+            if (GetSession().GameState.CurrentGroups[0] == null && GetSession().GameState.CurrentGroups[1] == null)
+                GetSession().GameState.GroupAssignedRoles.Clear();
 
             if (!GetSession().GameState.WeWantToLeaveGroup)
                 SendPacketToClient(new GroupUninvite()); // Send kick message
@@ -1474,5 +1483,44 @@ public partial class WorldClient
         roll.Roller = packet.ReadGuid().To128(GetSession().GameState);
         roll.RollerWowAccount = GetSession().GetGameAccountGuidForPlayer(roll.Roller);
         SendPacketToClient(roll);
+    }
+
+    byte ResolveAssignedRole(WowGuid128 guid, byte serverRole)
+    {
+        if (GetSession().GameState.GroupAssignedRoles.TryGetValue(guid, out var assigned))
+            return assigned;
+        return serverRole;
+    }
+
+    void PruneAssignedRoles(List<PartyPlayerInfo> members)
+    {
+        var assigned = GetSession().GameState.GroupAssignedRoles;
+        if (assigned.Count == 0)
+            return;
+
+        var keep = new HashSet<WowGuid128>();
+        foreach (var member in members)
+            keep.Add(member.GUID);
+
+        var otherIndex = GetSession().GameState.LastAnnouncedPartyIndex == 0 ? 1 : 0;
+        var other = GetSession().GameState.CurrentGroups[otherIndex];
+        if (other != null)
+        {
+            foreach (var member in other.PlayerList)
+                keep.Add(member.GUID);
+        }
+
+        List<WowGuid128>? drop = null;
+        foreach (var guid in assigned.Keys)
+        {
+            if (keep.Contains(guid))
+                continue;
+            drop ??= new List<WowGuid128>();
+            drop.Add(guid);
+        }
+        if (drop == null)
+            return;
+        foreach (var guid in drop)
+            assigned.Remove(guid);
     }
 }

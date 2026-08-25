@@ -188,6 +188,16 @@ public partial class WorldSocket
 
             // Enqueue the cast - responses will be matched by SpellId in FIFO order
             GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+
+            // Native 3.4.3 sends SpellPrepare before SpellStart so the client remaps
+            // its predicted ClientCastID onto the server CastID. Doing this on CMSG
+            // (not after the AC round-trip) keeps the action-bar / cast visual bound.
+            SendPacket(new SpellPrepare
+            {
+                ClientCastID = castRequest.ClientGUID,
+                ServerCastID = castRequest.ServerGUID,
+            });
+            castRequest.PrepareSent = true;
         }
 
         SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Cast.Target);

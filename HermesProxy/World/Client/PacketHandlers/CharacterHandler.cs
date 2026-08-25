@@ -223,6 +223,10 @@ public partial class WorldClient
             }
             Log.Print(LogType.Debug,
                 $"[CharEnum] applied order=[{string.Join(", ", charEnum.Characters.ConvertAll(c => $"{c.Name}:{c.ListPosition}"))}]");
+
+            GetSession().AccountMetaDataMgr.RememberRealmFromCharacterList(
+                realmName,
+                charEnum.Characters.ConvertAll(c => (c.Name!, c.Guid.Low)));
         }
 
         SendPacketToClient(charEnum);

@@ -394,10 +394,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 }
                 if (_connectType == ConnectionType.Realm)
                 {
-                    if (GetSession().AuthClient != null)
-                        GetSession().AuthClient.Disconnect();
-                    if (GetSession().WorldClient != null)
-                        GetSession().WorldClient!.Disconnect();
+                    // Change-realm sends this then a new AUTH_SESSION. Keep
+                    // AuthClient (SRP key) so the next WorldClient can log in.
+                    // Drop the stale RealmSocket pointer so early AC packets
+                    // queue instead of writing to this closing connection.
+                    GetSession().WorldClient?.Disconnect();
+                    if (GetSession().RealmSocket == this)
+                        GetSession().RealmSocket = null!;
                 }
                 if (GetSession().ModernSniff != null)
                 {
@@ -510,13 +513,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         if (!IsOpen())
         {
             Log.PrintNet(LogType.Error, LogNetDir.P2C, $"Can't send {packet.GetUniversalOpcode()}, socket is closed!");
-            if (GetSession() != null)
+            var session = GetSession();
+            if (session != null)
             {
-                if (GetSession().RealmSocket == this)
-                    GetSession().RealmSocket = null!;
-                else if (GetSession().InstanceSocket == this)
-                    GetSession().InstanceSocket = null!;
-                GetSession().OnDisconnect();
+                if (session.RealmSocket == this)
+                    session.RealmSocket = null!;
+                else if (session.InstanceSocket == this)
+                    session.InstanceSocket = null!;
             }
             return;
         }
@@ -950,7 +953,15 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         _worldCrypt.Initialize(_encryptKey);
         if (_connectType == ConnectionType.Realm)
         {
-            SendAuthResponse(BattlenetRpcErrorCode.Ok, GetSession().WorldClient!.GetQueuePosition());
+            var worldClient = GetSession().WorldClient;
+            if (worldClient == null)
+            {
+                Log.Print(LogType.Error, "HandleEnterEncryptedModeAck: WorldClient is gone, aborting realm login");
+                CloseSocket();
+                return;
+            }
+
+            SendAuthResponse(BattlenetRpcErrorCode.Ok, worldClient.GetQueuePosition());
             SendSetTimeZoneInformation();
             SendFeatureSystemStatusGlueScreen();
             SendClientCacheVersion(0);

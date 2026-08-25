@@ -629,8 +629,15 @@ public partial class AuthClient
 
     public void WaitOrRequestRealmList()
     {
-        if (!_realmlistRequestIsPending || !_hasRealmlist.Task.Wait(TimeSpan.FromSeconds(2)))
+        if (_hasRealmlist != null && _hasRealmlist.Task.IsCompletedSuccessfully)
+            return;
+
+        if (!IsConnected())
+            return;
+
+        if (!_realmlistRequestIsPending)
             SendRealmListUpdateRequest();
-        _hasRealmlist.Task.ConfigureAwait(false).GetAwaiter().GetResult();
+
+        _hasRealmlist?.Task.Wait(TimeSpan.FromSeconds(2));
     }
 }

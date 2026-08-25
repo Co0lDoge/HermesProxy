@@ -52,6 +52,7 @@ public partial class WorldClient
 
     Socket _clientSocket = null!;
     bool? _isSuccessful;
+    bool _closing;
     uint _queuePosition;
     string _username = null!;
     Realm _realm = null!;
@@ -176,16 +177,20 @@ public partial class WorldClient
 
     public void Disconnect()
     {
+        _closing = true;
         StopKeepAliveTimer();
+
+        // Unhook before closing so the receive loop does not treat this as an
+        // unexpected drop and call OnDisconnect (that nulls AuthClient, which
+        // change-realm still needs for the next CMSG_AUTH_SESSION).
+        if (GetSession().WorldClient == this)
+            GetSession().WorldClient = null;
 
         if (!IsConnected())
             return;
 
         _clientSocket.Shutdown(SocketShutdown.Both);
         _clientSocket.Disconnect(false);
-
-        if (GetSession().WorldClient == this)
-            GetSession().WorldClient = null;
     }
 
     public bool IsConnected()
@@ -251,12 +256,14 @@ public partial class WorldClient
         if (_isSuccessful == null)
         {
             _isSuccessful = false;
+            return;
         }
-        else
-        {
-            Disconnect();
-            GetSession().OnDisconnect();
-        }
+
+        if (_closing || GetSession().WorldClient != this)
+            return;
+
+        Disconnect();
+        GetSession().OnDisconnect();
     }
 
     private async Task ReceiveLoop()
@@ -318,7 +325,7 @@ public partial class WorldClient
             WorldClientLogMessages.PacketReadError(_melLog, e, _sourceFile, _netDirRecv, e.Message);
             if (_isSuccessful == null)
                 _isSuccessful = false;
-            else
+            else if (!_closing && GetSession().WorldClient == this)
             {
                 Disconnect();
                 GetSession().OnDisconnect();
@@ -398,17 +405,17 @@ public partial class WorldClient
         var pendingLock = gameState.PendingUninstancedPacketsLock;
         if (packet.GetConnection() == ConnectionType.Realm)
         {
-            // Legacy backends (CMaNGOS / TrinityCore 3.3.5a) emit early-session Realm packets
-            // (SMSG_TUTORIAL_FLAGS, SMSG_CACHE_VERSION, etc.) as soon as the legacy world auth
-            // handshake completes. But on the modern-client side, the BNet→Realm socket
-            // handoff is still in flight — RealmSocket is null for a brief window.
-            // Mirror the InstanceSocket pattern below: queue and flush in
-            // WorldSocket.HandleEnterEncryptedModeAck when RealmSocket is assigned.
-            if (GetSession().RealmSocket == null)
+            // First login: RealmSocket is null until ENTER_ENCRYPTED_MODE_ACK.
+            // Change-realm: it still points at the old closed socket. Treat a
+            // dead socket like null so TUTORIAL_FLAGS queues instead of landing
+            // on the old connection and calling OnDisconnect.
+            var realmSocket = GetSession().RealmSocket;
+            if (realmSocket == null || !realmSocket.IsOpen())
             {
                 lock (gameState.PendingRealmPacketsLock)
                 {
-                    if (GetSession().RealmSocket == null)
+                    realmSocket = GetSession().RealmSocket;
+                    if (realmSocket == null || !realmSocket.IsOpen())
                     {
                         gameState.PendingRealmPackets.Enqueue(packet);
                         Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Can't send opcode {packet.GetUniversalOpcode()} ({packet.GetOpcode()}) before RealmSocket ready! Queue");
@@ -417,7 +424,7 @@ public partial class WorldClient
                 }
             }
 
-            GetSession().RealmSocket.SendPacket(packet);
+            realmSocket.SendPacket(packet);
         }
         else
         {
@@ -664,6 +671,13 @@ public partial class WorldClient
     public void SendAuthResponse(uint clientSeed, uint serverSeed)
     {
         uint zero = 0;
+        var authClient = GetSession().AuthClient;
+        if (authClient == null)
+        {
+            Log.Print(LogType.Error, "WorldClient.SendAuthResponse: AuthClient was torn down before world auth.");
+            _isSuccessful = false;
+            return;
+        }
 
         byte[] authResponse;
         {
@@ -672,7 +686,7 @@ public partial class WorldClient
             ih.AppendData(BitConverter.GetBytes(zero));
             ih.AppendData(BitConverter.GetBytes(clientSeed));
             ih.AppendData(BitConverter.GetBytes(serverSeed));
-            ih.AppendData(GetSession().AuthClient.GetSessionKey());
+            ih.AppendData(authClient.GetSessionKey());
             authResponse = ih.GetHashAndReset();
         }
 
@@ -714,7 +728,7 @@ public partial class WorldClient
 
         SendPacket(packet);
 
-        InitializeEncryption(GetSession().AuthClient.GetSessionKey());
+        InitializeEncryption(authClient.GetSessionKey());
     }
 
     private void HandleAuthResponse(WorldPacket packet)

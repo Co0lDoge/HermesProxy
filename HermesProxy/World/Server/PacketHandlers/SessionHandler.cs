@@ -12,7 +12,6 @@ using Framework.Web;
 using Google.Protobuf;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Server.Packets;
-using AuthResult = HermesProxy.Auth.AuthResult;
 
 namespace HermesProxy.World.Server;
 
@@ -24,20 +23,19 @@ public partial class WorldSocket
         ChangeRealmTicketResponse response = new();
         response.Token = request.Token;
 
-        if (!GetSession().AuthClient.IsConnected() && GetSession().AuthClient.Reconnect() != AuthResult.SUCCESS)
+        // Native never re-auths here. The legacy auth socket is already closed
+        // after the first realm list; a full SRP login is rejected and Allow=false
+        // is WOW51900300. Realm list is served from cache.
+        if (_bnetRpc == null)
         {
-            Log.Print(LogType.Error, "Failed to reconnect to auth server.");
             response.Allow = false;
             SendPacket(response);
             return;
         }
-        // GetSession().AuthClient.SendRealmListUpdateRequest();
 
         _bnetRpc.SetClientSecret(request.Secret);
-
         response.Allow = true;
         response.Ticket = new ByteBuffer(new byte[1]);
-
         SendPacket(response);
     }
 

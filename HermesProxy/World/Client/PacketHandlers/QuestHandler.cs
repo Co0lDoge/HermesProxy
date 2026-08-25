@@ -633,13 +633,12 @@ public partial class WorldClient
         //       uint32 points.Count
         //       per point: int32 X, int32 Y
         //
-        // Field mapping (verified against HermesProxy-WOTLK fork — the community version known
-        // to render the V3_4_3.54261 "Default Quest Helper" blue polygons):
-        //   legacy WorldMapAreaID → modern UiMapID (NO retail-style lookup translation —
-        //     the V3_4_3 client preserves legacy WMA IDs; transforming via UiMap.db2 lookup
-        //     breaks rendering)
-        //   legacy FloorID        → modern Flags (NOT Priority — fork comment "floorId in legacy")
-        //   legacy Unk3/Unk4      → discarded
+        // Field mapping:
+        //   legacy WorldMapAreaID → modern UiMapID, translated to the Classic UiMap id the
+        //     V3_4_3 client expects (Teldrassil WMA 41 -> 1438). Retail UiMap ids are a
+        //     different set and do not work here; see GameData.GetUiMapId.
+        //   modern Flags          → synthesized below, NOT taken from the wire
+        //   legacy FloorID/Unk3/Unk4 → discarded
         // QuestObjectiveID synthesized from the cached QuestTemplate's objective IDs so the
         // client can associate the blob with a specific objective row in its tracker.
         QuestPOIQueryResponse response = new();
@@ -664,8 +663,10 @@ public partial class WorldClient
 
                 bool isV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
 
-                // V3_4_3 Classic keeps WorldMapArea IDs in this slot (Teldrassil 41
-                // renders; Cata UiMap 57 / Classic 1438 do not). Do not GetUiMapId.
+                // The V3_4_3 client wants a Classic UiMap id here, not the legacy
+                // WorldMapArea id. Zones outside the derived set fall back to the raw id.
+                if (isV343)
+                    blob.UiMapID = GameData.GetUiMapId(legacyWMA);
 
                 if (template != null && blob.ObjectiveIndex >= 0)
                     BindLegacyPoiObjective(blob, template);

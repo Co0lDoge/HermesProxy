@@ -78,7 +78,7 @@ public static partial class GameData
     public static FrozenDictionary<uint, TaxiPath> TaxiPaths = FrozenDictionary<uint, TaxiPath>.Empty;
     public static int[,] TaxiNodesGraph = new int[250, 250];
     public static FrozenDictionary<uint /*questId*/, uint /*questBit*/> QuestBits = FrozenDictionary<uint, uint>.Empty;
-    public static FrozenDictionary<int /*worldMapAreaId (legacy 3.3.5a)*/, int /*uiMapId (V3_4_3)*/> WorldMapAreaIDToUiMapID = FrozenDictionary<int, int>.Empty;
+    public static FrozenDictionary<int /*worldMapAreaId (legacy 3.3.5a)*/, int /*uiMapId (modern build)*/> WorldMapAreaIDToUiMapID = FrozenDictionary<int, int>.Empty;
 
     // From Server
     public static Dictionary<uint, ItemTemplate> ItemTemplates = [];
@@ -1553,9 +1553,23 @@ public static partial class GameData
         QuestBits = dict.ToFrozenDictionary();
     }
 
+    /// <summary>
+    /// Legacy 3.3.5a WorldMapArea id to the UiMap id the connected modern client expects.
+    /// The id sets differ per client generation, so the table is version-suffixed like the
+    /// other per-expansion CSVs; a build with no table falls back to the raw id.
+    /// <para>
+    /// The V3_4_3 table was derived by joining a legacy <c>quest_poi</c> against a native
+    /// 3.4.3 one on (QuestID, BlobIndex), so every row is backed by the quests that agree on
+    /// it. Each id was then confirmed to exist in <c>UiMap.db2</c> for build 3.4.3.54261.
+    /// Classic zones live in the 1400 range — Teldrassil is 1438, not retail 57.
+    /// </para>
+    /// </summary>
     public static void LoadWorldMapAreaIDToUiMapID()
     {
-        var path = Path.Combine("CSV", "WorldMapAreaIDToUiMapID.csv");
+        var path = Path.Combine("CSV", $"WorldMapAreaIDToUiMapID{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
         Dictionary<int, int> dict = [];
@@ -1568,8 +1582,13 @@ public static partial class GameData
         WorldMapAreaIDToUiMapID = dict.ToFrozenDictionary();
     }
 
+    /// <summary>
+    /// Returns the modern UiMap id for a legacy WorldMapArea, or the id unchanged when this
+    /// build has no mapping for it. Passing the raw id through is what shipped before the
+    /// table existed, so an unmapped zone is no worse off than it was.
+    /// </summary>
     public static int GetUiMapId(int worldMapAreaId) =>
-        WorldMapAreaIDToUiMapID.TryGetValue(worldMapAreaId, out int uiMapId) ? uiMapId : 0;
+        WorldMapAreaIDToUiMapID.TryGetValue(worldMapAreaId, out int uiMapId) ? uiMapId : worldMapAreaId;
 
     #endregion
     #region HotFixes

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using HermesProxy.World.Server.Packets;
 
 namespace HermesProxy.World.Server;
 
@@ -55,6 +56,20 @@ public static class LfgSlots
         for (uint id = TitanRuneAlphaHeaderId; id <= TitanRuneAlphaLastDungeonId; id++)
             yield return id;
     }
+
+    /// <summary>
+    /// V3_4_3 hides a row when SoftLock is Unk2. Same mapping the player-info
+    /// path already uses. Party-info used to write 0, which left Titan Rune /
+    /// out-of-range randoms greyed in the Type dropdown instead of gone.
+    /// </summary>
+    public static uint ToSoftLock(uint lockStatus) => (LFGLockStatus)lockStatus switch
+    {
+        LFGLockStatus.InsufficientExpansion
+        or LFGLockStatus.TooLowLevel
+        or LFGLockStatus.TooHighLevel
+        or LFGLockStatus.NotInSeason => (uint)LFGSoftLock.Unk2,
+        _ => (uint)LFGSoftLock.None,
+    };
 
     /// <summary>
     /// Packed slots to inject as SoftLock hide-rows so the 3.4.3 client drops the

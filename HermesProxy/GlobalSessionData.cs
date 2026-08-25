@@ -349,6 +349,16 @@ public sealed class GameSessionData
     // RequestedRoles against the queued dungeons: at 0 it greys out Leave Queue
     // with "Role unavailable for some dungeons". Native 3.4.3 echoes the stored
     // roles back (LFGHandler.cpp: sLFGMgr->GetRoles).
+    // Last time a party-member state update was forwarded, per member. A bot-filled
+    // battleground on AzerothCore produced 1,608 SMSG_PARTY_MEMBER_PARTIAL_STATE per
+    // second (roughly 107 per member per second): every bot step re-sends position and
+    // health for the whole raid. Only high-frequency-only updates are rate limited, and
+    // only for members the client cannot see — AzerothCore sends this packet exclusively
+    // to group members outside visibility range, so the data feeds raid frames and minimap
+    // dots, never a rendered unit's position.
+    // Interval is configurable: ThrottlingOptions.PartyMemberStateMinIntervalMs.
+    public readonly Dictionary<WowGuid128, long> LastPartyMemberStateTickMs = new();
+
     public byte LfgRequestedRoles;
     public readonly HashSet<uint> LfgKnownDungeonIds = new();
 
@@ -1496,6 +1506,7 @@ public class GlobalSessionData
     public LegacyServerOptions LegacyServerOptions { get; }
     public ProxyNetworkOptions NetworkOptions { get; }
     public DiagnosticsOptions DiagnosticsOptions { get; }
+    public ThrottlingOptions ThrottlingOptions { get; }
 
     // Pre-computed read-only struct used on the per-packet LogPacket hot path to avoid
     // an IOptions<T> getter chain on every send/recv.
@@ -1505,12 +1516,14 @@ public class GlobalSessionData
         ClientOptions clientOptions,
         LegacyServerOptions legacyServerOptions,
         ProxyNetworkOptions networkOptions,
-        DiagnosticsOptions diagnosticsOptions)
+        DiagnosticsOptions diagnosticsOptions,
+        ThrottlingOptions throttlingOptions)
     {
         ClientOptions = clientOptions;
         LegacyServerOptions = legacyServerOptions;
         NetworkOptions = networkOptions;
         DiagnosticsOptions = diagnosticsOptions;
+        ThrottlingOptions = throttlingOptions;
         PacketLogContext = new PacketLogContext(diagnosticsOptions.PacketsLog, clientOptions.ClientBuild);
 
         RealmManager = new RealmManager(clientOptions, networkOptions);

@@ -119,6 +119,9 @@ public class Program
         builder.Services.AddOptions<DiagnosticsOptions>()
             .Bind(builder.Configuration.GetSection(nameof(DiagnosticsOptions)))
             .ValidateOnStart();
+        builder.Services.AddOptions<ThrottlingOptions>()
+            .Bind(builder.Configuration.GetSection(nameof(ThrottlingOptions)))
+            .ValidateOnStart();
 
         builder.Services.AddSingleton<IPostConfigureOptions<ClientOptions>, ClientSeedParser>();
         builder.Services.AddSingleton<IPostConfigureOptions<LegacyServerOptions>, LegacyServerBuildResolver>();
@@ -165,6 +168,7 @@ public class Program
         [nameof(ProxyNetworkOptions.CertificatePfxPassword)] = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.CertificatePfxPassword)}",
 
         [nameof(DiagnosticsOptions.PacketsLog)]    = $"{nameof(DiagnosticsOptions)}:{nameof(DiagnosticsOptions.PacketsLog)}",
+        [nameof(ThrottlingOptions.PartyMemberStateMinIntervalMs)] = $"{nameof(ThrottlingOptions)}:{nameof(ThrottlingOptions.PartyMemberStateMinIntervalMs)}",
 
         [nameof(LoggingOptions.DebugOutput)]       = $"{nameof(LoggingOptions)}:{nameof(LoggingOptions.DebugOutput)}",
         [nameof(LoggingOptions.SpanStatsLog)]      = $"{nameof(LoggingOptions)}:{nameof(LoggingOptions.SpanStatsLog)}",

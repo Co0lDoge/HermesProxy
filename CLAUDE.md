@@ -43,6 +43,28 @@ dotnet run --project HermesProxy.Benchmarks -c Release -- --filter "*Name*"  # R
 - `FrozenDictionary` / `FrozenSet` for static lookup tables
 - `[MethodImpl(MethodImplOptions.AggressiveInlining)]` on hot-path methods
 
+## Logging
+
+**Use source-generated `[LoggerMessage]`. This applies to temporary debug logging too — no exceptions.**
+
+`Log.Print(LogType type, object text)` takes an already-built string. The `IsEnabled` check happens *inside*, so an interpolated call pays its full cost even when the level is disabled:
+
+```csharp
+// WRONG — string is built, GUID is ToString()'d, and the helper loops all run
+// before Log.Print gets a chance to discard it.
+Log.Print(LogType.Trace, $"[Trace] guid={guid} anyField={ScanAllSlots()} hp={u?.Health}");
+
+// RIGHT — generated method checks IsEnabled before formatting.
+UpdateHandlerLogMessages.ValuesTrace(_log, guid, hp);
+```
+
+- Add methods to the subsystem's `*LogMessages.cs` partial class (`World/Logging/`, `Auth/Logging/`, …). EventId ranges are reserved per subsystem — check the file header before picking one.
+- **`[LoggerMessage]` does not stop argument evaluation.** Anything expensive passed as an argument — a loop, a dictionary lookup, `ToString()` on a GUID or record — still runs at every call. Wrap those in an explicit `if (logger.IsEnabled(LogLevel.Trace))` block.
+- Never `ToString()` a `WowGuid128`/record in a log argument; the compiler-generated `ToString()` allocates.
+- `LogType.Server`/`Network`/`Storage` route to **Information** — enabled in production. `Trace` → Verbose, `Debug` → Debug.
+
+Temporary traces are how this rule gets broken: they outlive the bug they were added for, and an ungated one in a per-packet path costs on every packet forever. Write it the fast way the first time, or delete it before committing.
+
 ## Key Architecture
 
 ```

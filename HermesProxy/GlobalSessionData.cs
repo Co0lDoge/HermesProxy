@@ -138,6 +138,7 @@ public sealed class GameSessionData
     public uint LastDispellSpellId;
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
+    public ulong LastUsedEquipmentSetGuid;
     public int GroupUpdateCounter;
     public uint GroupReadyCheckResponses;
     public World.Server.Packets.PartyUpdate?[] CurrentGroups = new World.Server.Packets.PartyUpdate?[2];

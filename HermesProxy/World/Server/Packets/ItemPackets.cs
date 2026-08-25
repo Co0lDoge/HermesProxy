@@ -394,6 +394,24 @@ public class AutoEquipItem : ClientPacket
     public byte PackSlot;
 }
 
+public class AutoStoreBagItem : ClientPacket
+{
+    public AutoStoreBagItem(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Inv = new InvUpdate(_worldPacket);
+        ContainerSlotA = _worldPacket.ReadUInt8();
+        ContainerSlotB = _worldPacket.ReadUInt8();
+        SlotA = _worldPacket.ReadUInt8();
+    }
+
+    public InvUpdate Inv;
+    public byte ContainerSlotA;
+    public byte ContainerSlotB;
+    public byte SlotA;
+}
+
 class AutoEquipItemSlot : ClientPacket
 {
     public AutoEquipItemSlot(WorldPacket packet) : base(packet) { }

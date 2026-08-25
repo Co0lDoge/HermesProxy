@@ -128,6 +128,24 @@ public partial class WorldSocket
         SendPacketToServer(packet);
     }
 
+    [PacketHandler(Opcode.CMSG_AUTO_STORE_BAG_ITEM)]
+    void HandleAutoStoreBagItem(AutoStoreBagItem item)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_AUTO_STORE_BAG_ITEM);
+        byte srcBag = item.ContainerSlotA != Enums.Classic.InventorySlots.Bag0 ? ModernVersion.AdjustModernInventorySlotToLegacy(item.ContainerSlotA) : item.ContainerSlotA;
+        byte srcSlot = item.ContainerSlotA == Enums.Classic.InventorySlots.Bag0 ? ModernVersion.AdjustModernInventorySlotToLegacy(item.SlotA) : item.SlotA;
+        byte dstBag = item.ContainerSlotB != Enums.Classic.InventorySlots.Bag0 ? ModernVersion.AdjustModernInventorySlotToLegacy(item.ContainerSlotB) : item.ContainerSlotB;
+        packet.WriteUInt8(srcBag);
+        packet.WriteUInt8(srcSlot);
+        packet.WriteUInt8(dstBag);
+
+        Log.Print(LogType.Trace,
+            $"[InventoryTrace] CMSG_AUTO_STORE_BAG_ITEM forward: " +
+            $"raw(A={item.ContainerSlotA},{item.SlotA} B={item.ContainerSlotB}) → legacy bag={srcBag} slot={srcSlot} dst={dstBag}");
+
+        SendPacketToServer(packet);
+    }
+
     [PacketHandler(Opcode.CMSG_AUTO_EQUIP_ITEM)]
     [PacketHandler(Opcode.CMSG_AUTOSTORE_BANK_ITEM)]
     [PacketHandler(Opcode.CMSG_AUTOBANK_ITEM)]

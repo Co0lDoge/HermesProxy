@@ -269,14 +269,6 @@ public sealed class GameSessionData
     public Dictionary<WowGuid128, uint[]> ItemGems = [];
     public Dictionary<WowGuid128, Class> CreatureClasses = [];
 
-    // Per-GUID monster-move throttle. The V3_4_3 client OOMs when it receives
-    // hundreds of monster-moves per minute (observed: legacy server emits ~20/sec
-    // for nearby patrols, client allocates per-move and never frees fast enough).
-    // We drop moves for the same GUID arriving within MonsterMoveMinIntervalMs
-    // of the previous one for that GUID.
-    public Dictionary<WowGuid128, long> LastMonsterMoveTickMs = [];
-    public const int MonsterMoveMinIntervalMs = 250;
-
     // Last tick at which we synthesized CMSG_AREA_TRIGGER for each legacy id, used to
     // throttle resends while the player remains inside the proxy-side ghost-trigger
     // sphere. We can't one-shot: our sphere is generous and fires before the player

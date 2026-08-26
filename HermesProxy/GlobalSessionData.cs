@@ -262,6 +262,18 @@ public sealed class GameSessionData
     // (SMSG_SEND_KNOWN_SPELLS + SMSG_LEARNED_SPELL). BattlePetGuidToSummonSpell
     // is rebuilt whenever we emit SMSG_BATTLE_PET_JOURNAL.
     public HashSet<uint> KnownSpells = [];
+
+    /// <summary>
+    /// LootObj per open group-loot roll, keyed by item slot (LootListID).
+    ///
+    /// 3.3.5a only sends the loot object in SMSG_LOOT_START_ROLL and SMSG_LOOT_ALL_PASSED
+    /// (both use <c>roll.itemGUID</c>). The result packets pass <c>ObjectGuid::Empty</c> —
+    /// see AzerothCore Group.cpp SendLootRoll / SendLootRollWon — so forwarding what the
+    /// wire carries gave the modern client a roll for a loot object it had never been told
+    /// about, and it could not tie the roll back to the open dialog. Native 3.4.3 repeats
+    /// the same guid in every packet of the roll. Issue #162.
+    /// </summary>
+    public Dictionary<byte, WowGuid128> LootRollObjects = [];
     public Dictionary<WowGuid128, uint> BattlePetGuidToSummonSpell = [];
     public WowGuid128 SummonedBattlePetGuid;
     public WowGuid128 SummonedCompanionCreatureGuid;

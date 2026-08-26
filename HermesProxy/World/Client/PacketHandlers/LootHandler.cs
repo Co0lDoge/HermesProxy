@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -200,6 +200,11 @@ public partial class WorldClient
             loot.ValidRolls = (RollMask)packet.ReadUInt8();
         else
             loot.ValidRolls = RollMask.AllNoDisenchant;
+
+        // Only this packet and SMSG_LOOT_ALL_PASSED carry the loot object on 3.3.5a; the
+        // result packets send an empty guid. Remember it so they can be given the same one.
+        GetSession().GameState.LootRollObjects[loot.Item.LootListID] = loot.LootObj;
+
         SendPacketToClient(loot);
 
         if (GetSession().GameState.IsPassingOnLoot)
@@ -212,6 +217,24 @@ public partial class WorldClient
         }
     }
 
+    /// <summary>
+    /// 3.3.5a sends <c>ObjectGuid::Empty</c> as the loot object on SMSG_LOOT_ROLL and
+    /// SMSG_LOOT_ROLL_WON (AzerothCore Group.cpp SendLootRoll / SendLootRollWon), so the
+    /// value on the wire cannot be forwarded — the modern client needs the same LootObj it
+    /// was given in SMSG_LOOT_START_ROLL or it cannot match the roll to the open dialog.
+    /// Falls back to whatever the packet carried when the slot was never announced, which
+    /// keeps behaviour unchanged on a backend that does populate it.
+    /// </summary>
+    private WowGuid128 ResolveLootRollObject(byte lootListId, WowGuid64 legacyOwner, WowGuid128 converted)
+    {
+        if (!legacyOwner.IsEmpty())
+            return converted;
+
+        return GetSession().GameState.LootRollObjects.TryGetValue(lootListId, out var remembered)
+            ? remembered
+            : converted;
+    }
+
     [PacketHandler(Opcode.SMSG_LOOT_ROLL)]
     void HandleLootRoll(WorldPacket packet)
     {
@@ -219,6 +242,7 @@ public partial class WorldClient
         WowGuid64 owner = packet.ReadGuid();
         loot.LootObj = owner.ToLootGuid();
         loot.Item.LootListID = (byte)packet.ReadUInt32();
+        loot.LootObj = ResolveLootRollObject(loot.Item.LootListID, owner, loot.LootObj);
         loot.Player = packet.ReadGuid().To128(GetSession().GameState);
         loot.Item.Loot.ItemID = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesSeed = packet.ReadUInt32();
@@ -247,8 +271,10 @@ public partial class WorldClient
     void HandleLootRollWon(WorldPacket packet)
     {
         LootRollWon loot = new LootRollWon();
-        loot.LootObj = packet.ReadGuid().ToLootGuid();
+        WowGuid64 wonOwner = packet.ReadGuid();
+        loot.LootObj = wonOwner.ToLootGuid();
         loot.Item.LootListID = (byte)packet.ReadUInt32();
+        loot.LootObj = ResolveLootRollObject(loot.Item.LootListID, wonOwner, loot.LootObj);
         loot.Item.Loot.ItemID = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesSeed = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesID = packet.ReadUInt32();
@@ -264,6 +290,9 @@ public partial class WorldClient
         complete.LootObj = loot.LootObj;
         complete.LootListID = loot.Item.LootListID;
         SendPacketToClient(complete);
+
+        // The roll is over; drop the remembered loot object so the slot can be reused.
+        GetSession().GameState.LootRollObjects.Remove(loot.Item.LootListID);
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_ALL_PASSED)]
@@ -282,6 +311,9 @@ public partial class WorldClient
         complete.LootObj = loot.LootObj;
         complete.LootListID = loot.Item.LootListID;
         SendPacketToClient(complete);
+
+        // The roll is over; drop the remembered loot object so the slot can be reused.
+        GetSession().GameState.LootRollObjects.Remove(loot.Item.LootListID);
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_MASTER_LIST)]

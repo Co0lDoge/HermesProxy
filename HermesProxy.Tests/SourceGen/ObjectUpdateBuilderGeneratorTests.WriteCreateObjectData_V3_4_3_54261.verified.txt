@@ -20,6 +20,7 @@ public partial class ObjectUpdateBuilder
         ApplyActivePlayerGlyphsMaskMutator(ref blocks, src);
         if (HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyKnownTitle(src.KnownTitles)) { blocks.SetBit(0); blocks.SetBit(3); }
         if (src.FarsightObject != null) { blocks.SetBit(0); blocks.SetBit(26); }
+        if (src.SummonedBattlePetGUID != null) { blocks.SetBit(0); blocks.SetBit(27); }
         if (src.Coinage.HasValue) { blocks.SetBit(0); blocks.SetBit(28); }
         if (src.XP.HasValue) { blocks.SetBit(0); blocks.SetBit(29); }
         if (src.NextLevelXP.HasValue) { blocks.SetBit(0); blocks.SetBit(30); }
@@ -1353,6 +1354,7 @@ public partial class ObjectUpdateBuilder
         if (blocksMask0 == 0 && blocksMask1 == 0) return;
         if (blocks.IsBitSet(3)) WriteUpdateActivePlayerKnownTitlesBody(data, src);
         if (blocks.IsBitSet(26)) data.WritePackedGuid128(src.FarsightObject!.Value);
+        if (blocks.IsBitSet(27)) data.WritePackedGuid128(src.SummonedBattlePetGUID!.Value);
         if (blocks.IsBitSet(28)) data.WriteUInt64(src.Coinage!.Value);
         if (blocks.IsBitSet(29)) data.WriteInt32(src.XP!.Value);
         if (blocks.IsBitSet(30)) data.WriteInt32(src.NextLevelXP!.Value);
@@ -2681,6 +2683,7 @@ public partial class ObjectUpdateBuilder
         if (_gameState.ActiveGlyphsDirty) return true;
         if (HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyKnownTitle(src.KnownTitles)) return true;
         if (src.FarsightObject != null) return true;
+        if (src.SummonedBattlePetGUID != null) return true;
         if (src.Coinage.HasValue) return true;
         if (src.XP.HasValue) return true;
         if (src.NextLevelXP.HasValue) return true;
@@ -3549,8 +3552,8 @@ public partial class ObjectUpdateBuilder
         data.WritePackedGuid128(HermesProxy.World.WowGuid128.Empty);
         data.WritePackedGuid128(HermesProxy.World.WowGuid128.Empty);
         data.WritePackedGuid128(src.Target ?? HermesProxy.World.WowGuid128.Empty);
-        data.WritePackedGuid128(HermesProxy.World.WowGuid128.Empty);
-        data.WriteUInt64(0uL);
+        data.WritePackedGuid128(src.BattlePetCompanionGUID ?? HermesProxy.World.WowGuid128.Empty);
+        data.WriteUInt64(src.BattlePetDBID.GetValueOrDefault());
         WriteCreateUnitChannelDataInline(data, src);
         data.WriteUInt32(0u);
         WriteCreateUnitRaceId(data, src);
@@ -3714,10 +3717,13 @@ public partial class ObjectUpdateBuilder
         if (src.NpcFlags != null && src.NpcFlags[1].HasValue && src.NpcFlags[1] != 0) { blocks.SetBit(113); blocks.SetBit(115); }
         if (src.Charm != null) { blocks.SetBit(11); }
         if (src.Summon != null) { blocks.SetBit(12); }
+        if (src.Critter != null) { blocks.SetBit(13); }
         if (src.CharmedBy != null) { blocks.SetBit(14); }
         if (src.SummonedBy != null) { blocks.SetBit(15); }
         if (src.CreatedBy != null) { blocks.SetBit(16); }
         if (src.Target != null) { blocks.SetBit(19); }
+        if (src.BattlePetCompanionGUID != null) { blocks.SetBit(20); }
+        if (src.BattlePetDBID.HasValue) { blocks.SetBit(21); }
         if (src.ChannelData.HasValue) { blocks.SetBit(22); }
         if (src.RaceId.HasValue) { blocks.SetBit(24); }
         if (src.ClassId.HasValue) { blocks.SetBit(25); }
@@ -3883,10 +3889,13 @@ public partial class ObjectUpdateBuilder
         if (blocks.IsBitSet(7)) data.WriteInt32(src.DisplayID!.Value);
         if (blocks.IsBitSet(11)) data.WritePackedGuid128(src.Charm!.Value);
         if (blocks.IsBitSet(12)) data.WritePackedGuid128(src.Summon!.Value);
+        if (blocks.IsBitSet(13)) data.WritePackedGuid128(src.Critter!.Value);
         if (blocks.IsBitSet(14)) data.WritePackedGuid128(src.CharmedBy!.Value);
         if (blocks.IsBitSet(15)) data.WritePackedGuid128(src.SummonedBy!.Value);
         if (blocks.IsBitSet(16)) data.WritePackedGuid128(src.CreatedBy!.Value);
         if (blocks.IsBitSet(19)) data.WritePackedGuid128(src.Target!.Value);
+        if (blocks.IsBitSet(20)) data.WritePackedGuid128(src.BattlePetCompanionGUID!.Value);
+        if (blocks.IsBitSet(21)) data.WriteUInt64(src.BattlePetDBID!.Value);
         if (blocks.IsBitSet(22)) WriteUpdateUnitChannelDataInline(data, src);
         if (blocks.IsBitSet(24)) data.WriteUInt8(src.RaceId!.Value);
         if (blocks.IsBitSet(25)) data.WriteUInt8(src.ClassId!.Value);
@@ -3982,10 +3991,13 @@ public partial class ObjectUpdateBuilder
         if (src.NpcFlags[1].HasValue && src.NpcFlags[1] != 0) return true;
         if (src.Charm != null) return true;
         if (src.Summon != null) return true;
+        if (src.Critter != null) return true;
         if (src.CharmedBy != null) return true;
         if (src.SummonedBy != null) return true;
         if (src.CreatedBy != null) return true;
         if (src.Target != null) return true;
+        if (src.BattlePetCompanionGUID != null) return true;
+        if (src.BattlePetDBID.HasValue) return true;
         if (src.ChannelData.HasValue) return true;
         if (src.RaceId.HasValue) return true;
         if (src.ClassId.HasValue) return true;

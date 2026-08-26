@@ -61,8 +61,8 @@ public enum UnitField
     [DescriptorCreateField(nameof(UnitData.Summon), DescriptorType.PackedGuid128)]
     [DescriptorUpdateField(nameof(UnitData.Summon), DescriptorType.PackedGuid128, bit: 12)]
     UNIT_SUMMON,
-    // Critter — Create owner-only, no Update bit (hand-port doesn't track in Update).
     [DescriptorCreateField(nameof(UnitData.Critter), DescriptorType.PackedGuid128, OwnerOnly = true)]
+    [DescriptorUpdateField(nameof(UnitData.Critter), DescriptorType.PackedGuid128, bit: 13)]
     UNIT_CRITTER_OWNER,
     [DescriptorCreateField(nameof(UnitData.CharmedBy), DescriptorType.PackedGuid128)]
     [DescriptorUpdateField(nameof(UnitData.CharmedBy), DescriptorType.PackedGuid128, bit: 14)]
@@ -80,13 +80,15 @@ public enum UnitField
     [DescriptorCreateField(nameof(UnitData.Target), DescriptorType.PackedGuid128)]
     [DescriptorUpdateField(nameof(UnitData.Target), DescriptorType.PackedGuid128, bit: 19)]
     UNIT_TARGET,
-    [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128)]
-    UNIT_PAD_GUID_3,
+    [DescriptorCreateField(nameof(UnitData.BattlePetCompanionGUID), DescriptorType.PackedGuid128)]
+    [DescriptorUpdateField(nameof(UnitData.BattlePetCompanionGUID), DescriptorType.PackedGuid128, bit: 20)]
+    UNIT_BATTLE_PET_COMPANION_GUID,
 
-    // ---- UInt64 placeholder + ChannelData composite + UInt32 placeholder ----
+    // ---- BattlePetDBID (bit 21) + ChannelData composite + UInt32 placeholder ----
 
-    [DescriptorCreatePlaceholder(DescriptorType.UInt64)]
-    UNIT_PAD_5,
+    [DescriptorCreateField(nameof(UnitData.BattlePetDBID), DescriptorType.UInt64)]
+    [DescriptorUpdateField(nameof(UnitData.BattlePetDBID), DescriptorType.UInt64, bit: 21)]
+    UNIT_BATTLE_PET_DBID,
 
     // ChannelData: scalar CustomWriter on both Create (existing) and Update.
     // Update predicate is the standard "!= null"; CustomWriter inlines 2× Int32.

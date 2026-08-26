@@ -84,6 +84,17 @@ public class PlayerSettings
         // The player can request a change in the Interface settings
         // but the actual value has to be reflected in the local CharacterFlags
         public bool AutoBlockGuildInvites { get; set; }
+        public uint LastSummonedPetSpecies { get; set; }
+    }
+
+    public uint LastSummonedPetSpecies => _internalStorage.LastSummonedPetSpecies;
+
+    public void SetLastSummonedPetSpecies(uint speciesId)
+    {
+        if (_internalStorage.LastSummonedPetSpecies == speciesId)
+            return;
+        _internalStorage.LastSummonedPetSpecies = speciesId;
+        Save();
     }
 
     public void Reload()

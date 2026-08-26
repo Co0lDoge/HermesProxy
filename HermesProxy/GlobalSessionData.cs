@@ -258,6 +258,15 @@ public sealed class GameSessionData
     // (V3_4_3) so a relog re-emits real data without waiting for the legacy server's
     // post-login push.
     public TalentInfoCache? TalentInfo;
+    // Companion / battle-pet journal. KnownSpells is the full legacy spellbook
+    // (SMSG_SEND_KNOWN_SPELLS + SMSG_LEARNED_SPELL). BattlePetGuidToSummonSpell
+    // is rebuilt whenever we emit SMSG_BATTLE_PET_JOURNAL.
+    public HashSet<uint> KnownSpells = [];
+    public Dictionary<WowGuid128, uint> BattlePetGuidToSummonSpell = [];
+    public WowGuid128 SummonedBattlePetGuid;
+    public WowGuid128 SummonedCompanionCreatureGuid;
+    public WowGuid64 SummonedCompanionLegacyGuid;
+    public CollectionFavorites? CollectionFavorites;
     // V3_4_3 DK rune snapshot. Null for non-DK or non-V3_4_3 sessions; allocated by
     // CharacterHandler.HandlePlayerLogin when the chosen char is a DK and the modern
     // client is V3_4_3_54261. Read by V3_4_3 ObjectUpdateBuilder (CREATE path) and

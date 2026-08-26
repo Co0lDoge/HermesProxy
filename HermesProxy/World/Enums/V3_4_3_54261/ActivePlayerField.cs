@@ -85,7 +85,8 @@ public enum ActivePlayerField
 
     [DescriptorUpdateField(nameof(ActivePlayerData.FarsightObject), DescriptorType.PackedGuid128, bit: 26, ParentBit = 0)]
     ACTIVEPLAYER_FARSIGHT_OBJECT,
-    // bit 27: SummonedBattlePetGUID — not used
+    [DescriptorUpdateField(nameof(ActivePlayerData.SummonedBattlePetGUID), DescriptorType.PackedGuid128, bit: 27, ParentBit = 0)]
+    ACTIVEPLAYER_SUMMONED_BATTLE_PET_GUID,
     [DescriptorUpdateField(nameof(ActivePlayerData.Coinage), DescriptorType.UInt64, bit: 28, ParentBit = 0)]
     ACTIVEPLAYER_COINAGE,
     [DescriptorUpdateField(nameof(ActivePlayerData.XP), DescriptorType.Int32, bit: 29, ParentBit = 0)]

@@ -485,6 +485,7 @@ public class UpdateObject : ServerPacket
             if (unit.Health.HasValue || unit.MaxHealth.HasValue || unit.DisplayID.HasValue) return false;
             if (unit.Charm != null || unit.Summon != null || unit.CharmedBy != null) return false;
             if (unit.SummonedBy != null || unit.CreatedBy != null || unit.Target != null) return false;
+            if (unit.Critter != null || unit.BattlePetCompanionGUID != null) return false;
             if (unit.ChannelData != null || unit.ChannelObject != null) return false;
             if (unit.RaceId.HasValue || unit.ClassId.HasValue || unit.SexId.HasValue) return false;
             if (unit.Level.HasValue || unit.EffectiveLevel.HasValue || unit.DisplayPower.HasValue) return false;
@@ -542,6 +543,7 @@ public class UpdateObject : ServerPacket
             if (ap.Coinage.HasValue || ap.XP.HasValue || ap.NextLevelXP.HasValue) return false;
             if (ap.CharacterPoints.HasValue) return false;
             if (ap.FarsightObject != null) return false;
+            if (ap.SummonedBattlePetGUID != null) return false;
             // PLAYER_FIELD_BYTES (legacy) splits into these four bytes on the modern
             // descriptor. A Values delta for CMSG_SET_ACTION_BAR_TOGGLES lights only
             // MultiActionBars; without this probe the filter dropped the packet and

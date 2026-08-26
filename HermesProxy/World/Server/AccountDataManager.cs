@@ -17,6 +17,7 @@ public class AccountMetaDataManager
     private const string COMPLETED_QUESTS_FILE = "completed_quests.csv";
     private const string SETTINGS_FILE = "settings.json";
     private const string CHAR_LIST_ORDER_FILE = "char_list_order.txt";
+    private const string COLLECTION_FAVORITES_FILE = "collection_favorites.json";
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly string _accountName;
@@ -219,6 +220,29 @@ public class AccountMetaDataManager
 
         return loadedJson!;
     }
+
+    public CollectionFavorites LoadCollectionFavorites()
+    {
+        var path = Path.Combine(GetAccountMetaDataDirectory(), COLLECTION_FAVORITES_FILE);
+        if (!File.Exists(path))
+            return new CollectionFavorites();
+
+        var loaded = JsonSerializer.Deserialize<CollectionFavorites>(File.ReadAllText(path, Encoding.UTF8));
+        return loaded ?? new CollectionFavorites();
+    }
+
+    public void SaveCollectionFavorites(CollectionFavorites favorites)
+    {
+        var path = Path.Combine(GetAccountMetaDataDirectory(), COLLECTION_FAVORITES_FILE);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(path, JsonSerializer.Serialize(favorites, options), Encoding.UTF8);
+    }
+}
+
+public sealed class CollectionFavorites
+{
+    public HashSet<uint> FavoritePetSpecies { get; set; } = [];
+    public HashSet<uint> FavoriteMountSpells { get; set; } = [];
 }
 
 public class AccountData

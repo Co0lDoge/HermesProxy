@@ -72,6 +72,20 @@ public class CurrentPlayerStorageTests : IDisposable
     }
 
     [Fact]
+    public void CollectionFavorites_RoundTrip_KeepsPetAndMountStars()
+    {
+        var mgr = new AccountMetaDataManager(_accountName);
+        var saved = new CollectionFavorites();
+        saved.FavoritePetSpecies.Add(59);
+        saved.FavoriteMountSpells.Add(40192);
+        mgr.SaveCollectionFavorites(saved);
+
+        var loaded = new AccountMetaDataManager(_accountName).LoadCollectionFavorites();
+        Assert.Contains(59u, loaded.FavoritePetSpecies);
+        Assert.Contains(40192u, loaded.FavoriteMountSpells);
+    }
+
+    [Fact]
     public void LoadCurrentPlayer_PublishesFullyLoadedInstances()
     {
         var storage = new CurrentPlayerStorage(CreateSession());

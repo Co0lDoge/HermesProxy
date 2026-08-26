@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
@@ -33,7 +34,23 @@ public partial class WorldClient
             spells.KnownSpells.Add(spellId);
             packet.ReadInt16();
         }
+
+        var known = GetSession().GameState.KnownSpells;
+        known.Clear();
+        foreach (uint id in spells.KnownSpells)
+            known.Add(id);
+
         SendPacketToClient(spells);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            var session = GetSession();
+            if (session.GameState.CollectionFavorites == null)
+                session.GameState.CollectionFavorites = session.AccountMetaDataMgr.LoadCollectionFavorites();
+            SendPacketToClient(BattlePetJournal.FromSession(session.GameState));
+            SendPacketToClient(AccountMountUpdate.FromSession(session.GameState));
+            RestoreSummonedBattlePet(session);
+        }
 
         ushort cooldownCount = packet.ReadUInt16();
         if (cooldownCount != 0)
@@ -92,6 +109,27 @@ public partial class WorldClient
         }
     }
 
+    void RestoreSummonedBattlePet(GlobalSessionData session)
+    {
+        uint speciesId = session.GameState.CurrentPlayerStorage?.Settings?.LastSummonedPetSpecies ?? 0;
+        if (speciesId == 0 || !GameData.TryGetSummonSpellForSpecies(speciesId, out uint spellId))
+            return;
+        if (!session.GameState.KnownSpells.Contains(spellId))
+            return;
+
+        var guid = WowGuid128.Create(HighGuidType703.BattlePet, speciesId);
+        session.GameState.SummonedBattlePetGuid = guid;
+        session.GameState.BattlePetGuidToSummonSpell[guid] = spellId;
+
+        WorldPacket cast = new WorldPacket(Opcode.CMSG_CAST_SPELL);
+        cast.WriteUInt8(0);
+        cast.WriteUInt32(spellId);
+        cast.WriteUInt8(0);
+        cast.WriteUInt32(0);
+        SendPacketToServer(cast);
+        CollectionSync.SendSummonedBattlePet(session);
+    }
+
     [PacketHandler(Opcode.SMSG_SUPERCEDED_SPELLS)]
     void HandleSupercededSpells(WorldPacket packet)
     {
@@ -119,7 +157,16 @@ public partial class WorldClient
         LearnedSpells spells = new LearnedSpells();
         uint spellId = packet.ReadUInt32();
         spells.Spells.Add(spellId);
+        GetSession().GameState.KnownSpells.Add(spellId);
         SendPacketToClient(spells);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            if (GameData.TryGetBattlePetSpecies(spellId, out _))
+                SendPacketToClient(BattlePetJournal.FromSession(GetSession().GameState));
+            else if (GameData.MountSpells.Contains(spellId))
+                SendPacketToClient(AccountMountUpdate.FromSession(GetSession().GameState));
+        }
     }
 
     [PacketHandler(Opcode.SMSG_SEND_UNLEARN_SPELLS)]
@@ -145,7 +192,12 @@ public partial class WorldClient
         else
             spellId = packet.ReadUInt16();
         spells.Spells.Add(spellId);
+        bool wasCompanion = GetSession().GameState.KnownSpells.Remove(spellId)
+            && GameData.TryGetBattlePetSpecies(spellId, out _);
         SendPacketToClient(spells);
+
+        if (wasCompanion && ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            SendPacketToClient(BattlePetJournal.FromSession(GetSession().GameState));
     }
 
     [PacketHandler(Opcode.SMSG_CAST_FAILED)]
@@ -523,6 +575,11 @@ public partial class WorldClient
 
         ApplyV343NativeCastPolicy(spell.Cast, isSpellGo: true);
         SendPacketToClient(spell);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit
+            && GameData.TryGetBattlePetSpecies((uint)spell.Cast.SpellID, out _))
+            HermesProxy.World.Server.CollectionSync.SendSummonedBattlePet(GetSession());
     }
 
     // Native 3.4.3 (Xian55 + CypherCore) and AzerothCore share the same flag

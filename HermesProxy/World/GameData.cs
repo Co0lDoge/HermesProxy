@@ -61,6 +61,9 @@ public static partial class GameData
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<ushort, uint> GlyphSpellById = FrozenDictionary<ushort, uint>.Empty;
     public static FrozenSet<int> Heirlooms = FrozenSet<int>.Empty;
+    public static FrozenDictionary<uint, BattlePetSpeciesInfo> BattlePetSpeciesBySummonSpell
+        = FrozenDictionary<uint, BattlePetSpeciesInfo>.Empty;
+    public static FrozenSet<uint> MountSpells = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
@@ -608,6 +611,8 @@ public static partial class GameData
             LoadGems,
             LoadGlyphProperties,
             LoadHeirlooms,
+            LoadBattlePetSpecies,
+            LoadMountSpells,
             LoadCreatureDisplayInfo,
             LoadCreatureModelCollisionHeights,
             LoadTransports,
@@ -1174,6 +1179,79 @@ public static partial class GameData
             ids.Add(int.Parse(row[1].Span));
 
         Heirlooms = ids.ToFrozenSet();
+    }
+
+    // BattlePetSpecies.db2 for V3_4_3.54261, keyed by SummonSpellID so a learned
+    // 3.3.5a companion spell can fill SMSG_BATTLE_PET_JOURNAL. WotLK-range spells
+    // only (SummonSpellID <= 80864). Sourced from wago.tools ?build=3.4.3.54261.
+    public static void LoadBattlePetSpecies()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"BattlePetSpecies{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<uint, BattlePetSpeciesInfo>(EstimateRowCount(path, 24));
+        foreach (var row in reader)
+        {
+            uint speciesId = uint.Parse(row[0].Span);
+            uint summonSpellId = uint.Parse(row[1].Span);
+            uint creatureId = uint.Parse(row[2].Span);
+            uint flags = uint.Parse(row[3].Span);
+            dict[summonSpellId] = new BattlePetSpeciesInfo(speciesId, creatureId, flags);
+        }
+        BattlePetSpeciesBySummonSpell = dict.ToFrozenDictionary();
+    }
+
+    public static bool TryGetBattlePetSpecies(uint summonSpellId, out BattlePetSpeciesInfo species)
+        => BattlePetSpeciesBySummonSpell.TryGetValue(summonSpellId, out species);
+
+    public static bool TryGetSpeciesByCreatureId(uint creatureId, out BattlePetSpeciesInfo species)
+    {
+        foreach (var kv in BattlePetSpeciesBySummonSpell)
+        {
+            if (kv.Value.CreatureId == creatureId)
+            {
+                species = kv.Value;
+                return true;
+            }
+        }
+        species = default;
+        return false;
+    }
+
+    public static bool TryGetSummonSpellForSpecies(uint speciesId, out uint summonSpellId)
+    {
+        foreach (var kv in BattlePetSpeciesBySummonSpell)
+        {
+            if (kv.Value.SpeciesId == speciesId)
+            {
+                summonSpellId = kv.Key;
+                return true;
+            }
+        }
+        summonSpellId = 0;
+        return false;
+    }
+
+    // Mount.db2 SourceSpellID for V3_4_3.54261, WotLK-range spells only.
+    public static void LoadMountSpells()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"Mount{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 12));
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+        MountSpells = set.ToFrozenSet();
     }
 
     public static void LoadCreatureDisplayInfo()
@@ -4764,6 +4842,7 @@ public static partial class GameData
     }
 
     public record CreatureDisplayInfo(uint ModelId, float DisplayScale);
+    public readonly record struct BattlePetSpeciesInfo(uint SpeciesId, uint CreatureId, uint Flags);
     public record CreatureModelCollisionHeight(float ModelScale, float Height, float MountHeight);
 
     // Hotfix structures

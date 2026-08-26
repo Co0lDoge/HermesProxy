@@ -824,7 +824,8 @@ public partial class ObjectUpdateBuilder
             data.WritePackedGuid128(GetModernInvSlot(active, i) ?? WowGuid128.Empty);
 
         data.WritePackedGuid128(active.FarsightObject ?? WowGuid128.Empty);       // bit 26: FarsightObject (PackedGuid128)
-        data.WritePackedGuid128(WowGuid128.Empty);                                 // bit 27: SummonedBattlePetGUID (PackedGuid128) — descriptor: not used
+        data.WritePackedGuid128(active.SummonedBattlePetGUID
+            ?? _gameState.SummonedBattlePetGuid);                                  // bit 27: SummonedBattlePetGUID
         data.WriteUInt32(0u);                                                      // bit 3 dynamic field: KnownTitles.size — proxy does not track titles
         data.WriteUInt64(active.Coinage.GetValueOrDefault());                      // bit 28: Coinage (UInt64)
         data.WriteInt32(active.XP.GetValueOrDefault());                            // bit 29: XP (Int32)

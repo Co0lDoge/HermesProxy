@@ -27,6 +27,13 @@ public partial class WorldClient
         }
         GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
 
+        var companion = GetSession().GameState.SummonedCompanionCreatureGuid;
+        if (!companion.IsEmpty() && guid == companion)
+        {
+            GetSession().GameState.SummonedCompanionCreatureGuid = WowGuid128.Empty;
+            GetSession().GameState.SummonedCompanionLegacyGuid = WowGuid64.Empty;
+        }
+
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
         updateObject.DestroyedGuids.Add(guid);
         SendPacketToClient(updateObject);
@@ -240,6 +247,7 @@ public partial class WorldClient
                     ObjectUpdate updateData = new ObjectUpdate(guid, UpdateTypeModern.CreateObject1, GetSession());
                     AuraUpdate auraUpdate = new AuraUpdate(guid, true);
                     ReadCreateObjectBlock(packet, ref guid, updateData, auraUpdate, i);
+                    HermesProxy.World.Server.CollectionSync.StampCompanionCreature(updateData, GetSession(), oldGuid);
 
                     TraceNpcBotCreateObject("CreateObject1", oldGuid, guid, updateData);
 
@@ -254,7 +262,10 @@ public partial class WorldClient
                     // tied to first-creation type.)
 
                     if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
+                    {
                         GetSession().GameState.CurrentPlayerStorage.CompletedQuests.WriteAllCompletedIntoArray(updateData.ActivePlayerData.QuestCompleted);
+                        HermesProxy.World.Server.CollectionSync.StampSummonedBattlePet(updateData, GetSession().GameState);
+                    }
 
                     if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
                        !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
@@ -324,6 +335,7 @@ public partial class WorldClient
                     ObjectUpdate updateData = new ObjectUpdate(guid, UpdateTypeModern.CreateObject2, GetSession());
                     AuraUpdate auraUpdate = new AuraUpdate(guid, true);
                     ReadCreateObjectBlock(packet, ref guid, updateData, auraUpdate, i);
+                    HermesProxy.World.Server.CollectionSync.StampCompanionCreature(updateData, GetSession(), oldGuid);
 
                     TraceNpcBotCreateObject("CreateObject2", oldGuid, guid, updateData);
 
@@ -2227,6 +2239,22 @@ public partial class WorldClient
             {
                 updateData.UnitData.Summon = GetGuidValue(updates, UnitField.UNIT_FIELD_SUMMON).To128(GetSession().GameState);
             }
+            int UNIT_FIELD_CRITTER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_CRITTER);
+            if (UNIT_FIELD_CRITTER >= 0 && updateMaskArray[UNIT_FIELD_CRITTER]
+                && guid == GetSession().GameState.CurrentPlayerGuid)
+            {
+                var critter64 = GetGuidValue64(updates, UnitField.UNIT_FIELD_CRITTER);
+                updateData.UnitData.Critter = critter64.To128(GetSession().GameState);
+                if (!critter64.IsEmpty())
+                    GetSession().GameState.SummonedCompanionLegacyGuid = critter64;
+                else if (GetSession().GameState.SummonedCompanionCreatureGuid.IsEmpty()
+                    && !GetSession().GameState.SummonedBattlePetGuid.IsEmpty())
+                {
+                    GetSession().GameState.SummonedBattlePetGuid = WowGuid128.Empty;
+                    GetSession().GameState.CurrentPlayerStorage?.Settings?.SetLastSummonedPetSpecies(0);
+                    HermesProxy.World.Server.CollectionSync.SendSummonedBattlePet(GetSession());
+                }
+            }
             int UNIT_FIELD_CHARMEDBY = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_CHARMEDBY);
             if (UNIT_FIELD_CHARMEDBY >= 0 && updateMaskArray[UNIT_FIELD_CHARMEDBY])
             {
@@ -2863,6 +2891,9 @@ public partial class WorldClient
                 PlayerFlags flags = GetSession().GameState.CurrentPlayerStorage.Settings.CreateNewFlags();
                 updateData.PlayerData.PlayerFlags = (uint) flags;
             }
+
+            if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
+                HermesProxy.World.Server.CollectionSync.StampSummonedBattlePet(updateData, GetSession().GameState);
 
             int PLAYER_GUILDID = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILDID);
             if (PLAYER_GUILDID >= 0 && updateMaskArray[PLAYER_GUILDID])

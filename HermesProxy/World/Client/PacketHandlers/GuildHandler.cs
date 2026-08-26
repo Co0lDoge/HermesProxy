@@ -314,6 +314,9 @@ public partial class WorldClient
             member.ClassID = cache.ClassId =(Class)packet.ReadUInt8();
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_4_0_8089))
                 member.SexID = cache.SexId = (Gender)packet.ReadUInt8();
+            if (GetSession().GameState.CachedPlayers.TryGetValue(member.Guid, out var existing)
+                && existing.RaceId != Race.None)
+                member.RaceID = existing.RaceId;
             GetSession().GameState.UpdatePlayerCache(member.Guid, cache);
             member.AreaID = packet.ReadInt32();
 

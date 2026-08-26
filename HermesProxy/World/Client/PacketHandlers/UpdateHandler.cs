@@ -2152,7 +2152,7 @@ public partial class WorldClient
                     updateData.ItemData.Enchantment[Enums.Classic.EnchantmentSlot.Prop4] = ReadEnchantData(Enums.WotLK.EnchantmentSlot.Prop4);
                 }
 
-                uint?[] gems = new uint?[ItemConst.MaxGemSockets];
+                Span<uint?> gems = stackalloc uint?[ItemConst.MaxGemSockets];
                 for (int i = 0; i < ItemConst.MaxGemSockets; i++)
                 {
                     int slot = Enums.Classic.EnchantmentSlot.Sock1 + i;
@@ -2168,6 +2168,10 @@ public partial class WorldClient
                 }
                 if (updateData.ItemData.HasGemsUpdate)
                     GetSession().GameState.SaveGemsForItem(guid, gems);
+
+                // This update names the guid and slot a parked SMSG_ENCHANTMENTLOG was
+                // missing; send the completed modern packet now.
+                ResolvePendingEnchantmentLog(guid, updateData.ItemData);
             }
             int ITEM_FIELD_PROPERTY_SEED = LegacyVersion.GetUpdateField(ItemField.ITEM_FIELD_PROPERTY_SEED);
             if (ITEM_FIELD_PROPERTY_SEED >= 0 && updateMaskArray[ITEM_FIELD_PROPERTY_SEED])

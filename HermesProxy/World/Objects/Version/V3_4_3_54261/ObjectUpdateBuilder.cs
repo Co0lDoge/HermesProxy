@@ -1,4 +1,4 @@
-// Nullable disabled file-wide because the ported WriteUpdate*Data methods (lifted
+﻿// Nullable disabled file-wide because the ported WriteUpdate*Data methods (lifted
 // verbatim from the HermesProxy-WOTLK fork, which compiles with nullable disabled)
 // access nullable struct/reference members without `.Value` / null-forgiving annotation.
 // The pre-port WriteCreate*Data code in this file was nullable-safe, but the ported
@@ -386,17 +386,115 @@ public partial class ObjectUpdateBuilder
 
     internal void WriteEnchantmentUpdate(WorldPacket data, ItemEnchantment[] arr, int i)
     {
+        // UF::ItemEnchantment is HasChangesMask<6>, so the inner mask is SIX bits wide:
+        //   bit 0 group gate, 1 ID (int32), 2 Duration (uint32), 3 Charges (int16),
+        //   4 Field_A (uint8), 5 Field_B (uint8).
+        // Writing it as 4 bits silently broke every live enchantment update: the 4-bit
+        // mask 0b0011 flushed to 0x30, the client read 6 bits from that byte and got
+        // 0b001100 — group bit clear — so it discarded the whole struct and left the
+        // payload bytes unconsumed. Symptom was "enchant only appears after relog",
+        // because the Create path writes the struct flat with no mask. Gems escaped it
+        // only because they ride the separate Gems dynamic field.
+        // Field_A / Field_B have no legacy source, so bits 4 and 5 stay clear.
         var ench = arr[i];   // guaranteed non-null — caller gates on element bit
         uint enchMask = 0;
         if (ench.ID.HasValue) enchMask |= 2;
         if (ench.Duration.HasValue) enchMask |= 4;
         if (ench.Charges.HasValue) enchMask |= 8;
         if (enchMask != 0) enchMask |= 1;
-        data.WriteBits(enchMask, 4);
+        data.WriteBits(enchMask, 6);
         data.FlushBits();
         if (ench.ID.HasValue) data.WriteInt32(ench.ID.Value);
         if (ench.Duration.HasValue) data.WriteUInt32(ench.Duration.Value);
-        if (ench.Charges.HasValue) data.WriteUInt16(ench.Charges.Value);
+        if (ench.Charges.HasValue) data.WriteInt16((short)ench.Charges.Value);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Item Gems dynamic field (ItemData bit 2). Source is GameState.GetGemsForItem — the
+    // legacy parse path (UpdateHandler) maps each socket enchant id to its gem item id via
+    // CSV/Gems3.csv and caches the 3-slot array there.
+    //
+    // Element layout is UF::SocketedGem from the 3.4.3 server source:
+    //   WriteCreate: Int32 ItemID + 16x UInt16 BonusListIDs + UInt8 Context  (37 bytes)
+    //   WriteUpdate: WriteBits(blocksMask, 1) + WriteBits(block, 32) + FlushBits, then the
+    //                bit-gated fields in *declaration* order (ItemID, Context, BonusListIDs) —
+    //                which is NOT the create order.
+    // Verified against a native Wrathion 3.4.3 capture: two item CreateObject1 blocks with
+    // identical guid packing differ by exactly 74 bytes for 2 gems. (WowPacketParser's
+    // V3_4_0 module under-reads the create element — it skips BonusListIDs — so its parse
+    // output is not the reference here; the server source is.)
+    //
+    // Gems.size() follows Item::SetGem, which does ModifyValue(&Gems, slot): the array is
+    // indexed by socket slot and sized to the highest filled slot + 1, so an item gemmed
+    // only in socket 3 sends 3 elements with the first two ItemID = 0.
+    // -----------------------------------------------------------------------------------
+
+    /// <summary>Element count for the Gems dynamic field: highest filled socket slot + 1.</summary>
+    private uint GetItemGemsSize()
+    {
+        var gems = _gameState.GetGemsForItem(_updateData.Guid);
+        if (gems == null)
+            return 0;
+
+        uint size = 0;
+        for (int i = 0; i < gems.Length; i++)
+            if (gems[i] != 0)
+                size = (uint)(i + 1);
+        return size;
+    }
+
+    internal void WriteCreateItemGemsSize(WorldPacket data, ItemData src)
+    {
+        data.WriteUInt32(GetItemGemsSize());
+    }
+
+    internal void WriteCreateItemGemsBody(WorldPacket data, ItemData src)
+    {
+        uint size = GetItemGemsSize();
+        if (size == 0)
+            return;
+
+        var gems = _gameState.GetGemsForItem(_updateData.Guid)!;
+        for (int i = 0; i < size; i++)
+        {
+            data.WriteInt32((int)gems[i]);      // ItemID
+            for (int b = 0; b < 16; b++)        // BonusListIDs[16] — no legacy source
+                data.WriteUInt16(0);
+            data.WriteUInt8(0);                 // Context
+        }
+    }
+
+    internal void WriteUpdateItemGemsMaskPreamble(WorldPacket data, ref Framework.Util.StackBitMask blocks, ItemData src)
+    {
+        // DynamicUpdateField preamble: 32-bit size + per-element changed bitmask. Runs
+        // between the blocks-mask prefix write and FlushBits, so it is bit-aligned to the
+        // prefix rather than byte-aligned with the field payload.
+        uint size = GetItemGemsSize();
+        data.WriteBits(size, 32);
+        if (size != 0)
+            data.WriteBits(0xFFFFFFFFu, (int)size);
+    }
+
+    internal void WriteUpdateItemGemsBody(WorldPacket data, ItemData src)
+    {
+        uint size = GetItemGemsSize();
+        if (size == 0)
+            return;
+
+        var gems = _gameState.GetGemsForItem(_updateData.Guid)!;
+        for (int i = 0; i < size; i++)
+        {
+            // SocketedGem::WriteUpdate with every bit of the 20-bit inner mask set —
+            // bit 0 group, 1 ItemID, 2 Context, 3 BonusListIDs group, 4..19 per element.
+            // Matches what the native server emits after a socket operation.
+            data.WriteBits(1u, 1);
+            data.WriteBits(0x000FFFFFu, 32);
+            data.FlushBits();
+            data.WriteInt32((int)gems[i]);      // ItemID
+            data.WriteUInt8(0);                 // Context
+            for (int b = 0; b < 16; b++)        // BonusListIDs[16]
+                data.WriteUInt16(0);
+        }
     }
 
     // WriteCreateContainerData emitted by HermesProxy.SourceGen.ObjectUpdateBuilderGenerator

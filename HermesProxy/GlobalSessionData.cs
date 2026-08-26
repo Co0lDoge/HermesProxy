@@ -542,6 +542,23 @@ public sealed class GameSessionData
         }
         return 0;
     }
+    /// <summary>
+    /// A legacy SMSG_ENCHANTMENTLOG waiting for the item UPDATE_OBJECT that names the
+    /// guid and slot it applies to. The legacy packet carries only (owner, caster,
+    /// item entry, enchant id) — see AzerothCore Item.cpp SendEnchantmentLog — while the
+    /// modern SMSG_ENCHANTMENT_LOG needs the item guid and enchantment slot too.
+    /// </summary>
+    public struct PendingEnchantmentLogData
+    {
+        public bool IsSet;
+        public WowGuid128 Owner;
+        public WowGuid128 Caster;
+        public uint ItemId;
+        public int EnchantId;
+    }
+
+    public PendingEnchantmentLogData PendingEnchantmentLog;
+
     public uint GetItemId(WowGuid128 guid)
     {
         int OBJECT_FIELD_ENTRY = LegacyVersion.GetUpdateField(ObjectField.OBJECT_FIELD_ENTRY);
@@ -1209,7 +1226,7 @@ public sealed class GameSessionData
     {
         return ItemGems.TryGetValue(guid, out var gems) ? gems : null;
     }
-    public void SaveGemsForItem(WowGuid128 guid, uint?[] gems)
+    public void SaveGemsForItem(WowGuid128 guid, ReadOnlySpan<uint?> gems)
     {
         ref var existing = ref CollectionsMarshal.GetValueRefOrAddDefault(ItemGems, guid, out _);
         existing ??= new uint[ItemConst.MaxGemSockets];

@@ -934,7 +934,7 @@ class EnchantmentLog : ServerPacket, ISpanWritable
     public WowGuid128 ItemGUID;
     public int ItemID;
     public int Enchantment;
-    public int EnchantSlot = 1;
+    public int EnchantSlot;
 }
 
 public class CancelTempEnchantment : ClientPacket

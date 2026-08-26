@@ -1,6 +1,7 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -19,6 +20,24 @@ public partial class WorldClient
         result.Command = (GuildCommandType)packet.ReadUInt32();
         result.Name = packet.ReadCString();
         result.Result = (GuildCommandError)packet.ReadUInt32();
+        SendPacketToClient(result);
+    }
+
+    [PacketHandler(Opcode.MSG_GUILD_PERMISSIONS)]
+    void HandleGuildPermissions(WorldPacket packet)
+    {
+        GuildPermissionsQueryResults result = new();
+        result.RankID = packet.ReadUInt32();
+        result.Flags = packet.ReadInt32();
+        result.WithdrawGoldLimit = packet.ReadInt32();
+        result.NumTabs = packet.ReadInt8();
+        for (int i = 0; i < GuildConst.MaxBankTabs; i++)
+        {
+            GuildRankTabPermissions tab = new();
+            tab.Flags = packet.ReadInt32();
+            tab.WithdrawItemLimit = packet.ReadInt32();
+            result.Tab.Add(tab);
+        }
         SendPacketToClient(result);
     }
 
@@ -434,7 +453,14 @@ public partial class WorldClient
             result.ItemInfo.Add(itemInfo);
         }
 
-        result.FullUpdate = (hasTabs && slots > 0);
+        // AC only attaches the tab list on tab 0. 3.4.3 will not paint
+        // items unless FullUpdate is set, so any payload with tabs or
+        // items is a full replace.
+        result.FullUpdate = hasTabs || result.ItemInfo.Count > 0;
+
+        WorldClientLogMessages.GuildBankQueryResults(
+            _melLog, _sourceFile, "C<P S", result.Tab, result.TabInfo.Count,
+            result.ItemInfo.Count, result.FullUpdate, result.Money);
 
         SendPacketToClient(result);
     }

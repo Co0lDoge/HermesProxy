@@ -72,4 +72,33 @@ internal static partial class WorldSocketLogMessages
         string NetDir,
         Opcode Opcode,
         uint OpcodeId);
+
+    [LoggerMessage(
+        EventId = 110,
+        Level = LogLevel.Debug,
+        Message = "Guild bank swap player->bank tab={Tab} slot={BankSlot} srcBag={SrcBag}->{LegacyBag} srcSlot={SrcSlot}->{LegacySlot}")]
+    public static partial void GuildBankPlayerToBank(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        byte Tab,
+        byte BankSlot,
+        byte SrcBag,
+        byte LegacyBag,
+        byte SrcSlot,
+        byte LegacySlot);
+
+    [LoggerMessage(
+        EventId = 111,
+        Level = LogLevel.Debug,
+        Message = "Guild bank query results tab={Tab} tabs={TabCount} items={ItemCount} fullUpdate={FullUpdate} money={Money}")]
+    public static partial void GuildBankQueryResults(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int Tab,
+        int TabCount,
+        int ItemCount,
+        bool FullUpdate,
+        ulong Money);
 }

@@ -37,6 +37,15 @@ public enum DifficultyLegacy : byte
     Heroic = 1,
 }
 
+// 3.3.5a raid difficulty. Distinct from DifficultyLegacy (5-man 0/1).
+public enum RaidDifficultyLegacy : byte
+{
+    Raid10Normal = 0,
+    Raid25Normal = 1,
+    Raid10Heroic = 2,
+    Raid25Heroic = 3,
+}
+
 public enum DifficultyModern : byte
 {
     None = 0,
@@ -48,4 +57,47 @@ public enum DifficultyModern : byte
     Raid25HC = 6,
     Raid40 = 9,
     Raid20 = 148,
+    RaidClassic10N = 175,
+    RaidClassic25N = 176,
+    RaidClassic10HC = 193,
+    RaidClassic25HC = 194,
+}
+
+public static class RaidDifficulties
+{
+    public static DifficultyModern ToLegacyId(byte acMode)
+    {
+        return acMode switch
+        {
+            (byte)RaidDifficultyLegacy.Raid10Normal => DifficultyModern.Raid10N,
+            (byte)RaidDifficultyLegacy.Raid25Normal => DifficultyModern.Raid25N,
+            (byte)RaidDifficultyLegacy.Raid10Heroic => DifficultyModern.Raid10HC,
+            (byte)RaidDifficultyLegacy.Raid25Heroic => DifficultyModern.Raid25HC,
+            _ => DifficultyModern.Raid10N,
+        };
+    }
+
+    public static DifficultyModern ToClassicId(byte acMode)
+    {
+        return acMode switch
+        {
+            (byte)RaidDifficultyLegacy.Raid10Normal => DifficultyModern.RaidClassic10N,
+            (byte)RaidDifficultyLegacy.Raid25Normal => DifficultyModern.RaidClassic25N,
+            (byte)RaidDifficultyLegacy.Raid10Heroic => DifficultyModern.RaidClassic10HC,
+            (byte)RaidDifficultyLegacy.Raid25Heroic => DifficultyModern.RaidClassic25HC,
+            _ => DifficultyModern.RaidClassic10N,
+        };
+    }
+
+    public static uint ToLegacy(int modern)
+    {
+        return modern switch
+        {
+            (int)DifficultyModern.Raid10N or (int)DifficultyModern.RaidClassic10N => (uint)RaidDifficultyLegacy.Raid10Normal,
+            (int)DifficultyModern.Raid25N or (int)DifficultyModern.RaidClassic25N => (uint)RaidDifficultyLegacy.Raid25Normal,
+            (int)DifficultyModern.Raid10HC or (int)DifficultyModern.RaidClassic10HC => (uint)RaidDifficultyLegacy.Raid10Heroic,
+            (int)DifficultyModern.Raid25HC or (int)DifficultyModern.RaidClassic25HC => (uint)RaidDifficultyLegacy.Raid25Heroic,
+            _ => (uint)RaidDifficultyLegacy.Raid10Normal,
+        };
+    }
 }

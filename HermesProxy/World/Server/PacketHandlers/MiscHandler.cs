@@ -297,4 +297,19 @@ public partial class WorldSocket
         difficultySet.DifficultyID = (int)difficulty.DifficultyID;
         SendPacket(difficultySet);
     }
+
+    [PacketHandler(Opcode.CMSG_SET_RAID_DIFFICULTY)]
+    void HandleSetRaidDifficulty(SetRaidDifficulty difficulty)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.MSG_SET_RAID_DIFFICULTY);
+        packet.WriteUInt32(RaidDifficulties.ToLegacy(difficulty.DifficultyID));
+        SendPacketToServer(packet);
+
+        // AC solo (no group) SetRaidDifficulty is silent. Echo so the 3.4.3 UI
+        // does not snap back. In-group AC also sends MSG_SET_RAID_DIFFICULTY.
+        RaidDifficultySet difficultySet = new();
+        difficultySet.DifficultyID = difficulty.DifficultyID;
+        difficultySet.Legacy = difficulty.Legacy;
+        SendPacket(difficultySet);
+    }
 }

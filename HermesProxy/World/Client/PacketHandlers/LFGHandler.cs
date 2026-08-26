@@ -66,7 +66,7 @@ public partial class WorldClient
                 {
                     DFJoinBlackListSlot slot = new DFJoinBlackListSlot();
                     slot.Slot = packet.ReadUInt32();
-                    slot.Reason = packet.ReadUInt32();
+                    slot.Reason = LfgSlots.ToDisplayLockStatus(packet.ReadUInt32());
                     bl.Slots.Add(slot);
                 }
                 result.BlackList.Add(bl);
@@ -260,8 +260,8 @@ public partial class WorldClient
             {
                 LFGLockInfoData li = new LFGLockInfoData();
                 li.Slot = packet.ReadUInt32();
-                li.LockStatus = packet.ReadUInt32();
-                li.SoftLock = LfgSlots.ToSoftLock(li.LockStatus);
+                li.LockStatus = LfgSlots.ToDisplayLockStatus(packet.ReadUInt32());
+                li.SoftLock = LfgSlots.ToPartySoftLock(li.LockStatus);
                 entry.Locks.Add(li);
                 alreadyListed.Add(LfgSlots.GetDungeonId(li.Slot));
                 GetSession().GameState.RememberLfgSlot(li.Slot);
@@ -345,7 +345,7 @@ public partial class WorldClient
         {
             LFGBlackListSlot slot = new LFGBlackListSlot();
             slot.Slot = packet.ReadUInt32();
-            slot.Reason = packet.ReadUInt32();
+            slot.Reason = LfgSlots.ToDisplayLockStatus(packet.ReadUInt32());
             // Map legacy LFGLockStatus → modern LFGSoftLock per TC
             // wotlk_classic LFGMgr.cpp:1807-1823.
             slot.SoftLock = LfgSlots.ToSoftLock(slot.Reason);

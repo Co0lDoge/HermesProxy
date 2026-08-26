@@ -96,8 +96,33 @@ public class LfgSlotsTests
     [InlineData(1031u, 2u)] // NotInSeason
     [InlineData(0u, 0u)]
     [InlineData(6u, 0u)]   // RaidLocked stays visible
+    [InlineData(4u, 0u)]   // TooLowGearScore stays visible (remapped, not hidden)
+    [InlineData(15u, 0u)]  // HasRestriction stays visible
     public void ToSoftLock_HidesExpansionLevelAndSeason(uint lockStatus, uint expected)
     {
         Assert.Equal(expected, LfgSlots.ToSoftLock(lockStatus));
+    }
+
+    [Theory]
+    [InlineData(4u, 15u)]   // TooLowGearScore → HasRestriction
+    [InlineData(5u, 15u)]   // TooHighGearScore → HasRestriction
+    [InlineData(2u, 2u)]    // TooLowLevel unchanged
+    [InlineData(6u, 6u)]    // RaidLocked unchanged
+    [InlineData(1031u, 1031u)]
+    public void ToDisplayLockStatus_RewritesGearScoreToNumberlessReason(uint lockStatus, uint expected)
+    {
+        Assert.Equal(expected, LfgSlots.ToDisplayLockStatus(lockStatus));
+    }
+
+    [Theory]
+    [InlineData(2u, 0u)]    // TooLowLevel stays a visible party reason
+    [InlineData(3u, 0u)]    // TooHighLevel stays a visible party reason
+    [InlineData(4u, 0u)]
+    [InlineData(15u, 0u)]
+    [InlineData(1u, 2u)]    // InsufficientExpansion still hidden
+    [InlineData(1031u, 2u)] // NotInSeason still hidden
+    public void ToPartySoftLock_KeepsLevelAndGearReasonsVisible(uint lockStatus, uint expected)
+    {
+        Assert.Equal(expected, LfgSlots.ToPartySoftLock(lockStatus));
     }
 }

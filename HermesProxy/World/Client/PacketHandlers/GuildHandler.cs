@@ -1,4 +1,4 @@
-﻿using Framework.Logging;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Logging;
@@ -26,6 +26,13 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_GUILD_PERMISSIONS)]
     void HandleGuildPermissions(WorldPacket packet)
     {
+        // Guild::SendPermissions unsubscribes us from bank delta updates every time it
+        // runs — deliberately, as AzerothCore's "only reliable way to handle /reload".
+        // It fires both for a client permissions query and unprompted after a tab
+        // purchase (HandleBuyBankTab ends with SendPermissions), so keying off this
+        // inbound packet catches both. Issue #157.
+        GetSession().GameState.GuildBankSubscribed = false;
+
         GuildPermissionsQueryResults result = new();
         result.RankID = packet.ReadUInt32();
         result.Flags = packet.ReadInt32();
@@ -421,6 +428,11 @@ public partial class WorldClient
                 tabInfo.Icon = packet.ReadCString();
                 result.TabInfo.Add(tabInfo);
             }
+
+            // Remember how many tabs actually exist. A query for an index at or beyond
+            // this is the client opening the "Buy new guild bank tab" slot, which must
+            // not trigger an activate — see HandleGuildBankQueryTab. Issue #157.
+            GetSession().GameState.GuildBankPurchasedTabs = size;
         }
 
         var slots = packet.ReadUInt8();

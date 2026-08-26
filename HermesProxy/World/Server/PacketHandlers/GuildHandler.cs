@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Framework.Constants;
 using Framework.Logging;
 using HermesProxy.Enums;
@@ -244,6 +244,10 @@ public partial class WorldSocket
         packet.WriteGuid(activate.BankGuid.To64());
         packet.WriteBool(activate.FullUpdate);
         SendPacketToServer(packet);
+
+        // A client-sent activate subscribes us just the same. V3_4_3 never sends one,
+        // but older modern builds do, and it saves a redundant injected activate.
+        GetSession().GameState.GuildBankSubscribed = true;
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_QUERY_TAB)]
@@ -253,7 +257,25 @@ public partial class WorldSocket
         // only fills ItemInfo when sendAllSlots is true (or a slot set is
         // passed). A false query therefore comes back with items=0 and the
         // vault looks empty even after a successful deposit.
-        SendGuildBankActivate(query.BankGuid);
+        //
+        // The activate is only re-sent when the server has actually unsubscribed us
+        // (see GameSessionData.GuildBankSubscribed). Sending it on every query made the
+        // server answer with a full tab-0 list that arrived before the reply for the tab
+        // the client asked for, dragging the UI back to tab 0 — which made the
+        // "Buy new guild bank tab" slot impossible to open. Issue #157.
+        // Never spend the activate on the purchase slot: the server answers an activate
+        // with a full tab-0 list, which arrives before the reply for the tab the client
+        // asked for and drags the UI back to tab 0. That made the "Buy new guild bank tab"
+        // window close the moment it opened. Buying a tab makes AzerothCore call
+        // SendPermissions (its "hack to force client to update permissions"), which
+        // unsubscribes us, so without this the first click after every purchase was eaten.
+        var state = GetSession().GameState;
+        bool isPurchaseSlot = state.GuildBankPurchasedTabs > 0
+            && query.Tab >= state.GuildBankPurchasedTabs;
+
+        if (!state.GuildBankSubscribed && !isPurchaseSlot)
+            SendGuildBankActivate(query.BankGuid);
+
         SendGuildBankQueryTab(query.BankGuid, query.Tab);
     }
 
@@ -477,6 +499,9 @@ public partial class WorldSocket
         packet.WriteGuid(bankGuid.To64());
         packet.WriteBool(true);
         SendPacketToServer(packet);
+
+        // Guild::SendBankTabsInfo subscribes us to bank deltas on the legacy side.
+        GetSession().GameState.GuildBankSubscribed = true;
     }
 
     void SendGuildBankQueryTab(WowGuid128 bankGuid, byte tab)

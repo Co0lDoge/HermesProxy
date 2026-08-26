@@ -1,4 +1,4 @@
-﻿using HermesProxy.Auth;
+using HermesProxy.Auth;
 using HermesProxy.Configuration.Options;
 using HermesProxy.World;
 using HermesProxy.World.Client;
@@ -274,6 +274,27 @@ public sealed class GameSessionData
     /// the same guid in every packet of the roll. Issue #162.
     /// </summary>
     public Dictionary<byte, WowGuid128> LootRollObjects = [];
+
+    /// <summary>
+    /// Whether the legacy server still has us subscribed to guild-bank delta updates.
+    ///
+    /// AzerothCore subscribes on CMSG_GUILD_BANKER_ACTIVATE (Guild::SendBankTabsInfo) and
+    /// deliberately unsubscribes on every permissions query (Guild::SendPermissions —
+    /// "the only reliable way to handle /reload"). The 3.4.3 client sends
+    /// CMSG_GUILD_PERMISSIONS_QUERY regularly and never sends an activate of its own, so
+    /// the proxy has to re-activate after each permissions query or post-move deltas stop
+    /// arriving. Re-sending it on *every* tab query instead made the server answer with a
+    /// full tab-0 list that dragged the UI back, which is why the "Buy new guild bank tab"
+    /// slot could never be opened. Issue #157.
+    /// </summary>
+    public bool GuildBankSubscribed;
+
+    /// <summary>
+    /// Number of guild bank tabs actually purchased, from the last SMSG_GUILD_BANK_QUERY_RESULTS
+    /// that carried the tab list. A query for an index at or beyond this is the client opening
+    /// the purchase slot rather than a real tab.
+    /// </summary>
+    public int GuildBankPurchasedTabs;
     public Dictionary<WowGuid128, uint> BattlePetGuidToSummonSpell = [];
     public WowGuid128 SummonedBattlePetGuid;
     public WowGuid128 SummonedCompanionCreatureGuid;

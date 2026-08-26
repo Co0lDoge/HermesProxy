@@ -605,6 +605,45 @@ public class DungeonDifficultySet : ServerPacket, ISpanWritable
     public int DifficultyID;
 }
 
+public class SetRaidDifficulty : ClientPacket
+{
+    public SetRaidDifficulty(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        DifficultyID = _worldPacket.ReadInt32();
+        if (_worldPacket.CanRead())
+            Legacy = _worldPacket.ReadUInt8();
+    }
+
+    public int DifficultyID;
+    public byte Legacy;
+}
+
+public class RaidDifficultySet : ServerPacket, ISpanWritable
+{
+    public RaidDifficultySet() : base(Opcode.SMSG_RAID_DIFFICULTY_SET) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteInt32(DifficultyID);
+        _worldPacket.WriteUInt8(Legacy);
+    }
+
+    public int MaxSize => 5;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WriteInt32(DifficultyID);
+        writer.WriteUInt8(Legacy);
+        return writer.Position;
+    }
+
+    public int DifficultyID;
+    public byte Legacy;
+}
+
 public class SetAllTaskProgress : ServerPacket, ISpanWritable
 {
     public SetAllTaskProgress() : base(Opcode.SMSG_SET_ALL_TASK_PROGRESS, ConnectionType.Instance) { }

@@ -292,4 +292,15 @@ public partial class WorldClient
         packet.ReadInt32(); // IsInGroup
         SendPacketToClient(difficulty);
     }
+
+    [PacketHandler(Opcode.MSG_SET_RAID_DIFFICULTY)]
+    void HandleSetRaidDifficulty(WorldPacket packet)
+    {
+        RaidDifficultySet difficulty = new();
+        difficulty.DifficultyID = (int)RaidDifficulties.ToLegacyId((byte)packet.ReadUInt32());
+        difficulty.Legacy = 1;
+        packet.ReadInt32(); // always 1
+        packet.ReadInt32(); // IsInGroup
+        SendPacketToClient(difficulty);
+    }
 }

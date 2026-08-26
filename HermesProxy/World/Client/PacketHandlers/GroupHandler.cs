@@ -328,7 +328,15 @@ public partial class WorldClient
             int difficultyId = packet.ReadUInt8();
             party.DifficultySettings.DungeonDifficultyID = ((DifficultyLegacy)difficultyId).CastEnum<DifficultyModern>();
 
-            if (ModernVersion.ExpansionVersion > 1)
+            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+            {
+                byte acRaid = packet.ReadUInt8();
+                party.DifficultySettings.LegacyRaidDifficultyID = RaidDifficulties.ToLegacyId(acRaid);
+                party.DifficultySettings.RaidDifficultyID = RaidDifficulties.ToClassicId(acRaid);
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+                    packet.ReadUInt8(); // 3.3 dynamic heroic bit
+            }
+            else if (ModernVersion.ExpansionVersion > 1)
                 party.DifficultySettings.RaidDifficultyID = DifficultyModern.Raid25N;
             else
                 party.DifficultySettings.RaidDifficultyID = DifficultyModern.Raid40;

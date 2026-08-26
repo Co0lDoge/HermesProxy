@@ -1,4 +1,4 @@
-// Nullable disabled file-wide because the ported WriteUpdate*Data methods (lifted
+﻿// Nullable disabled file-wide because the ported WriteUpdate*Data methods (lifted
 // verbatim from the HermesProxy-WOTLK fork, which compiles with nullable disabled)
 // access nullable struct/reference members without `.Value` / null-forgiving annotation.
 // The pre-port WriteCreate*Data code in this file was nullable-safe, but the ported
@@ -397,6 +397,94 @@ public partial class ObjectUpdateBuilder
         if (ench.ID.HasValue) data.WriteInt32(ench.ID.Value);
         if (ench.Duration.HasValue) data.WriteUInt32(ench.Duration.Value);
         if (ench.Charges.HasValue) data.WriteUInt16(ench.Charges.Value);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Item Gems dynamic field (ItemData bit 2). Source is GameState.GetGemsForItem — the
+    // legacy parse path (UpdateHandler) maps each socket enchant id to its gem item id via
+    // CSV/Gems3.csv and caches the 3-slot array there.
+    //
+    // Element layout is UF::SocketedGem from the 3.4.3 server source:
+    //   WriteCreate: Int32 ItemID + 16x UInt16 BonusListIDs + UInt8 Context  (37 bytes)
+    //   WriteUpdate: WriteBits(blocksMask, 1) + WriteBits(block, 32) + FlushBits, then the
+    //                bit-gated fields in *declaration* order (ItemID, Context, BonusListIDs) —
+    //                which is NOT the create order.
+    // Verified against a native Wrathion 3.4.3 capture: two item CreateObject1 blocks with
+    // identical guid packing differ by exactly 74 bytes for 2 gems. (WowPacketParser's
+    // V3_4_0 module under-reads the create element — it skips BonusListIDs — so its parse
+    // output is not the reference here; the server source is.)
+    //
+    // Gems.size() follows Item::SetGem, which does ModifyValue(&Gems, slot): the array is
+    // indexed by socket slot and sized to the highest filled slot + 1, so an item gemmed
+    // only in socket 3 sends 3 elements with the first two ItemID = 0.
+    // -----------------------------------------------------------------------------------
+
+    /// <summary>Element count for the Gems dynamic field: highest filled socket slot + 1.</summary>
+    private uint GetItemGemsSize()
+    {
+        var gems = _gameState.GetGemsForItem(_updateData.Guid);
+        if (gems == null)
+            return 0;
+
+        uint size = 0;
+        for (int i = 0; i < gems.Length; i++)
+            if (gems[i] != 0)
+                size = (uint)(i + 1);
+        return size;
+    }
+
+    internal void WriteCreateItemGemsSize(WorldPacket data, ItemData src)
+    {
+        data.WriteUInt32(GetItemGemsSize());
+    }
+
+    internal void WriteCreateItemGemsBody(WorldPacket data, ItemData src)
+    {
+        uint size = GetItemGemsSize();
+        if (size == 0)
+            return;
+
+        var gems = _gameState.GetGemsForItem(_updateData.Guid)!;
+        for (int i = 0; i < size; i++)
+        {
+            data.WriteInt32((int)gems[i]);      // ItemID
+            for (int b = 0; b < 16; b++)        // BonusListIDs[16] — no legacy source
+                data.WriteUInt16(0);
+            data.WriteUInt8(0);                 // Context
+        }
+    }
+
+    internal void WriteUpdateItemGemsMaskPreamble(WorldPacket data, ref Framework.Util.StackBitMask blocks, ItemData src)
+    {
+        // DynamicUpdateField preamble: 32-bit size + per-element changed bitmask. Runs
+        // between the blocks-mask prefix write and FlushBits, so it is bit-aligned to the
+        // prefix rather than byte-aligned with the field payload.
+        uint size = GetItemGemsSize();
+        data.WriteBits(size, 32);
+        if (size != 0)
+            data.WriteBits(0xFFFFFFFFu, (int)size);
+    }
+
+    internal void WriteUpdateItemGemsBody(WorldPacket data, ItemData src)
+    {
+        uint size = GetItemGemsSize();
+        if (size == 0)
+            return;
+
+        var gems = _gameState.GetGemsForItem(_updateData.Guid)!;
+        for (int i = 0; i < size; i++)
+        {
+            // SocketedGem::WriteUpdate with every bit of the 20-bit inner mask set —
+            // bit 0 group, 1 ItemID, 2 Context, 3 BonusListIDs group, 4..19 per element.
+            // Matches what the native server emits after a socket operation.
+            data.WriteBits(1u, 1);
+            data.WriteBits(0x000FFFFFu, 32);
+            data.FlushBits();
+            data.WriteInt32((int)gems[i]);      // ItemID
+            data.WriteUInt8(0);                 // Context
+            for (int b = 0; b < 16; b++)        // BonusListIDs[16]
+                data.WriteUInt16(0);
+        }
     }
 
     // WriteCreateContainerData emitted by HermesProxy.SourceGen.ObjectUpdateBuilderGenerator

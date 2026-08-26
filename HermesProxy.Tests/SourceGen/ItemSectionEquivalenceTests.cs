@@ -30,6 +30,10 @@ public class ItemSectionEquivalenceTests
         var session = (GameSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GameSessionData));
         typeof(GameSessionData).GetField(nameof(GameSessionData.OriginalObjectTypes))!
             .SetValue(session, new System.Collections.Generic.Dictionary<WowGuid128, ObjectType>());
+        // The Gems dynamic field reads GetGemsForItem, so the backing store has to exist
+        // on this GetUninitializedObject-built session. Empty == no gems == zero-size field.
+        typeof(GameSessionData).GetField(nameof(GameSessionData.ItemGems))!
+            .SetValue(session, new System.Collections.Generic.Dictionary<WowGuid128, uint[]>());
         return session;
     }
 

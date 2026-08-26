@@ -9,17 +9,19 @@ namespace HermesProxy.World.Enums.V3_4_3_54261;
 // Update path: 43-bit changesMask across 2 blocks of 32 with a 2-bit blocks-prefix.
 //   bit 0:  group gate for bits 1-22
 //   bit 1:  ArtifactPowers dynamic field (unused)
-//   bit 2:  Gems dynamic field (unused)
+//   bit 2:  Gems dynamic field (mask preamble + per-element body, custom writers)
 //   bits 3-22: scalar fields
 //   bit 23: group gate for SpellCharges[5]
 //   bits 24-28: SpellCharges[0..4] individual change bits
 //   bit 29: group gate for Enchantment[13]
 //   bits 30-42: Enchantment[0..12] individual change bits
 //
-// Create path: hand-port emits 4 unconditional PackedGuid128s + owner-gated runs
-// of scalars + Enchantment[13] (custom writer) + 11 trailing zero placeholders
-// (owner-gated mix) + a final WriteBits(0u, 6) + FlushBits dynamic-field-count
-// preamble. Enum declaration order *is* the Create wire byte order.
+// Create path: 4 unconditional PackedGuid128s + owner-gated runs of scalars +
+// Enchantment[13] (custom writer) + trailing scalars (owner-gated mix) that carry
+// the two dynamic-field sizes + the Gems payload + a final WriteBits(0u, 6) +
+// FlushBits. That trailing 6-bit write is ItemModList::WriteCreate for the Modifiers
+// field, not a dynamic-field-count preamble as an earlier comment here claimed.
+// Enum declaration order *is* the Create wire byte order.
 //
 // Previous-life note: file used to hold a legacy descriptor-tree slot-index enum
 // (ITEM_FIELD_OWNER = 7, etc.) for the pre-Cataclysm reader. Nothing referenced it
@@ -134,26 +136,61 @@ public enum ItemField
     [DescriptorCreatePlaceholder(DescriptorType.UInt8, OwnerOnly = true)]
     ITEM_PAD_OWNER_UINT8,
 
+    // ArtifactPowers.size() — stays zero-size; artifacts do not exist in this content
+    // and there is no legacy source for them.
     [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
-    ITEM_PAD_UINT32_1,
+    ITEM_ARTIFACT_POWERS_SIZE,
 
-    [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
-    ITEM_PAD_UINT32_2,
+    // Gems.size() — element count for the Gems dynamic field. The payload itself is
+    // written further down, after DEBUGItemLevel (see ITEM_GEMS_BODY_CREATE).
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+                                 CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateItemGemsSize))]
+    ITEM_GEMS_SIZE_CREATE,
 
+    // DynamicFlags2
     [DescriptorCreatePlaceholder(DescriptorType.UInt32, OwnerOnly = true)]
     ITEM_PAD_OWNER_UINT32,
 
+    // ItemBonusKey: Int32 ItemID + UInt32 BonusListIDs.size() (always 0 here).
     [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
     ITEM_PAD_UINT32_3,
 
     [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
     ITEM_PAD_UINT32_4,
 
+    // DEBUGItemLevel
     [DescriptorCreatePlaceholder(DescriptorType.UInt16, OwnerOnly = true)]
     ITEM_PAD_OWNER_UINT16,
 
-    // Trailing 6-bit zero write + FlushBits — dynamic field count preamble for
-    // ArtifactPowers / Gems (both zero-size for HermesProxy).
+    // Gems payload — ArtifactPowers[] elements would precede it, but that field is
+    // always zero-size so it contributes nothing. 37 bytes per element; the count must
+    // agree with ITEM_GEMS_SIZE_CREATE above.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+                                 CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateItemGemsBody))]
+    ITEM_GEMS_BODY_CREATE,
+
+    // Trailing 6-bit zero write + FlushBits — ItemModList::WriteCreate for the
+    // Modifiers field (Values.size() == 0).
     [DescriptorCreateBitsPlaceholder(0u, 6)]
     ITEM_PAD_TRAILING_DYNAMIC_FIELDS,
+
+    // -------------------------------------------------------------------------
+    // Gems dynamic field, Update path. Two emit phases, mirroring UnitData's
+    // ChannelObjects:
+    //   1. MaskPreamble between the blocks-mask prefix and FlushBits (32-bit size +
+    //      per-element changed bitmask).
+    //   2. Body at the bit-2 position in the block-0 payload — emitted ahead of bit 3
+    //      (Owner) because the generator sorts Update writes by bit ascending.
+    // The preamble sets no bits; the field entry below sets them, gated on
+    // HasGemsUpdate. SourceProperty names HasGemsUpdate only to bind a member —
+    // CustomPredicate and CustomWriter own both the mask build and the wire write.
+    // -------------------------------------------------------------------------
+
+    [DescriptorMaskPreamble(bit: 2, customWriter: nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteUpdateItemGemsMaskPreamble))]
+    ITEM_GEMS_PREAMBLE_UPDATE,
+
+    [DescriptorUpdateField(nameof(ItemData.HasGemsUpdate), DescriptorType.Int32, bit: 2, ParentBit = 0,
+                           CustomPredicate = "src.HasGemsUpdate",
+                           CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteUpdateItemGemsBody))]
+    ITEM_GEMS_BODY_UPDATE,
 }

@@ -2152,7 +2152,7 @@ public partial class WorldClient
                     updateData.ItemData.Enchantment[Enums.Classic.EnchantmentSlot.Prop4] = ReadEnchantData(Enums.WotLK.EnchantmentSlot.Prop4);
                 }
 
-                uint?[] gems = new uint?[ItemConst.MaxGemSockets];
+                Span<uint?> gems = stackalloc uint?[ItemConst.MaxGemSockets];
                 for (int i = 0; i < ItemConst.MaxGemSockets; i++)
                 {
                     int slot = Enums.Classic.EnchantmentSlot.Sock1 + i;

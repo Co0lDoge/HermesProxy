@@ -589,6 +589,7 @@ public class UpdateObject : ServerPacket
         var item = u.ItemData;
         if (item != null)
         {
+            if (item.HasGemsUpdate) return false;
             if (item.Owner != null || item.ContainedIn != null) return false;
             if (item.Creator != null || item.GiftCreator != null) return false;
             if (item.StackCount.HasValue || item.Duration.HasValue || item.Flags.HasValue) return false;

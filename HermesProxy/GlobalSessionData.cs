@@ -1209,7 +1209,7 @@ public sealed class GameSessionData
     {
         return ItemGems.TryGetValue(guid, out var gems) ? gems : null;
     }
-    public void SaveGemsForItem(WowGuid128 guid, uint?[] gems)
+    public void SaveGemsForItem(WowGuid128 guid, ReadOnlySpan<uint?> gems)
     {
         ref var existing = ref CollectionsMarshal.GetValueRefOrAddDefault(ItemGems, guid, out _);
         existing ??= new uint[ItemConst.MaxGemSockets];

@@ -1,4 +1,5 @@
-﻿using HermesProxy.Enums;
+﻿using System;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Server.Packets;
 
@@ -200,6 +201,29 @@ public partial class WorldClient
         sell.Reason = packet.ReadUInt8();
         SendPacketToClient(sell);
     }
+    // 3.3.5a SMSG_SOCKET_GEMS_RESULT (0x50B) — the authoritative reply to CMSG_SOCKET_GEMS.
+    // Payload is the item guid plus the enchant ids of SOCK1..SOCK3 and BONUS. Modern
+    // clients have no equivalent packet (the proxy answers CMSG_SOCKET_GEMS optimistically
+    // with SMSG_SOCKET_GEMS_SUCCESS), so nothing is forwarded — this refreshes the gem
+    // cache that the V3_4_3 ItemData Gems dynamic field reads from, keeping it correct
+    // even if the item's Values update omits the socket enchant slots.
+    [PacketHandler(Opcode.SMSG_SOCKET_GEMS)]
+    void HandleSocketGemsResult(WorldPacket packet)
+    {
+        var gameState = GetSession().GameState;
+        WowGuid128 itemGuid = packet.ReadGuid().To128(gameState);
+
+        Span<uint?> gems = stackalloc uint?[ItemConst.MaxGemSockets];
+        for (int i = 0; i < ItemConst.MaxGemSockets; i++)
+        {
+            uint enchantId = packet.ReadUInt32();
+            gems[i] = enchantId != 0 ? GameData.GetGemFromEnchantId(enchantId) : 0u;
+        }
+        // Trailing BONUS_ENCHANTMENT_SLOT id — the socket bonus, not a gem.
+
+        gameState.SaveGemsForItem(itemGuid, gems);
+    }
+
     [PacketHandler(Opcode.SMSG_ITEM_ENCHANT_TIME_UPDATE)]
     void HandleItemEnchantTimeUpdate(WorldPacket packet)
     {

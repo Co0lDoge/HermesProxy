@@ -3081,7 +3081,7 @@ public partial class ObjectUpdateBuilder
             data.WriteUInt8((byte)0);
         }
         data.WriteUInt32(0u);
-        data.WriteUInt32(0u);
+        WriteCreateItemGemsSize(data, src);
         if (IsOwner) {
             data.WriteUInt32(0u);
         }
@@ -3090,6 +3090,7 @@ public partial class ObjectUpdateBuilder
         if (IsOwner) {
             data.WriteUInt16((ushort)0);
         }
+        WriteCreateItemGemsBody(data, src);
         data.WriteBits(0u, 6);
         data.FlushBits();
     }
@@ -3132,14 +3133,17 @@ public partial class ObjectUpdateBuilder
         if (src.Context.HasValue) { blocks.SetBit(0); blocks.SetBit(15); }
         if (src.ArtifactXP.HasValue) { blocks.SetBit(0); blocks.SetBit(17); }
         if (src.ItemAppearanceModID.HasValue) { blocks.SetBit(0); blocks.SetBit(18); }
+        if (src.HasGemsUpdate) { blocks.SetBit(0); blocks.SetBit(2); }
         byte blocksMask = 0;
         for (int __i = 0; __i < 2; __i++)
             if (blocks[__i] != 0) blocksMask |= (byte)(1 << __i);
         data.WriteBits(blocksMask, 2);
         for (int __i = 0; __i < 2; __i++)
             if ((blocksMask & (1 << __i)) != 0) data.WriteBits(blocks[__i], 32);
+        if (blocks.IsBitSet(2)) WriteUpdateItemGemsMaskPreamble(data, ref blocks, src);
         data.FlushBits();
         if (blocksMask == 0) return;
+        if (blocks.IsBitSet(2)) WriteUpdateItemGemsBody(data, src);
         if (blocks.IsBitSet(3)) data.WritePackedGuid128(src.Owner!.Value);
         if (blocks.IsBitSet(4)) data.WritePackedGuid128(src.ContainedIn!.Value);
         if (blocks.IsBitSet(5)) data.WritePackedGuid128(src.Creator!.Value);
@@ -3196,6 +3200,7 @@ public partial class ObjectUpdateBuilder
         if (src.Context.HasValue) return true;
         if (src.ArtifactXP.HasValue) return true;
         if (src.ItemAppearanceModID.HasValue) return true;
+        if (src.HasGemsUpdate) return true;
         return false;
     }
 

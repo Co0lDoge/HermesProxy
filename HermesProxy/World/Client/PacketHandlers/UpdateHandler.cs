@@ -2168,6 +2168,10 @@ public partial class WorldClient
                 }
                 if (updateData.ItemData.HasGemsUpdate)
                     GetSession().GameState.SaveGemsForItem(guid, gems);
+
+                // This update names the guid and slot a parked SMSG_ENCHANTMENTLOG was
+                // missing; send the completed modern packet now.
+                ResolvePendingEnchantmentLog(guid, updateData.ItemData);
             }
             int ITEM_FIELD_PROPERTY_SEED = LegacyVersion.GetUpdateField(ItemField.ITEM_FIELD_PROPERTY_SEED);
             if (ITEM_FIELD_PROPERTY_SEED >= 0 && updateMaskArray[ITEM_FIELD_PROPERTY_SEED])

@@ -235,35 +235,118 @@ public partial class WorldClient
         SendPacketToClient(enchant);
     }
 
+    // The legacy packet is (owner, caster, item ENTRY, enchant id) — no item guid and no
+    // enchantment slot (AzerothCore Item.cpp: SendEnchantmentLog(owner, caster, entry, id),
+    // emitted for every slot below MAX_INSPECTED_ENCHANTMENT_SLOT). The modern packet needs
+    // both. The item's own UPDATE_OBJECT carries the guid and the slot but not the caster,
+    // and it always follows in the same server tick — so park the log here and let
+    // ResolvePendingEnchantmentLog complete it from that update.
+    //
+    // The previous implementation guessed the guid by scanning equipped slots for a matching
+    // entry (wrong item whenever the player owns two of the same entry) and left EnchantSlot
+    // at a hardcoded 1 (TEMP) regardless of the real slot.
     [PacketHandler(Opcode.SMSG_ENCHANTMENT_LOG)]
     void HandleEnchantmentLog(WorldPacket packet)
     {
-        EnchantmentLog enchantment = new EnchantmentLog();
+        var gameState = GetSession().GameState;
+
+        WowGuid128 owner, caster;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            enchantment.Owner = packet.ReadPackedGuid().To128(GetSession().GameState);
-            enchantment.Caster = packet.ReadPackedGuid().To128(GetSession().GameState);
+            owner = packet.ReadPackedGuid().To128(gameState);
+            caster = packet.ReadPackedGuid().To128(gameState);
         }
         else
         {
-            enchantment.Owner = packet.ReadGuid().To128(GetSession().GameState);
-            enchantment.Caster = packet.ReadGuid().To128(GetSession().GameState);
+            owner = packet.ReadGuid().To128(gameState);
+            caster = packet.ReadGuid().To128(gameState);
         }
-        enchantment.ItemID = packet.ReadInt32();
-        var session = GetSession().GameState;
+        int itemId = packet.ReadInt32();
+        int enchantId = packet.ReadInt32();
 
-        for (int i = 0; i < 23; i++)
+        // An unresolved predecessor means no item update ever matched it — most often the
+        // "old enchant cleared" log that precedes a replacement. Flush it best-effort so a
+        // log is never silently swallowed.
+        FlushPendingEnchantmentLog();
+
+        gameState.PendingEnchantmentLog = new GameSessionData.PendingEnchantmentLogData
         {
-            if (session.GetItemId(session.GetInventorySlotItem(i).To128(session)).Equals((uint)enchantment.ItemID))
+            IsSet = true,
+            Owner = owner,
+            Caster = caster,
+            ItemId = (uint)itemId,
+            EnchantId = enchantId,
+        };
+    }
+
+    /// <summary>
+    /// Completes a parked SMSG_ENCHANTMENTLOG once the matching item update names the slot.
+    /// Called from the item branch of the update parser.
+    /// </summary>
+    internal void ResolvePendingEnchantmentLog(WowGuid128 itemGuid, Objects.ItemData item)
+    {
+        var gameState = GetSession().GameState;
+        ref var pending = ref gameState.PendingEnchantmentLog;
+        if (!pending.IsSet || item.Enchantment == null)
+            return;
+
+        if (gameState.GetItemId(itemGuid) != pending.ItemId)
+            return;
+
+        for (int slot = 0; slot < item.Enchantment.Length; slot++)
+        {
+            if (item.Enchantment[slot]?.ID != pending.EnchantId)
+                continue;
+
+            SendPacketToClient(new EnchantmentLog
             {
-                enchantment.ItemGUID = session.GetInventorySlotItem(i).To128(session);
+                Owner = pending.Owner,
+                Caster = pending.Caster,
+                ItemGUID = itemGuid,
+                ItemID = (int)pending.ItemId,
+                Enchantment = pending.EnchantId,
+                EnchantSlot = slot,
+            });
+            pending.IsSet = false;
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Sends a parked log that no item update claimed, resolving the guid by entry as a last
+    /// resort. Slot is left at 0 (PERM) because nothing on the wire identifies it.
+    /// </summary>
+    private void FlushPendingEnchantmentLog()
+    {
+        var gameState = GetSession().GameState;
+        ref var pending = ref gameState.PendingEnchantmentLog;
+        if (!pending.IsSet)
+            return;
+
+        pending.IsSet = false;
+
+        // Equipped gear plus equipped bags: slots 0..BagEnd-1.
+        WowGuid128 itemGuid = default;
+        for (int i = 0; i < Enums.Classic.InventorySlots.BagEnd; i++)
+        {
+            WowGuid128 slotGuid = gameState.GetInventorySlotItem(i).To128(gameState);
+            if (gameState.GetItemId(slotGuid) == pending.ItemId)
+            {
+                itemGuid = slotGuid;
                 break;
             }
         }
-        if (enchantment.ItemGUID == default)
+        if (itemGuid == default)
             return;
 
-        enchantment.Enchantment = packet.ReadInt32();
-        SendPacketToClient(enchantment);
+        SendPacketToClient(new EnchantmentLog
+        {
+            Owner = pending.Owner,
+            Caster = pending.Caster,
+            ItemGUID = itemGuid,
+            ItemID = (int)pending.ItemId,
+            Enchantment = pending.EnchantId,
+            EnchantSlot = 0,
+        });
     }
 }

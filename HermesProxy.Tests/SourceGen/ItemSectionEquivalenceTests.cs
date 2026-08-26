@@ -398,11 +398,14 @@ public class ItemSectionEquivalenceTests
                     if (ench.Duration.HasValue) enchMask |= 4;
                     if (ench.Charges.HasValue) enchMask |= 8;
                     if (enchMask != 0) enchMask |= 1;
-                    data.WriteBits(enchMask, 4);
+                    // 6 bits: UF::ItemEnchantment is HasChangesMask<6> (group, ID, Duration,
+                    // Charges, Field_A, Field_B). This oracle previously encoded the same
+                    // 4-bit bug as the writer, so it agreed with it and never caught it.
+                    data.WriteBits(enchMask, 6);
                     data.FlushBits();
                     if (ench.ID.HasValue) data.WriteInt32(ench.ID.Value);
                     if (ench.Duration.HasValue) data.WriteUInt32(ench.Duration.Value);
-                    if (ench.Charges.HasValue) data.WriteUInt16(ench.Charges.Value);
+                    if (ench.Charges.HasValue) data.WriteInt16((short)ench.Charges.Value);
                 }
             }
         }

@@ -386,17 +386,27 @@ public partial class ObjectUpdateBuilder
 
     internal void WriteEnchantmentUpdate(WorldPacket data, ItemEnchantment[] arr, int i)
     {
+        // UF::ItemEnchantment is HasChangesMask<6>, so the inner mask is SIX bits wide:
+        //   bit 0 group gate, 1 ID (int32), 2 Duration (uint32), 3 Charges (int16),
+        //   4 Field_A (uint8), 5 Field_B (uint8).
+        // Writing it as 4 bits silently broke every live enchantment update: the 4-bit
+        // mask 0b0011 flushed to 0x30, the client read 6 bits from that byte and got
+        // 0b001100 — group bit clear — so it discarded the whole struct and left the
+        // payload bytes unconsumed. Symptom was "enchant only appears after relog",
+        // because the Create path writes the struct flat with no mask. Gems escaped it
+        // only because they ride the separate Gems dynamic field.
+        // Field_A / Field_B have no legacy source, so bits 4 and 5 stay clear.
         var ench = arr[i];   // guaranteed non-null — caller gates on element bit
         uint enchMask = 0;
         if (ench.ID.HasValue) enchMask |= 2;
         if (ench.Duration.HasValue) enchMask |= 4;
         if (ench.Charges.HasValue) enchMask |= 8;
         if (enchMask != 0) enchMask |= 1;
-        data.WriteBits(enchMask, 4);
+        data.WriteBits(enchMask, 6);
         data.FlushBits();
         if (ench.ID.HasValue) data.WriteInt32(ench.ID.Value);
         if (ench.Duration.HasValue) data.WriteUInt32(ench.Duration.Value);
-        if (ench.Charges.HasValue) data.WriteUInt16(ench.Charges.Value);
+        if (ench.Charges.HasValue) data.WriteInt16((short)ench.Charges.Value);
     }
 
     // -----------------------------------------------------------------------------------

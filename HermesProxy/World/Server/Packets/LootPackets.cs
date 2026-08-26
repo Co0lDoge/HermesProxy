@@ -16,6 +16,7 @@
  */
 
 
+using HermesProxy.Enums;
 using System;
 using Framework.Constants;
 using Framework.GameMath;
@@ -353,20 +354,38 @@ class StartLootRoll : ServerPacket, ISpanWritable
 {
     public StartLootRoll() : base(Opcode.SMSG_LOOT_START_ROLL) { }
 
+    // V3_4_3 StartLootRoll::Write inserts LootRollIneligibleReason between ValidRolls
+    // and Method: std::array<LootRollIneligibilityReason, 4> where the enum is uint32,
+    // appended as 4 * sizeof(uint32) = 16 bytes. Omitting it lands Method and the whole
+    // Item block 16 bytes early. 3.3.5a has no equivalent — it sends only the ValidRolls
+    // mask — so every entry is written as None (0).
+    private const int IneligibleReasonCount = 4;
+    private const int IneligibleReasonBytes = IneligibleReasonCount * sizeof(uint);
+
+    private static bool WritesIneligibleReasons =>
+        ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+
     public override void Write()
     {
         _worldPacket.WritePackedGuid128(LootObj);
         _worldPacket.WriteUInt32(MapID);
         _worldPacket.WriteUInt32(RollTime);
         _worldPacket.WriteUInt8((byte)ValidRolls);
+        if (WritesIneligibleReasons)
+        {
+            for (int i = 0; i < IneligibleReasonCount; i++)
+                _worldPacket.WriteUInt32(0);         // LootRollIneligibilityReason.None
+        }
         _worldPacket.WriteUInt8((byte)Method);
         Item.Write(_worldPacket);
     }
 
     // LootItemData: 1 (bits) + ItemInstance + 4 + 1 + 1 = 7 + ItemInstanceMaxSize
     private const int LootItemDataSize = 7 + ItemPacketHelpers.ItemInstanceMaxSize;
-    // GUID(18) + 2 uints(8) + 2 bytes(2) + LootItemData
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 8 + 2 + LootItemDataSize;
+    // GUID(18) + 2 uints(8) + 2 bytes(2) + LootRollIneligibleReason(16 on V3_4_3) + LootItemData
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 8 + 2
+        + (WritesIneligibleReasons ? IneligibleReasonBytes : 0)
+        + LootItemDataSize;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -375,6 +394,11 @@ class StartLootRoll : ServerPacket, ISpanWritable
         writer.WriteUInt32(MapID);
         writer.WriteUInt32(RollTime);
         writer.WriteUInt8((byte)ValidRolls);
+        if (WritesIneligibleReasons)
+        {
+            for (int i = 0; i < IneligibleReasonCount; i++)
+                writer.WriteUInt32(0);               // LootRollIneligibilityReason.None
+        }
         writer.WriteUInt8((byte)Method);
 
         // Write LootItemData inline

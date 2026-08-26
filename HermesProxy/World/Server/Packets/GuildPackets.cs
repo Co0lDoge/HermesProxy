@@ -21,6 +21,7 @@ using System.Text;
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
@@ -215,11 +216,22 @@ public class GuildRosterMemberData
         data.WriteUInt8((byte)ClassID);
         data.WriteUInt8((byte)SexID);
 
+        // V3_4_3 (lineagedr/3.4.3_Source GuildPackets.cpp GuildRosterMemberData)
+        // inserts GuildClubMemberID + RaceID before the name/note bits.
+        // Without them the client reads those 9 bytes as the name length
+        // and the MOTD/info strings after the members land on garbage.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            data.WriteUInt64(GuildClubMemberID);
+            data.WriteUInt8((byte)RaceID);
+        }
+
         data.WriteBits(Name.GetByteCount(), 6);
         data.WriteBits(Note.GetByteCount(), 8);
         data.WriteBits(OfficerNote.GetByteCount(), 8);
         data.WriteBit(Authenticated);
         data.WriteBit(SorEligible);
+        data.FlushBits();
 
         data.WriteString(Name);
         data.WriteString(Note);
@@ -245,6 +257,8 @@ public class GuildRosterMemberData
     public Gender SexID;
     public bool Authenticated;
     public bool SorEligible;
+    public ulong GuildClubMemberID;
+    public Race RaceID = Race.None;
     public GuildRosterProfessionData[] Profession = new GuildRosterProfessionData[2];
 }
 
@@ -356,6 +370,7 @@ public class GuildEventMotd : ServerPacket, ISpanWritable
     public override void Write()
     {
         _worldPacket.WriteBits(MotdText.GetByteCount(), 11);
+        _worldPacket.FlushBits();
         _worldPacket.WriteString(MotdText);
     }
 

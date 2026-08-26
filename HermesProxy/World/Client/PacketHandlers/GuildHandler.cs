@@ -177,9 +177,21 @@ public partial class WorldClient
             }
             case GuildEventType.BankTabUpdated:
             {
+                // AC: _BroadcastEvent(GE_BANK_TAB_UPDATED, _, to_string(tabId), name, icon)
+                // Writing tab=0 / name=tabId / icon=name makes 3.4.3 apply a
+                // non-texture to tab 0 and the whole strip turns into ?.
                 GuildEventTabModified tab = new GuildEventTabModified();
-                tab.Name = strings[0];
-                tab.Icon = strings[1];
+                if (strings.Length >= 3 && int.TryParse(strings[0], out int tabId))
+                {
+                    tab.Tab = tabId;
+                    tab.Name = strings[1];
+                    tab.Icon = strings[2];
+                }
+                else if (strings.Length >= 2)
+                {
+                    tab.Name = strings[0];
+                    tab.Icon = strings[1];
+                }
                 SendPacketToClient(tab);
                 break;
             }

@@ -275,6 +275,9 @@ public partial class WorldSocket
         packet.WriteCString(update.Name);
         packet.WriteCString(update.Icon);
         SendPacketToServer(packet);
+        // Tab list lives on tab 0 FullUpdate. Refresh it so the strip
+        // does not wait for a relog after GE_BANK_TAB_UPDATED.
+        SendGuildBankQueryTab(update.BankGuid, 0);
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_LOG_QUERY)]

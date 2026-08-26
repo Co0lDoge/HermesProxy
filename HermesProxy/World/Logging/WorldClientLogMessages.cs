@@ -108,4 +108,18 @@ internal static partial class WorldClientLogMessages
     [LoggerMessage(EventId = 207, Level = LogLevel.Information, Message = "Authentication succeeded!")]
     public static partial void AuthenticationSucceeded(
         ILogger logger, string SourceFile, string NetDir);
+
+    [LoggerMessage(
+        EventId = 210,
+        Level = LogLevel.Debug,
+        Message = "Guild bank query results tab={Tab} tabs={TabCount} items={ItemCount} fullUpdate={FullUpdate} money={Money}")]
+    public static partial void GuildBankQueryResults(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int Tab,
+        int TabCount,
+        int ItemCount,
+        bool FullUpdate,
+        ulong Money);
 }

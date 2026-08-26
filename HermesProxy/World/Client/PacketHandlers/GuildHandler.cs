@@ -1,6 +1,7 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -19,6 +20,24 @@ public partial class WorldClient
         result.Command = (GuildCommandType)packet.ReadUInt32();
         result.Name = packet.ReadCString();
         result.Result = (GuildCommandError)packet.ReadUInt32();
+        SendPacketToClient(result);
+    }
+
+    [PacketHandler(Opcode.MSG_GUILD_PERMISSIONS)]
+    void HandleGuildPermissions(WorldPacket packet)
+    {
+        GuildPermissionsQueryResults result = new();
+        result.RankID = packet.ReadUInt32();
+        result.Flags = packet.ReadInt32();
+        result.WithdrawGoldLimit = packet.ReadInt32();
+        result.NumTabs = packet.ReadInt8();
+        for (int i = 0; i < GuildConst.MaxBankTabs; i++)
+        {
+            GuildRankTabPermissions tab = new();
+            tab.Flags = packet.ReadInt32();
+            tab.WithdrawItemLimit = packet.ReadInt32();
+            result.Tab.Add(tab);
+        }
         SendPacketToClient(result);
     }
 
@@ -158,9 +177,21 @@ public partial class WorldClient
             }
             case GuildEventType.BankTabUpdated:
             {
+                // AC: _BroadcastEvent(GE_BANK_TAB_UPDATED, _, to_string(tabId), name, icon)
+                // Writing tab=0 / name=tabId / icon=name makes 3.4.3 apply a
+                // non-texture to tab 0 and the whole strip turns into ?.
                 GuildEventTabModified tab = new GuildEventTabModified();
-                tab.Name = strings[0];
-                tab.Icon = strings[1];
+                if (strings.Length >= 3 && int.TryParse(strings[0], out int tabId))
+                {
+                    tab.Tab = tabId;
+                    tab.Name = strings[1];
+                    tab.Icon = strings[2];
+                }
+                else if (strings.Length >= 2)
+                {
+                    tab.Name = strings[0];
+                    tab.Icon = strings[1];
+                }
                 SendPacketToClient(tab);
                 break;
             }
@@ -437,7 +468,14 @@ public partial class WorldClient
             result.ItemInfo.Add(itemInfo);
         }
 
-        result.FullUpdate = (hasTabs && slots > 0);
+        // AC only attaches the tab list on tab 0. 3.4.3 will not paint
+        // items unless FullUpdate is set, so any payload with tabs or
+        // items is a full replace.
+        result.FullUpdate = hasTabs || result.ItemInfo.Count > 0;
+
+        WorldClientLogMessages.GuildBankQueryResults(
+            _melLog, _sourceFile, "C<P S", result.Tab, result.TabInfo.Count,
+            result.ItemInfo.Count, result.FullUpdate, result.Money);
 
         SendPacketToClient(result);
     }

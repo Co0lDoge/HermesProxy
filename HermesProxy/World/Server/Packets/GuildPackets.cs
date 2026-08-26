@@ -154,6 +154,40 @@ public class GuildPermissionsQuery : ClientPacket
     public override void Read() { }
 }
 
+public class GuildPermissionsQueryResults : ServerPacket
+{
+    public GuildPermissionsQueryResults() : base(Opcode.SMSG_GUILD_PERMISSIONS_QUERY_RESULTS) { }
+
+    public override void Write()
+    {
+        // 3.4.3 / Wrathion GuildPackets.cpp GuildPermissionsQueryResults::Write.
+        // AC 3.3.5 MSG_GUILD_PERMISSIONS is the same fields minus the Tab.count
+        // uint32 (it writes a fixed 6-tab array after int8 NumTabs).
+        _worldPacket.WriteUInt32(RankID);
+        _worldPacket.WriteInt32(Flags);
+        _worldPacket.WriteInt32(WithdrawGoldLimit);
+        _worldPacket.WriteInt32(NumTabs);
+        _worldPacket.WriteUInt32((uint)Tab.Count);
+        foreach (var tab in Tab)
+        {
+            _worldPacket.WriteInt32(tab.Flags);
+            _worldPacket.WriteInt32(tab.WithdrawItemLimit);
+        }
+    }
+
+    public uint RankID;
+    public int Flags;
+    public int WithdrawGoldLimit;
+    public int NumTabs;
+    public List<GuildRankTabPermissions> Tab = new();
+}
+
+public struct GuildRankTabPermissions
+{
+    public int Flags;
+    public int WithdrawItemLimit;
+}
+
 public class GuildBankRemainingWithdrawMoneyQuery : ClientPacket
 {
     public GuildBankRemainingWithdrawMoneyQuery(WorldPacket packet) : base(packet) { }
@@ -1159,6 +1193,7 @@ public class GuildBankQueryResults : ServerPacket
             _worldPacket.WriteInt32(tab.TabIndex);
             _worldPacket.WriteBits(tab.Name.GetByteCount(), 7);
             _worldPacket.WriteBits(tab.Icon.GetByteCount(), 9);
+            _worldPacket.FlushBits();
 
             _worldPacket.WriteString(tab.Name);
             _worldPacket.WriteString(tab.Icon);

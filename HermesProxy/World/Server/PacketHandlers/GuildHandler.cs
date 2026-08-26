@@ -4,6 +4,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 
@@ -248,11 +249,12 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_GUILD_BANK_QUERY_TAB)]
     void HandleGuildBankQueryTab(GuildBankQueryTab query)
     {
-        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_QUERY_TAB);
-        packet.WriteGuid(query.BankGuid.To64());
-        packet.WriteUInt8(query.Tab);
-        packet.WriteBool(query.FullUpdate);
-        SendPacketToServer(packet);
+        // 3.4.3 often sends FullUpdate=0 when switching tabs. AC _SendBankList
+        // only fills ItemInfo when sendAllSlots is true (or a slot set is
+        // passed). A false query therefore comes back with items=0 and the
+        // vault looks empty even after a successful deposit.
+        SendGuildBankActivate(query.BankGuid);
+        SendGuildBankQueryTab(query.BankGuid, query.Tab);
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_DEPOSIT_MONEY)]
@@ -281,6 +283,9 @@ public partial class WorldSocket
         packet.WriteCString(update.Name);
         packet.WriteCString(update.Icon);
         SendPacketToServer(packet);
+        // Tab list lives on tab 0 FullUpdate. Refresh it so the strip
+        // does not wait for a relog after GE_BANK_TAB_UPDATED.
+        SendGuildBankQueryTab(update.BankGuid, 0);
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_LOG_QUERY)]
@@ -319,6 +324,7 @@ public partial class WorldSocket
     }
 
     [PacketHandler(Opcode.CMSG_AUTO_GUILD_BANK_ITEM)]
+    [PacketHandler(Opcode.CMSG_SWAP_ITEM_WITH_GUILD_BANK_ITEM)]
     void HandleGuildBankItem(AutoGuildBankItem item)
     {
         // moves an item from the player to the bank
@@ -329,22 +335,14 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(false); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(0); // splitted amount
         else
             packet.WriteUInt8(0); // splitted amount
         SendPacketToServer(packet);
+        SendGuildBankQueryTab(item.BankGuid, item.BankTab);
     }
 
     [PacketHandler(Opcode.CMSG_SPLIT_ITEM_TO_GUILD_BANK)]
@@ -359,22 +357,14 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(false); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(item.StackCount);
         else
             packet.WriteUInt8((byte)item.StackCount);
         SendPacketToServer(packet);
+        SendGuildBankQueryTab(item.BankGuid, item.BankTab);
     }
 
     [PacketHandler(Opcode.CMSG_AUTO_STORE_GUILD_BANK_ITEM)]
@@ -408,16 +398,7 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(true); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(0); // splitted amount
@@ -438,16 +419,7 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(true); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(item.StackCount);
@@ -497,5 +469,54 @@ public partial class WorldSocket
         else
             packet.WriteUInt8((byte)item.StackCount);
         SendPacketToServer(packet);
+    }
+
+    void SendGuildBankActivate(WowGuid128 bankGuid)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_ACTIVATE);
+        packet.WriteGuid(bankGuid.To64());
+        packet.WriteBool(true);
+        SendPacketToServer(packet);
+    }
+
+    void SendGuildBankQueryTab(WowGuid128 bankGuid, byte tab)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_QUERY_TAB);
+        packet.WriteGuid(bankGuid.To64());
+        packet.WriteUInt8(tab);
+        packet.WriteBool(true);
+        SendPacketToServer(packet);
+    }
+
+    // V3_4_3 CMSG slots are InvSlots descriptor indexes (backpack 35-58),
+    // not WotLK 23-38. AdjustInventorySlot only remaps bank/buyback/keyring
+    // between Classic/TBC/WotLK and leaves 35 as 35. AC then looks in an
+    // empty backpack cell and SwapItemsWithInventory is a silent no-op.
+    void WritePlayerBagAndSlot(WorldPacket packet, byte? containerSlot, byte containerItemSlot, byte bankTab, byte bankSlot)
+    {
+        byte srcBag;
+        byte srcSlot;
+        byte legacyBag;
+        byte legacySlot;
+        if (containerSlot != null)
+        {
+            srcBag = containerSlot.Value;
+            srcSlot = containerItemSlot;
+            legacyBag = ModernVersion.AdjustModernInventorySlotToLegacy(srcBag);
+            legacySlot = srcSlot;
+        }
+        else
+        {
+            srcBag = Enums.Classic.InventorySlots.Bag0;
+            srcSlot = containerItemSlot;
+            legacyBag = srcBag;
+            legacySlot = ModernVersion.AdjustModernInventorySlotToLegacy(srcSlot);
+        }
+
+        WorldSocketLogMessages.GuildBankPlayerToBank(
+            _melLog, _sourceFile, "C P>S", bankTab, bankSlot, srcBag, legacyBag, srcSlot, legacySlot);
+
+        packet.WriteUInt8(legacyBag);
+        packet.WriteUInt8(legacySlot);
     }
 }

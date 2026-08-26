@@ -492,8 +492,6 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_GUILD_BANK_LOG_QUERY)]
     void HandleGuildBankLongQuery(WorldPacket packet)
     {
-        const int maxTabs = 6;
-
         GuildBankLogQueryResults result = new();
         result.Tab = packet.ReadUInt8();
         byte logSize = packet.ReadUInt8();
@@ -502,17 +500,34 @@ public partial class WorldClient
             GuildBankLogEntry logEntry = new GuildBankLogEntry();
             logEntry.EntryType = packet.ReadInt8();
             logEntry.PlayerGUID = packet.ReadGuid().To128(GetSession().GameState);
-            
-            if (result.Tab != maxTabs)
+
+            // The legacy writer switches on the event type, not the tab index — see
+            // Guild::BankEventLogEntry::WritePacket / GuildBankLogQueryResults::Write on
+            // 3.3.5a. Keying off the tab happened to agree only because money events are
+            // queried with tab 6; a money event in an item tab (or the reverse) desynced
+            // the rest of the packet.
+            //
+            // Count is a uint32 on the wire. Reading it as a single byte left the
+            // following TimeOffset three bytes early, splicing Count's high bytes onto
+            // the real offset — which is why the guild bank Log tab showed ages like
+            // "35 years ago" that jumped around instead of counting up (issue #158).
+            switch ((GuildBankEventType)logEntry.EntryType)
             {
-                logEntry.ItemID = packet.ReadInt32();
-                logEntry.Count = packet.ReadUInt8();
-                if ((GuildBankEventType)logEntry.EntryType == GuildBankEventType.MoveItem ||
-                    (GuildBankEventType)logEntry.EntryType == GuildBankEventType.MoveItem2)
+                case GuildBankEventType.DepositItem:
+                case GuildBankEventType.WithdrawItem:
+                    logEntry.ItemID = packet.ReadInt32();
+                    logEntry.Count = (int)packet.ReadUInt32();
+                    break;
+                case GuildBankEventType.MoveItem:
+                case GuildBankEventType.MoveItem2:
+                    logEntry.ItemID = packet.ReadInt32();
+                    logEntry.Count = (int)packet.ReadUInt32();
                     logEntry.OtherTab = packet.ReadInt8();
+                    break;
+                default:
+                    logEntry.Money = packet.ReadUInt32();
+                    break;
             }
-            else
-                logEntry.Money = packet.ReadUInt32();
 
             logEntry.TimeOffset = packet.ReadUInt32();
             result.Entry.Add(logEntry);

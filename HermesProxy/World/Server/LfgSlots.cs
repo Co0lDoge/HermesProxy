@@ -71,6 +71,28 @@ public static class LfgSlots
         _ => (uint)LFGSoftLock.None,
     };
 
+    // Party-info SoftLock only hides content the backend cannot serve. Level
+    // and gear locks stay SoftLock=None so 3.4.3 prints the real per-player
+    // reason (e.g. "Caklick must advance to a higher level.") instead of a
+    // bare "You may not queue for this dungeon."
+    public static uint ToPartySoftLock(uint lockStatus) => (LFGLockStatus)lockStatus switch
+    {
+        LFGLockStatus.InsufficientExpansion
+        or LFGLockStatus.NotInSeason => (uint)LFGSoftLock.Unk2,
+        _ => (uint)LFGSoftLock.None,
+    };
+
+    // 3.3.5a only sends lock status, not required/current item level. Leaving
+    // TooLow/TooHighGearScore on the wire makes 3.4.3 print "Requires: 0.
+    // Currently 0." (issue #144). HasRestriction (15) has no FrameXML string
+    // and renders INSTANCE_UNAVAILABLE_*_OTHER instead.
+    public static uint ToDisplayLockStatus(uint lockStatus) => (LFGLockStatus)lockStatus switch
+    {
+        LFGLockStatus.TooLowGearScore
+        or LFGLockStatus.TooHighGearScore => (uint)LFGLockStatus.HasRestriction,
+        _ => lockStatus,
+    };
+
     /// <summary>
     /// Packed slots to inject as SoftLock hide-rows so the 3.4.3 client drops the
     /// Titan Rune Protocol categories from Specific Dungeons. Skips IDs already

@@ -14,6 +14,10 @@ public enum LFGLockStatus : uint
     TooLowGearScore        = 4,
     TooHighGearScore       = 5,
     RaidLocked             = 6,
+    // 3.4.3 LFG.h LFG_LOCKSTATUS_HAS_RESTRICTION. FrameXML has no string at
+    // [15], so the tooltip is INSTANCE_UNAVAILABLE_*_OTHER ("You do not meet
+    // the requirements for this dungeon.") with no Requires/Currently numbers.
+    HasRestriction         = 15,
     AttunementTooLowLevel  = 1001,
     AttunementTooHighLevel = 1002,
     QuestNotCompleted      = 1022,

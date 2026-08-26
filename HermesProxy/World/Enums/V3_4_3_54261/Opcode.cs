@@ -460,7 +460,12 @@ public enum Opcode : uint
 	SMSG_LOOT_RESPONSE = 9748u,
 	SMSG_LOOT_ROLL = 9758u,
 	SMSG_LOOT_ROLL_WON = 9762u,
-	SMSG_LOOT_START_ROLL = 0u,
+	// Named SMSG_START_LOOT_ROLL in the 3.4.3 sources (0x261D), which is why it was
+	// missed while 0x261E/0x2620/0x2621/0x2622 were mapped — the gap sits below the
+	// block rather than inside it, and 0x261F is SMSG_MASTER_LOOT_CANDIDATE_LIST.
+	// Without this the Need/Greed/Pass dialog never opens: the roll resolves around
+	// the player because LOOT_ROLL / ROLL_WON / ALL_PASSED are all mapped.
+	SMSG_LOOT_START_ROLL = 9757u,
 	SMSG_MAIL_LIST_RESULT = 10070u,
 	SMSG_CHAT = 11181u,
 	SMSG_MINIMAP_PING = 9934u,

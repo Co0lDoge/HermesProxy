@@ -122,4 +122,17 @@ internal static partial class WorldClientLogMessages
         int ItemCount,
         bool FullUpdate,
         ulong Money);
+
+    [LoggerMessage(
+        EventId = 211,
+        Level = LogLevel.Debug,
+        Message = "Inspect talents unspent={Unspent} specs={Specs} active={Active} talents={Talents}")]
+    public static partial void InspectTalents(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint Unspent,
+        byte Specs,
+        byte Active,
+        int Talents);
 }

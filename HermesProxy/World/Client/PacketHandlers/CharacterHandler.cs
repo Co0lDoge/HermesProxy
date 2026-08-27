@@ -724,7 +724,7 @@ public partial class WorldClient
             }
 
             WorldClientLogMessages.InspectTalents(
-                _melLog, _sourceFile, "C P<S", unspent, specsCount, activeSpec, totalTalents);
+                _melLog, _sourceFile, _netDirRecv, unspent, specsCount, activeSpec, totalTalents);
         }
 
         SendPacketToClient(inspect);

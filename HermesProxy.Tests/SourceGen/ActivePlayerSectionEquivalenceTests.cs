@@ -28,9 +28,12 @@ namespace HermesProxy.Tests.SourceGen;
 //     mask-mutators rather than per-field source predicates.
 //   - PerElement + CustomWriter on nested-struct arrays (RestInfo, PvpInfo).
 //
-// Create path is not byte-eq tested here — `WriteCreateActivePlayerAll` is the
-// hand-port body moved verbatim onto the builder partial; byte-eq is trivial by
-// construction (no logic change, no generator transformation).
+// Create path: `WriteCreateActivePlayerAll` is still the hand-port body, declared on
+// ActivePlayerField as a single ACTIVEPLAYER_CREATE_ALL_CUSTOM placeholder. Byte-eq
+// used to be trivial by construction, but it stops being trivial the moment that
+// block is decomposed into declarative descriptor members. The frozen oracle below
+// is a verbatim copy of the hand-port taken before that migration starts, so each
+// step can be proven byte-identical against the behaviour we have today.
 public class ActivePlayerSectionEquivalenceTests
 {
     private static GlobalSessionData CreateGlobalSession()
@@ -793,5 +796,408 @@ public class ActivePlayerSectionEquivalenceTests
         }
 
         data.FlushBits();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Frozen Create oracle — verbatim copy of ObjectUpdateBuilder.WriteCreateActivePlayerAll
+    // as of the start of the descriptor migration. Only two edits: `_gameState` became the
+    // `gameState` parameter, and the two internal statics are called through the type.
+    // DO NOT "fix" this copy. Its whole value is that it does not change while the real
+    // writer is decomposed into descriptor members.
+    // ---------------------------------------------------------------------------
+    private static void WriteCreateActivePlayerData_HandPort(WorldPacket data, ActivePlayerData src, GameSessionData gameState)
+    {
+        // V3_4_3 ActivePlayerData wire — written in TC field-declaration order, NOT
+        // descriptor bit order. Many lines below are "zero placeholders": legacy 3.3.5
+        // does not populate the field, but the modern client expects a value at this
+        // wire position so we emit 0 / type-default. Where a property IS available on
+        // ActivePlayerData (Class A — see plan), read it. Otherwise annotate and ship 0.
+        //
+        // Bit numbers refer to ActivePlayerField.cs declarations.
+
+        var active = src;
+
+        ulong[] foldedTitles = new ulong[6];
+        int knownTitlesCount = ObjectUpdateBuilder.FoldKnownTitles(active.KnownTitles, foldedTitles);
+
+        // InvSlots[141] — modern flat layout fanned from legacy 23/24/28/7/12/32 slots.
+        for (int i = 0; i < 141; i++)
+            data.WritePackedGuid128(ObjectUpdateBuilder.GetModernInvSlot(active, i) ?? WowGuid128.Empty);
+
+        data.WritePackedGuid128(active.FarsightObject ?? WowGuid128.Empty);       // bit 26: FarsightObject (PackedGuid128)
+        data.WritePackedGuid128(active.SummonedBattlePetGUID
+            ?? gameState.SummonedBattlePetGuid);                                  // bit 27: SummonedBattlePetGUID
+        data.WriteUInt32((uint)knownTitlesCount);                                  // bit 3 dynamic field: KnownTitles.size
+        data.WriteUInt64(active.Coinage.GetValueOrDefault());                      // bit 28: Coinage (UInt64)
+        data.WriteInt32(active.XP.GetValueOrDefault());                            // bit 29: XP (Int32)
+        data.WriteInt32(active.NextLevelXP.GetValueOrDefault());                   // bit 30: NextLevelXP (Int32)
+        data.WriteInt32(active.TrialXP.GetValueOrDefault());                       // bit 31: TrialXP (Int32) — was hardcoded 0; live property exists
+
+        // bit 32: Skill (nested SkillInfo[256] of 7 ushorts per slot)
+        var skill = active.Skill;
+        for (int j = 0; j < 256; j++)
+        {
+            data.WriteUInt16(skill?.SkillLineID[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillStep[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillStartingRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillMaxRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16((ushort)(skill?.SkillTempBonus[j].GetValueOrDefault() ?? 0));
+            data.WriteUInt16(skill?.SkillPermBonus[j].GetValueOrDefault() ?? 0);
+        }
+
+        data.WriteInt32(active.CharacterPoints.GetValueOrDefault());               // bit 33: CharacterPoints (Int32)
+        data.WriteInt32(active.MaxTalentTiers.GetValueOrDefault());                // bit 34: MaxTalentTiers (Int32)
+        data.WriteUInt32(active.TrackCreatureMask ?? 0u);                          // bit 35: TrackCreatureMask (UInt32) — was hardcoded 0; live property exists
+        // bits 267-268 (parent 266): TrackResourceMask[2] (UInt32). These two slots were
+        // previously mislabeled as Mainhand/OffhandExpertise — TC WriteCreate (UpdateFields.cpp:2886)
+        // emits TrackResourceMask here, BEFORE the expertise floats. Only [0] is populated
+        // from legacy PLAYER_TRACK_RESOURCES; [1] stays 0.
+        data.WriteUInt32(active.TrackResourceMask[0].GetValueOrDefault());         // TrackResourceMask[0] (UInt32)
+        data.WriteUInt32(active.TrackResourceMask[1].GetValueOrDefault());         // TrackResourceMask[1] (UInt32)
+
+        // Block 38 percentages (12 floats, TC UpdateFields.cpp:2890-2901).
+        // MainhandExpertise..OffhandCritPercentage. Most populated from legacy wire;
+        // RangedExpertise/CombatRatingExpertise/*FromAttribute have no WotLK source (0).
+        data.WriteFloat(active.MainhandExpertise.GetValueOrDefault());             // bit 36: MainhandExpertise (Float)
+        data.WriteFloat(active.OffhandExpertise.GetValueOrDefault());              // bit 37: OffhandExpertise (Float)
+        data.WriteFloat(active.RangedExpertise.GetValueOrDefault());               // bit 39: RangedExpertise (Float)
+        data.WriteFloat(active.CombatRatingExpertise.GetValueOrDefault());         // bit 40: CombatRatingExpertise (Float)
+        data.WriteFloat(active.BlockPercentage.GetValueOrDefault());               // bit 41: BlockPercentage (Float)
+        data.WriteFloat(active.DodgePercentage.GetValueOrDefault());               // bit 42: DodgePercentage (Float)
+        data.WriteFloat(active.DodgePercentageFromAttribute.GetValueOrDefault());  // bit 43: DodgePercentageFromAttribute (Float)
+        data.WriteFloat(active.ParryPercentage.GetValueOrDefault());               // bit 44: ParryPercentage (Float)
+        data.WriteFloat(active.ParryPercentageFromAttribute.GetValueOrDefault());  // bit 45: ParryPercentageFromAttribute (Float)
+        data.WriteFloat(active.CritPercentage.GetValueOrDefault());                // bit 46: CritPercentage (Float)
+        data.WriteFloat(active.RangedCritPercentage.GetValueOrDefault());          // bit 47: RangedCritPercentage (Float)
+        data.WriteFloat(active.OffhandCritPercentage.GetValueOrDefault());         // bit 48: OffhandCritPercentage (Float)
+
+        // Multi-school combat arrays — interleaved by school index 0..6 (TC UpdateFields.cpp:2902-2908).
+        // SpellCritPercentage[7], ModDamageDonePos[7], ModDamageDoneNeg[7], ModDamageDonePercent[7].
+        // All populated from legacy wire (PLAYER_SPELL_CRIT_PERCENTAGE1 / PLAYER_FIELD_MOD_DAMAGE_DONE_*).
+        for (int k = 0; k < 7; k++)
+        {
+            data.WriteFloat(active.SpellCritPercentage[k].GetValueOrDefault());
+            data.WriteInt32(active.ModDamageDonePos[k].GetValueOrDefault());
+            data.WriteInt32(active.ModDamageDoneNeg[k].GetValueOrDefault());
+            data.WriteFloat(active.ModDamageDonePercent[k].GetValueOrDefault());
+        }
+
+        // Block 38 remainder (TC UpdateFields.cpp:2909-2918).
+        // ShieldBlock populated from legacy PLAYER_SHIELD_BLOCK; the rest are retail-era
+        // stats with no WotLK source (forward-if-stored, else 0/default).
+        data.WriteInt32(active.ShieldBlock.GetValueOrDefault());                   // bit 49: ShieldBlock (Int32)
+        data.WriteFloat(0f);                                                       // bit 50: ShieldBlockCritPercentage (Float) — no ActivePlayerData property
+        data.WriteFloat(active.Mastery.GetValueOrDefault());                       // bit 51: Mastery (Float)
+        data.WriteFloat(active.Speed.GetValueOrDefault());                         // bit 52: Speed (Float)
+        data.WriteFloat(active.Avoidance.GetValueOrDefault());                     // bit 53: Avoidance (Float)
+        data.WriteFloat(active.Sturdiness.GetValueOrDefault());                    // bit 54: Sturdiness (Float)
+        data.WriteInt32(active.Versatility.GetValueOrDefault());                   // bit 55: Versatility (Int32)
+        data.WriteFloat(active.VersatilityBonus.GetValueOrDefault());              // bit 56: VersatilityBonus (Float)
+        data.WriteFloat(active.PvpPowerDamage.GetValueOrDefault());                // bit 57: PvpPowerDamage (Float)
+        data.WriteFloat(active.PvpPowerHealing.GetValueOrDefault());               // bit 58: PvpPowerHealing (Float)
+
+        // bit 299 (parent 298): ExploredZones[240] (UInt64). Live property exists; TODO per-element read.
+        for (int l = 0; l < 240; l++)
+            data.WriteUInt64(active.ExploredZones[l].GetValueOrDefault());
+
+        // bits 540-541 (parent 539): RestInfo[2] nested struct {Threshold:UInt32, StateID:UInt8}.
+        // StateID defaults to 1 when unset. RestInfo elements populated for current player.
+        data.WriteUInt32(active.RestInfo[0]?.Threshold ?? 0u);                     // RestInfo[0].Threshold
+        data.WriteUInt8((byte)(active.RestInfo[0]?.StateID ?? 1));                 // RestInfo[0].StateID (default 1)
+        data.WriteUInt32(active.RestInfo[1]?.Threshold ?? 0u);                     // RestInfo[1].Threshold
+        data.WriteUInt8((byte)(active.RestInfo[1]?.StateID ?? 1));                 // RestInfo[1].StateID (default 1)
+
+        // ModHealing block (TC UpdateFields.cpp:2927-2930). ModHealingDonePos populated
+        // from legacy PLAYER_FIELD_MOD_HEALING_DONE_POS; the percent fields have no WotLK source.
+        data.WriteInt32(active.ModHealingDonePos.GetValueOrDefault());             // bit 59: ModHealingDonePos (Int32)
+        data.WriteFloat(active.ModHealingPercent.GetValueOrDefault());             // bit 60: ModHealingPercent (Float)
+        data.WriteFloat(active.ModHealingDonePercent.GetValueOrDefault());         // bit 61: ModHealingDonePercent (Float)
+        data.WriteFloat(active.ModPeriodicHealingDonePercent.GetValueOrDefault()); // bit 62: ModPeriodicHealingDonePercent (Float)
+
+        // bits 543/546 (parent 542): WeaponDmgMultipliers[3], WeaponAtkSpeedMultipliers[3] (both Float, default 1f).
+        // Forward-if-stored, else 1f (multipliers must default to 1, not 0).
+        for (int m = 0; m < 3; m++)
+        {
+            data.WriteFloat(active.WeaponDmgMultipliers[m] ?? 1f);                 // WeaponDmgMultipliers[m]
+            data.WriteFloat(active.WeaponAtkSpeedMultipliers[m] ?? 1f);            // WeaponAtkSpeedMultipliers[m]
+        }
+        // ModSpellPower block (TC UpdateFields.cpp:2936-2941). ModTargetResistance /
+        // ModTargetPhysicalResistance populated from legacy wire; the percent fields have no WotLK source.
+        data.WriteFloat(active.ModSpellPowerPercent.GetValueOrDefault());          // bit 63: ModSpellPowerPercent (Float)
+        data.WriteFloat(active.ModResiliencePercent.GetValueOrDefault());          // bit 64: ModResiliencePercent (Float)
+        data.WriteFloat(active.OverrideSpellPowerByAPPercent.GetValueOrDefault()); // bit 65: OverrideSpellPowerByAPPercent (Float)
+        data.WriteFloat(active.OverrideAPBySpellPowerPercent.GetValueOrDefault()); // bit 66: OverrideAPBySpellPowerPercent (Float)
+        data.WriteInt32(active.ModTargetResistance.GetValueOrDefault());           // bit 67: ModTargetResistance (Int32)
+        data.WriteInt32(active.ModTargetPhysicalResistance.GetValueOrDefault());   // bit 68: ModTargetPhysicalResistance (Int32)
+
+        data.WriteUInt32(active.LocalFlags.GetValueOrDefault());                   // bit 69: LocalFlags (UInt32)
+        // bits 71-74 (parent 70): block-70 byte cluster — fixed 2026-05-21
+        // (was the action-bar 2/3/4/5 persistence bug).
+        data.WriteUInt8(active.GrantableLevels ?? 0);                              // bit 71: GrantableLevels (UInt8)
+        data.WriteUInt8(active.MultiActionBars ?? 0);                              // bit 72: MultiActionBars (UInt8)
+        data.WriteUInt8(active.LifetimeMaxRank ?? 0);                              // bit 73: LifetimeMaxRank (UInt8)
+        data.WriteUInt8(active.NumRespecs ?? 0);                                   // bit 74: NumRespecs (UInt8)
+        data.WriteInt32((int)active.AmmoID.GetValueOrDefault());                   // bit 75: AmmoID (UInt32?→Int32 cast)
+        data.WriteUInt32(active.PvpMedals ?? 0u);                                  // bit 76: PvpMedals (UInt32) — was hardcoded 0; live property exists
+
+        // bits 550/562 (parent 549): BuybackPrice[12] (UInt32), BuybackTimestamp[12] (Int64 cast from uint?).
+        // Interleaved by slot. Populated from legacy PLAYER_FIELD_BUYBACK_PRICE_1 / _TIMESTAMP_1.
+        for (int n = 0; n < 12; n++)
+        {
+            data.WriteUInt32(active.BuybackPrice[n].GetValueOrDefault());          // BuybackPrice[n] (UInt32)
+            data.WriteInt64((long)active.BuybackTimestamp[n].GetValueOrDefault()); // BuybackTimestamp[n] ((long)cast)
+        }
+
+        // bits 77-84 (block 70): 8 UInt16 honorable/dishonorable kill counters
+        // (Today/Yesterday/LastWeek/ThisWeek × Honorable/Dishonorable). TC UpdateFields.cpp:2954-2961.
+        // Populated from legacy PLAYER_FIELD_KILLS / *_CONTRIBUTION fields.
+        data.WriteUInt16(active.TodayHonorableKills.GetValueOrDefault());          // bit 77
+        data.WriteUInt16(active.TodayDishonorableKills.GetValueOrDefault());       // bit 78
+        data.WriteUInt16(active.YesterdayHonorableKills.GetValueOrDefault());      // bit 79
+        data.WriteUInt16(active.YesterdayDishonorableKills.GetValueOrDefault());   // bit 80
+        data.WriteUInt16(active.LastWeekHonorableKills.GetValueOrDefault());       // bit 81
+        data.WriteUInt16(active.LastWeekDishonorableKills.GetValueOrDefault());    // bit 82
+        data.WriteUInt16(active.ThisWeekHonorableKills.GetValueOrDefault());       // bit 83
+        data.WriteUInt16(active.ThisWeekDishonorableKills.GetValueOrDefault());    // bit 84
+
+        // bits 85-91 (block 70): 7 UInt32 contribution / lifetime kills / lastweek rank. TC UpdateFields.cpp:2962-2968.
+        // Field_F24 (4th slot) is unused — no ActivePlayerData property.
+        data.WriteUInt32(active.ThisWeekContribution.GetValueOrDefault());         // bit 85: ThisWeekContribution
+        data.WriteUInt32(active.LifetimeHonorableKills.GetValueOrDefault());       // bit 86: LifetimeHonorableKills
+        data.WriteUInt32(active.LifetimeDishonorableKills.GetValueOrDefault());    // bit 87: LifetimeDishonorableKills
+        data.WriteUInt32(0u);                                                      // bit 88: Field_F24 — unused
+        data.WriteUInt32(active.YesterdayContribution.GetValueOrDefault());        // bit 89: YesterdayContribution
+        data.WriteUInt32(active.LastWeekContribution.GetValueOrDefault());         // bit 90: LastWeekContribution
+        data.WriteUInt32(active.LastWeekRank.GetValueOrDefault());                 // bit 91: LastWeekRank
+
+        data.WriteInt32(active.WatchedFactionIndex ?? -1);                         // bit 92: WatchedFactionIndex (Int32, default -1)
+
+        // bit 575 (parent 574): CombatRatings[32] (Int32).
+        for (int c = 0; c < 32; c++)
+            data.WriteInt32(active.CombatRatings?[c].GetValueOrDefault() ?? 0);
+
+        data.WriteInt32(active.MaxLevel ?? LegacyVersion.GetMaxLevel());           // bit 93: MaxLevel (Int32, default = per-build cap)
+        data.WriteInt32(0);                                                        // bit 94: ScalingPlayerLevelDelta (Int32) — live property exists, TODO
+        data.WriteInt32(0);                                                        // bit 95: MaxCreatureScalingLevel (Int32) — live property exists, TODO
+
+        // bit 616 (parent 615): NoReagentCostMask[4] (UInt32). Live property exists; TODO per-element read.
+        for (int q = 0; q < 4; q++)
+            data.WriteUInt32(0u);
+
+        data.WriteInt32(active.PetSpellPower.GetValueOrDefault());                 // bit 96: PetSpellPower (Int32)
+
+        // bit 621 (parent 620): ProfessionSkillLine[2] (Int32).
+        for (int s = 0; s < 2; s++)
+            data.WriteInt32(active.ProfessionSkillLine?[s].GetValueOrDefault() ?? 0);
+
+        data.WriteFloat(0f);                                                       // bit 97: UiHitModifier (Float) — live property exists, TODO
+        data.WriteFloat(0f);                                                       // bit 98: UiSpellHitModifier (Float) — live property exists, TODO
+        data.WriteInt32(0);                                                        // bit 99: HomeRealmTimeOffset (Int32) — live property exists, TODO
+        data.WriteFloat(active.ModPetHaste ?? 1f);                                 // bit 100: ModPetHaste (Float, default 1f)
+        data.WriteUInt8(active.LocalRegenFlags.GetValueOrDefault());               // bit 101: LocalRegenFlags (UInt8)
+        data.WriteUInt8(active.AuraVision.GetValueOrDefault());                    // bit 103: AuraVision (UInt8) — populated from PLAYER_FIELD_BYTES2
+        data.WriteUInt8(active.NumBackpackSlots ?? 16);                            // bit 104: NumBackpackSlots (UInt8, default 16)
+        data.WriteInt32(0);                                                        // bit 105: OverrideSpellsID (Int32) — live property exists, TODO
+        data.WriteInt32(0);                                                        // bit 106: LfgBonusFactionID (Int32) — live property exists, TODO
+        data.WriteUInt16(0);                                                       // bit 107: LootSpecID (UInt16 from uint? via (ushort) cast) — live property exists, TODO
+        data.WriteUInt32(0u);                                                      // bit 108: OverrideZonePVPType (UInt32) — live property exists, TODO
+
+        // bit 624 (parent 623): BagSlotFlags[4] (UInt32). Live property exists; TODO per-element read.
+        for (int b = 0; b < 4; b++)
+            data.WriteUInt32(0u);
+
+        // bit 629 (parent 628): BankBagSlotFlags[7] (UInt32). Live property exists; TODO per-element read.
+        for (int b = 0; b < 7; b++)
+            data.WriteUInt32(0u);
+
+        // bit 637 (parent 636): QuestCompleted[875] (UInt64). Live property exists; TODO per-element read.
+        for (int qc = 0; qc < 875; qc++)
+            data.WriteUInt64(0uL);
+
+        data.WriteInt32(active.Honor.GetValueOrDefault());                         // bit 109: Honor (Int32)
+        data.WriteInt32(active.HonorNextLevel ?? 5500);                            // bit 110: HonorNextLevel (Int32, default 5500)
+        data.WriteInt32(0);                                                        // bit 111: Field_F74 — descriptor: unused
+        data.WriteInt32((int?)active.PvPTierMaxFromWins ?? -1);                    // bit 112: PvPTierMaxFromWins (uint?→Int32 cast, default -1)
+        data.WriteInt32((int?)active.PvPLastWeeksTierMaxFromWins ?? -1);           // bit 113: PvPLastWeeksTierMaxFromWins (uint?→Int32 cast, default -1)
+        data.WriteUInt8(active.PvPRankProgress.GetValueOrDefault());               // bit 114: PvPRankProgress (UInt8) — populated from PLAYER_FIELD_BYTES2
+        data.WriteInt32(0);                                                        // PerksProgramCurrency (Int32) — no WotLK source (TC UpdateFields.cpp:3015)
+
+        // 16 dynamic-field count prefixes. Per WPP V3_4_0 ReadCreateActivePlayerData
+        // wire order. Slots 6 + 7 = Heirlooms.Resize + HeirloomFlags.Resize; we ship
+        // the full 38-item set so the Collections panel renders X/38 owned. Matching
+        // payload bytes are written below, before the PvpInfo loop.
+        uint heirloomCount = (uint)GameData.Heirlooms.Count;
+        data.WriteUInt32(0u);                                                      // ResearchSites.Resize
+        data.WriteUInt32(0u);                                                      // ResearchSiteProgress.Resize
+        data.WriteUInt32(0u);                                                      // Research.Resize
+        data.WriteUInt32(0u);                                                      // DailyQuestsCompleted.Resize
+        data.WriteUInt32(0u);                                                      // AvailableQuestLineXQuestIDs.Resize
+        data.WriteUInt32(0u);                                                      // Field_1000.Resize
+        data.WriteUInt32(heirloomCount);                                           // Heirlooms.Resize
+        data.WriteUInt32(heirloomCount);                                           // HeirloomFlags.Resize
+        data.WriteUInt32(0u);                                                      // Toys.Resize
+        data.WriteUInt32(0u);                                                      // Transmog.Resize
+        data.WriteUInt32(0u);                                                      // ConditionalTransmog.Resize
+        data.WriteUInt32(0u);                                                      // SelfResSpells.Resize
+        data.WriteUInt32(0u);                                                      // CharacterRestrictions.Resize
+        data.WriteUInt32(0u);                                                      // SpellPctModByLabel.Resize
+        data.WriteUInt32(0u);                                                      // SpellFlatModByLabel.Resize
+        data.WriteUInt32(0u);                                                      // TaskQuests.Resize
+
+        data.WriteInt32(0);                                                        // TransportServerTime (Int32) — no WotLK source (TC UpdateFields.cpp:3047)
+        data.WriteUInt32(0u);                                                      // TraitConfigs.size — always 0 (TC UpdateFields.cpp:3048)
+        data.WriteUInt32(0u);                                                      // ActiveCombatTraitConfigID (UInt32) — no WotLK source (TC UpdateFields.cpp:3049)
+
+        // bit 1512 GlyphsGroup (CustomField, sources from _gameState — not ActivePlayerData).
+        for (int g = 0; g < PlayerConst.MaxGlyphSlots; g++)
+        {
+            data.WriteUInt32(gameState.ActiveGlyphSlotIds[g]);                    // GlyphSlots[g]
+            data.WriteUInt32(gameState.ActiveGlyphs[g]);                          // Glyphs[g]
+        }
+        data.WriteUInt8(gameState.GlyphsEnabled);                                 // bit 120: GlyphsEnabled (UInt8, from _gameState)
+        data.WriteUInt8(0);                                                        // LfgRoles placeholder
+        data.WriteUInt32(0u);                                                      // CategoryCooldownMods.Resize
+        data.WriteUInt32(0u);                                                      // WeeklySpellUses.Resize
+        data.WriteUInt8(0);                                                        // NumStableSlots
+
+        // Dynamic-field payloads. WPP wire order: KnownTitles, DailyQuestsCompleted,
+        // AvailableQuestLineXQuestIDs, Field_1000, then Heirlooms[Count],
+        // HeirloomFlags[Count], then Toys/Transmog/etc, then PvpInfo.
+        for (int i = 0; i < knownTitlesCount; i++)
+            data.WriteUInt64(foldedTitles[i]);
+        foreach (var itemId in GameData.Heirlooms)
+            data.WriteInt32(itemId);
+        for (int i = 0; i < GameData.Heirlooms.Count; i++)
+            data.WriteUInt32(0u);
+
+        // bits 608-614 (parent 607): PvpInfo[7] nested struct.
+        // Per-element layout per WriteUpdateActivePlayerPvpInfo: Int8 + 16×UInt32 + 1 bit + FlushBits.
+        // Live property is PVPInfo[6] on ActivePlayerData. TODO mirror update writer.
+        for (int t = 0; t < 7; t++)
+        {
+            data.WriteInt8(0);                                                     // PvpInfo[t]: per-element prefix byte
+            for (int x = 0; x < 16; x++)
+                data.WriteUInt32(0u);                                              // PvpInfo[t]: 16× UInt32 payload (Rating/SeasonPlayed/WeeklyPlayed/etc.)
+            data.WriteBit(false);                                                  // PvpInfo[t]: Disqualified bit
+            data.FlushBits();
+        }
+        data.FlushBits();
+        data.WriteBit(false);                                                      // trailing bit placeholder (PvpInfo group cap?)
+        data.WriteBit(false);                                                      // trailing bit placeholder
+        data.WriteBit(false);                                                      // trailing bit placeholder
+        data.FlushBits();
+        data.WriteUInt32(0u);                                                      // trailing UInt32 placeholder
+        for (int e = 0; e < 8; e++)
+            data.WriteInt32(0);                                                    // trailing 8× Int32 placeholder
+        data.WriteInt64(0L);                                                       // trailing Int64 placeholder
+        data.WriteBit(false);                                                      // trailing bit placeholder
+        data.FlushBits();
+        data.FlushBits();
+    }
+
+    public static System.Collections.Generic.IEnumerable<object[]> CreateScenarios()
+    {
+        yield return new object[] { "empty", (Action<ActivePlayerData, GameSessionData>)((_, __) => { }) };
+        yield return new object[] { "coinage-xp", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            a.Coinage = 123456uL;
+            a.XP = 4321;
+            a.NextLevelXP = 9999;
+        }) };
+        yield return new object[] { "known-titles", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            a.KnownTitles[0] = 0x1u;
+            a.KnownTitles[3] = 0x80u;   // MaskID >= 96 — the word the 3-word read used to drop
+        }) };
+        yield return new object[] { "skill-lines", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            a.Skill = new SkillInfo();
+            a.Skill.SkillLineID[0] = 164;
+            a.Skill.SkillRank[0] = 100;
+            a.Skill.SkillMaxRank[0] = 225;
+            a.Skill.SkillStep[1] = 2;
+        }) };
+        yield return new object[] { "interleaved-damage-groups", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            // The 7 x 4 interleave: SpellCritPercentage / ModDamageDonePos / Neg / Percent.
+            a.SpellCritPercentage[2] = 5f;
+            a.ModDamageDonePos[3] = 42;
+            a.ModDamageDoneNeg[3] = -7;
+            a.ModDamageDonePercent[6] = 1.5f;
+        }) };
+        yield return new object[] { "buyback-interleave", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            // The 12 x 2 interleave: BuybackPrice / BuybackTimestamp.
+            a.BuybackPrice[0] = 250u;
+            a.BuybackTimestamp[0] = 1700000000u;
+            a.BuybackPrice[11] = 999u;
+        }) };
+        yield return new object[] { "weapon-multiplier-interleave", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            // The 3 x 2 interleave: WeaponDmgMultipliers / WeaponAtkSpeedMultipliers.
+            a.WeaponDmgMultipliers[0] = 1.25f;
+            a.WeaponAtkSpeedMultipliers[0] = 0.9f;
+            a.WeaponDmgMultipliers[2] = 2f;
+        }) };
+        yield return new object[] { "inv-slots", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            // InvSlots is [23]; modern 0-18 read it directly and modern 30-33 read 19-22.
+            a.InvSlots[0] = WowGuid128.Create(HighGuidType703.Item, 11);
+            a.InvSlots[18] = WowGuid128.Create(HighGuidType703.Item, 22);
+            a.InvSlots[19] = WowGuid128.Create(HighGuidType703.Item, 33);
+            // PackSlots feeds modern 35-58.
+            a.PackSlots[0] = WowGuid128.Create(HighGuidType703.Item, 44);
+            a.PackSlots[23] = WowGuid128.Create(HighGuidType703.Item, 55);
+        }) };
+        yield return new object[] { "glyphs-and-pet", (Action<ActivePlayerData, GameSessionData>)((a, gs) =>
+        {
+            a.GlyphsEnabled = 0x3F;
+            gs.GlyphsEnabled = 0x3F;
+            gs.ActiveGlyphs[0] = 494;
+            gs.ActiveGlyphs[5] = 500;
+            a.PetSpellPower = 123;
+        }) };
+        yield return new object[] { "explored-zones-and-ratings", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            a.ExploredZones[10] = 0xFFFFuL;
+            a.CombatRatings[5] = 75;
+            a.ProfessionSkillLine[0] = 164;
+        }) };
+        yield return new object[] { "summoned-battle-pet-from-session", (Action<ActivePlayerData, GameSessionData>)((_, gs) =>
+        {
+            // Exercises the `?? gameState.SummonedBattlePetGuid` fallback.
+            gs.SummonedBattlePetGuid = WowGuid128.Create(HighGuidType703.BattlePet, 77);
+        }) };
+        yield return new object[] { "rest-and-pvp-info", (Action<ActivePlayerData, GameSessionData>)((a, _) =>
+        {
+            a.RestInfo[0] = new RestInfo { Threshold = 50u, StateID = 1u };
+            a.PvpInfo[3] = new PVPInfo { Rating = 1800 };
+        }) };
+    }
+
+    // Pins the Create wire against the pre-migration hand-port. Every descriptor member
+    // that replaces a slice of WriteCreateActivePlayerAll must keep this green.
+    [Theory]
+    [MemberData(nameof(CreateScenarios))]
+    public void WriteCreateActivePlayerData_GeneratedMatchesHandPort(string _label, Action<ActivePlayerData, GameSessionData> populate)
+    {
+        var sessionActual = CreateGameSession();
+        var guid = WowGuid128.Create(HighGuidType703.Player, 1);
+        var builderActual = MakeBuilder(guid, sessionActual, out var updateActual);
+        populate(updateActual.ActivePlayerData!, sessionActual);
+
+        var actualPacket = new WorldPacket();
+        builderActual.WriteCreateActivePlayerData(actualPacket);
+
+        // Frozen oracle on a fresh session so any capture-and-clear state is isolated.
+        var sessionExpected = CreateGameSession();
+        var dataExpected = new ActivePlayerData();
+        populate(dataExpected, sessionExpected);
+
+        var expectedPacket = new WorldPacket();
+        WriteCreateActivePlayerData_HandPort(expectedPacket, dataExpected, sessionExpected);
+
+        Assert.Equal(expectedPacket.GetData(), actualPacket.GetData());
     }
 }

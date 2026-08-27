@@ -8,7 +8,16 @@ public partial class ObjectUpdateBuilder
     internal void WriteCreateActivePlayerData(HermesProxy.World.WorldPacket data)
     {
         var src = _updateData.ActivePlayerData ?? new HermesProxy.World.Objects.ActivePlayerData();
-        WriteCreateActivePlayerAll(data, src);
+        WriteCreateActivePlayerInvSlots(data, src);
+        data.WritePackedGuid128(src.FarsightObject ?? HermesProxy.World.WowGuid128.Empty);
+        WriteCreateActivePlayerSummonedBattlePet(data, src);
+        WriteCreateActivePlayerKnownTitlesCount(data, src);
+        data.WriteUInt64(src.Coinage.GetValueOrDefault());
+        data.WriteInt32(src.XP.GetValueOrDefault());
+        data.WriteInt32(src.NextLevelXP.GetValueOrDefault());
+        data.WriteInt32(src.TrialXP.GetValueOrDefault());
+        WriteCreateActivePlayerSkillInterleaved(data, src);
+        WriteCreateActivePlayerRest(data, src);
     }
 
     internal void WriteUpdateActivePlayerData(HermesProxy.World.WorldPacket data)

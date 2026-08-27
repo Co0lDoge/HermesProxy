@@ -1,4 +1,4 @@
-using HermesProxy.World.Objects;
+﻿using HermesProxy.World.Objects;
 using HermesProxy.World.Objects.Version.Attributes;
 
 namespace HermesProxy.World.Enums.V3_4_3_54261;
@@ -32,12 +32,55 @@ namespace HermesProxy.World.Enums.V3_4_3_54261;
 public enum ActivePlayerField
 {
     // ===========================================================================
-    // Create — one big custom writer. Hand-port body lives there to retain the
-    // ~180 LOC of zero-placeholder interleave readable in one place.
+    // Create — being migrated from one mega custom writer into declarative members,
+    // in wire order. Everything not yet migrated stays in WriteCreateActivePlayerRest,
+    // which shrinks with each slice. ActivePlayerSectionEquivalenceTests pins the whole
+    // Create wire against a frozen copy of the pre-migration hand-port, so every slice
+    // has to stay byte-identical.
+    //
+    // Writes below are emitted in declaration order — this enum IS the wire order.
     // ===========================================================================
+
+    // InvSlots[141]: value is computed (GetModernInvSlot fans legacy slot arrays into the
+    // modern flat layout), so it stays a custom writer rather than a field read.
+    [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerInvSlots))]
+    ACTIVEPLAYER_CREATE_INVSLOTS_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.FarsightObject), DescriptorType.PackedGuid128)]
+    ACTIVEPLAYER_CREATE_FARSIGHT_OBJECT,
+
+    // Falls back to session state, which DefaultExpression cannot express.
+    [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerSummonedBattlePet))]
+    ACTIVEPLAYER_CREATE_SUMMONED_BATTLE_PET_CUSTOM,
+
+    // bit 3 dynamic field — count here, payload much later in the sequence.
     [DescriptorCreatePlaceholder(DescriptorType.UInt32,
-        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerAll))]
-    ACTIVEPLAYER_CREATE_ALL_CUSTOM,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerKnownTitlesCount))]
+    ACTIVEPLAYER_CREATE_KNOWN_TITLES_COUNT_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Coinage), DescriptorType.UInt64)]
+    ACTIVEPLAYER_CREATE_COINAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.XP), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_XP,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.NextLevelXP), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_NEXT_LEVEL_XP,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.TrialXP), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_TRIAL_XP,
+
+    // 256 slots x 7 parallel ushort arrays woven per index.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt16,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerSkillInterleaved))]
+    ACTIVEPLAYER_CREATE_SKILL_INTERLEAVED_CUSTOM,
+
+    // Everything from bit 33 onward, not yet migrated.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerRest))]
+    ACTIVEPLAYER_CREATE_REST_CUSTOM,
 
     // ===========================================================================
     // Update — mask mutators (run before all scalar bit-setting)

@@ -905,7 +905,7 @@ public partial class ObjectUpdateBuilder
     // Whole-Create writer — kept as one method because the byte-stream is mostly
     // zero placeholders interleaved with a few real fields; declarative per-write
     // enum members would balloon to ~200 entries with no readability win.
-    internal void WriteCreateActivePlayerAll(WorldPacket data, ActivePlayerData src)
+    internal void WriteCreateActivePlayerRest(WorldPacket data, ActivePlayerData src)
     {
         // V3_4_3 ActivePlayerData wire — written in TC field-declaration order, NOT
         // descriptor bit order. Many lines below are "zero placeholders": legacy 3.3.5
@@ -919,32 +919,6 @@ public partial class ObjectUpdateBuilder
 
         ulong[] foldedTitles = new ulong[6];
         int knownTitlesCount = FoldKnownTitles(active.KnownTitles, foldedTitles);
-
-        // InvSlots[141] — modern flat layout fanned from legacy 23/24/28/7/12/32 slots.
-        for (int i = 0; i < 141; i++)
-            data.WritePackedGuid128(GetModernInvSlot(active, i) ?? WowGuid128.Empty);
-
-        data.WritePackedGuid128(active.FarsightObject ?? WowGuid128.Empty);       // bit 26: FarsightObject (PackedGuid128)
-        data.WritePackedGuid128(active.SummonedBattlePetGUID
-            ?? _gameState.SummonedBattlePetGuid);                                  // bit 27: SummonedBattlePetGUID
-        data.WriteUInt32((uint)knownTitlesCount);                                  // bit 3 dynamic field: KnownTitles.size
-        data.WriteUInt64(active.Coinage.GetValueOrDefault());                      // bit 28: Coinage (UInt64)
-        data.WriteInt32(active.XP.GetValueOrDefault());                            // bit 29: XP (Int32)
-        data.WriteInt32(active.NextLevelXP.GetValueOrDefault());                   // bit 30: NextLevelXP (Int32)
-        data.WriteInt32(active.TrialXP.GetValueOrDefault());                       // bit 31: TrialXP (Int32) — was hardcoded 0; live property exists
-
-        // bit 32: Skill (nested SkillInfo[256] of 7 ushorts per slot)
-        var skill = active.Skill;
-        for (int j = 0; j < 256; j++)
-        {
-            data.WriteUInt16(skill?.SkillLineID[j].GetValueOrDefault() ?? 0);
-            data.WriteUInt16(skill?.SkillStep[j].GetValueOrDefault() ?? 0);
-            data.WriteUInt16(skill?.SkillRank[j].GetValueOrDefault() ?? 0);
-            data.WriteUInt16(skill?.SkillStartingRank[j].GetValueOrDefault() ?? 0);
-            data.WriteUInt16(skill?.SkillMaxRank[j].GetValueOrDefault() ?? 0);
-            data.WriteUInt16((ushort)(skill?.SkillTempBonus[j].GetValueOrDefault() ?? 0));
-            data.WriteUInt16(skill?.SkillPermBonus[j].GetValueOrDefault() ?? 0);
-        }
 
         data.WriteInt32(active.CharacterPoints.GetValueOrDefault());               // bit 33: CharacterPoints (Int32)
         data.WriteInt32(active.MaxTalentTiers.GetValueOrDefault());                // bit 34: MaxTalentTiers (Int32)
@@ -975,13 +949,7 @@ public partial class ObjectUpdateBuilder
         // Multi-school combat arrays — interleaved by school index 0..6 (TC UpdateFields.cpp:2902-2908).
         // SpellCritPercentage[7], ModDamageDonePos[7], ModDamageDoneNeg[7], ModDamageDonePercent[7].
         // All populated from legacy wire (PLAYER_SPELL_CRIT_PERCENTAGE1 / PLAYER_FIELD_MOD_DAMAGE_DONE_*).
-        for (int k = 0; k < 7; k++)
-        {
-            data.WriteFloat(active.SpellCritPercentage[k].GetValueOrDefault());
-            data.WriteInt32(active.ModDamageDonePos[k].GetValueOrDefault());
-            data.WriteInt32(active.ModDamageDoneNeg[k].GetValueOrDefault());
-            data.WriteFloat(active.ModDamageDonePercent[k].GetValueOrDefault());
-        }
+        WriteCreateActivePlayerDamageDoneInterleaved(data, active);
 
         // Block 38 remainder (TC UpdateFields.cpp:2909-2918).
         // ShieldBlock populated from legacy PLAYER_SHIELD_BLOCK; the rest are retail-era
@@ -1017,11 +985,7 @@ public partial class ObjectUpdateBuilder
 
         // bits 543/546 (parent 542): WeaponDmgMultipliers[3], WeaponAtkSpeedMultipliers[3] (both Float, default 1f).
         // Forward-if-stored, else 1f (multipliers must default to 1, not 0).
-        for (int m = 0; m < 3; m++)
-        {
-            data.WriteFloat(active.WeaponDmgMultipliers[m] ?? 1f);                 // WeaponDmgMultipliers[m]
-            data.WriteFloat(active.WeaponAtkSpeedMultipliers[m] ?? 1f);            // WeaponAtkSpeedMultipliers[m]
-        }
+        WriteCreateActivePlayerWeaponMultipliersInterleaved(data, active);
         // ModSpellPower block (TC UpdateFields.cpp:2936-2941). ModTargetResistance /
         // ModTargetPhysicalResistance populated from legacy wire; the percent fields have no WotLK source.
         data.WriteFloat(active.ModSpellPowerPercent.GetValueOrDefault());          // bit 63: ModSpellPowerPercent (Float)
@@ -1043,11 +1007,7 @@ public partial class ObjectUpdateBuilder
 
         // bits 550/562 (parent 549): BuybackPrice[12] (UInt32), BuybackTimestamp[12] (Int64 cast from uint?).
         // Interleaved by slot. Populated from legacy PLAYER_FIELD_BUYBACK_PRICE_1 / _TIMESTAMP_1.
-        for (int n = 0; n < 12; n++)
-        {
-            data.WriteUInt32(active.BuybackPrice[n].GetValueOrDefault());          // BuybackPrice[n] (UInt32)
-            data.WriteInt64((long)active.BuybackTimestamp[n].GetValueOrDefault()); // BuybackTimestamp[n] ((long)cast)
-        }
+        WriteCreateActivePlayerBuybackInterleaved(data, active);
 
         // bits 77-84 (block 70): 8 UInt16 honorable/dishonorable kill counters
         // (Today/Yesterday/LastWeek/ThisWeek × Honorable/Dishonorable). TC UpdateFields.cpp:2954-2961.
@@ -1194,6 +1154,93 @@ public partial class ObjectUpdateBuilder
         data.WriteBit(false);                                                      // trailing bit placeholder
         data.FlushBits();
         data.FlushBits();
+    }
+
+
+    // ---- Create slice 1: members migrated out of the mega-writer ----
+
+    // InvSlots[141]: modern flat layout fanned from the legacy 23/24/28/7/12/32 slot arrays.
+    // Stays a custom writer because the value is computed (GetModernInvSlot), not a field read.
+    internal void WriteCreateActivePlayerInvSlots(WorldPacket data, ActivePlayerData src)
+    {
+        for (int i = 0; i < 141; i++)
+            data.WritePackedGuid128(GetModernInvSlot(src, i) ?? WowGuid128.Empty);
+    }
+
+    // bit 27: SummonedBattlePetGUID. Custom because the fallback is session state, not a
+    // literal default, so DescriptorCreateField.DefaultExpression cannot express it.
+    internal void WriteCreateActivePlayerSummonedBattlePet(WorldPacket data, ActivePlayerData src)
+    {
+        data.WritePackedGuid128(src.SummonedBattlePetGUID ?? _gameState.SummonedBattlePetGuid);
+    }
+
+    // bit 3 dynamic field: KnownTitles.size. The count sits here in the Create sequence while
+    // the payload lands much later, so each half folds independently — six ulongs, and it keeps
+    // both writers self-contained instead of threading a local across the whole block.
+    internal void WriteCreateActivePlayerKnownTitlesCount(WorldPacket data, ActivePlayerData src)
+    {
+        ulong[] folded = new ulong[6];
+        data.WriteUInt32((uint)FoldKnownTitles(src.KnownTitles, folded));
+    }
+
+    // Interleaved Create group, extracted from the ActivePlayer Create block so the descriptor
+    // migration can address it as a positioned DescriptorCreatePlaceholder + CustomWriter,
+    // the same shape UnitField already uses for its interleaved groups.
+    // bit 32: Skill — 256 slots x 7 parallel ushort arrays woven per index.
+    internal void WriteCreateActivePlayerSkillInterleaved(WorldPacket data, ActivePlayerData src)
+    {
+        var skill = src.Skill;
+        for (int j = 0; j < 256; j++)
+        {
+            data.WriteUInt16(skill?.SkillLineID[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillStep[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillStartingRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16(skill?.SkillMaxRank[j].GetValueOrDefault() ?? 0);
+            data.WriteUInt16((ushort)(skill?.SkillTempBonus[j].GetValueOrDefault() ?? 0));
+            data.WriteUInt16(skill?.SkillPermBonus[j].GetValueOrDefault() ?? 0);
+        }
+    }
+
+    // Interleaved Create group, extracted from the ActivePlayer Create block so the descriptor
+    // migration can address it as a positioned DescriptorCreatePlaceholder + CustomWriter,
+    // the same shape UnitField already uses for its interleaved groups.
+    // 7 schools x 4 parallel arrays woven per index.
+    internal void WriteCreateActivePlayerDamageDoneInterleaved(WorldPacket data, ActivePlayerData src)
+    {
+        for (int k = 0; k < 7; k++)
+        {
+            data.WriteFloat(src.SpellCritPercentage[k].GetValueOrDefault());
+            data.WriteInt32(src.ModDamageDonePos[k].GetValueOrDefault());
+            data.WriteInt32(src.ModDamageDoneNeg[k].GetValueOrDefault());
+            data.WriteFloat(src.ModDamageDonePercent[k].GetValueOrDefault());
+        }
+    }
+
+    // Interleaved Create group, extracted from the ActivePlayer Create block so the descriptor
+    // migration can address it as a positioned DescriptorCreatePlaceholder + CustomWriter,
+    // the same shape UnitField already uses for its interleaved groups.
+    // 3 slots x 2 parallel float arrays woven per index; both default to 1f, not 0f.
+    internal void WriteCreateActivePlayerWeaponMultipliersInterleaved(WorldPacket data, ActivePlayerData src)
+    {
+        for (int m = 0; m < 3; m++)
+        {
+            data.WriteFloat(src.WeaponDmgMultipliers[m] ?? 1f);                 // WeaponDmgMultipliers[m]
+            data.WriteFloat(src.WeaponAtkSpeedMultipliers[m] ?? 1f);            // WeaponAtkSpeedMultipliers[m]
+        }
+    }
+
+    // Interleaved Create group, extracted from the ActivePlayer Create block so the descriptor
+    // migration can address it as a positioned DescriptorCreatePlaceholder + CustomWriter,
+    // the same shape UnitField already uses for its interleaved groups.
+    // 12 slots x 2 parallel arrays woven per index (UInt32 price, Int64 timestamp).
+    internal void WriteCreateActivePlayerBuybackInterleaved(WorldPacket data, ActivePlayerData src)
+    {
+        for (int n = 0; n < 12; n++)
+        {
+            data.WriteUInt32(src.BuybackPrice[n].GetValueOrDefault());          // BuybackPrice[n] (UInt32)
+            data.WriteInt64((long)src.BuybackTimestamp[n].GetValueOrDefault()); // BuybackTimestamp[n] ((long)cast)
+        }
     }
 
     // MaskMutator — pass-1, sets InvSlots bits (124 parent + 125-265 per-element)

@@ -522,6 +522,9 @@ HermesProxy/profiles/*.json
 # Local regression-test driver
 test-loop2.ps1
 
+# Screenshots captured by the test driver
+HermesProxy/screenlogs/
+
 # Local deploy scripts
 deploy_local/
 ### Local dev environment (not committed)

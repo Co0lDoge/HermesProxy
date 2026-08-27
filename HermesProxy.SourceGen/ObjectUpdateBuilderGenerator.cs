@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -500,16 +500,18 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
 
         bool ownerOnly = false;
         string? customWriter = null;
+        int count = 0;
         foreach (var named in attrData.NamedArguments)
         {
             switch (named.Key)
             {
                 case "OwnerOnly": ownerOnly = (named.Value.Value as bool?) ?? false; break;
                 case "CustomWriter": customWriter = named.Value.Value as string; break;
+                case "Count": count = (named.Value.Value as int?) ?? 0; break;
             }
         }
 
-        return new CreatePlaceholderEntry((DescriptorType)typeOrdinal.Value, literal, ownerOnly, customWriter);
+        return new CreatePlaceholderEntry((DescriptorType)typeOrdinal.Value, literal, ownerOnly, customWriter, count);
     }
 
     private static CreateBitsPlaceholderEntry? ReadCreateBitsPlaceholder(AttributeData attrData)
@@ -614,8 +616,17 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                     string literal = string.IsNullOrEmpty(p.LiteralExpression)
                         ? ZeroLiteralFor(p.Type)
                         : p.LiteralExpression;
-                    sb.Append(indent).Append("data.").Append(WriteMethodNameFor(p.Type)).Append("(")
-                      .Append(literal).AppendLine(");");
+                    if (p.Count > 1)
+                    {
+                        sb.Append(indent).Append("for (int i = 0; i < ").Append(p.Count).AppendLine("; i++)");
+                        sb.Append(indent).Append("    data.").Append(WriteMethodNameFor(p.Type)).Append("(")
+                          .Append(literal).AppendLine(");");
+                    }
+                    else
+                    {
+                        sb.Append(indent).Append("data.").Append(WriteMethodNameFor(p.Type)).Append("(")
+                          .Append(literal).AppendLine(");");
+                    }
                 }
                 if (p.OwnerOnly) sb.AppendLine("        }");
             }
@@ -631,6 +642,9 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
         }
         sb.AppendLine("    }");
     }
+
+    /// <summary>Create-path arrays longer than this emit as a loop instead of unrolled writes.</summary>
+    private const int LoopEmitThreshold = 8;
 
     private static void EmitCreateField(StringBuilder sb, CreateFieldEntry f)
     {
@@ -666,6 +680,26 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                 // ArrayCount slots in order.
                 var defaults = (f.DefaultExpressionByIndex ?? f.DefaultExpression ?? "")
                                .Split(',').Select(s => s.Trim()).ToArray();
+
+                // Long uniform-default arrays (ExploredZones[240], …) emit as a loop rather
+                // than N unrolled writes — same bytes, readable output. Per-index defaults
+                // still unroll, since each slot needs its own fallback literal.
+                if (f.ArrayCount > LoopEmitThreshold && string.IsNullOrEmpty(f.DefaultExpressionByIndex))
+                {
+                    string loopFallback = defaults.Length > 0 && !string.IsNullOrEmpty(defaults[0])
+                        ? defaults[0]
+                        : ZeroLiteralFor(f.Type);
+                    string read = "src." + f.SourceProperty + " != null && src." + f.SourceProperty
+                                + (f.Type == DescriptorType.PackedGuid128 ? "[i] != null" : "[i].HasValue")
+                                + " ? src." + f.SourceProperty + "[i]!.Value : " + loopFallback;
+                    string expr = string.IsNullOrEmpty(f.Cast) ? read : f.Cast + "(" + read + ")";
+                    sb.Append(baseIndent).Append("for (int i = 0; i < ").Append(f.ArrayCount).AppendLine("; i++)");
+                    sb.Append(baseIndent).Append("    data.").Append(WriteMethodNameFor(f.Type))
+                      .Append("(").Append(expr).AppendLine(");");
+                    if (f.OwnerOnly) sb.AppendLine("        }");
+                    return;
+                }
+
                 for (int i = 0; i < f.ArrayCount; i++)
                 {
                     string fallback = i < defaults.Length && !string.IsNullOrEmpty(defaults[i])
@@ -1354,7 +1388,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
 
     private sealed record UpdateBitsPreambleEntry(uint Value, int BitCount);
 
-    private sealed record CreatePlaceholderEntry(DescriptorType Type, string LiteralExpression, bool OwnerOnly, string? CustomWriter);
+    private sealed record CreatePlaceholderEntry(DescriptorType Type, string LiteralExpression, bool OwnerOnly, string? CustomWriter, int Count);
 
     private sealed record CreateBitsPlaceholderEntry(uint Value, int BitCount, bool Flush, bool OwnerOnly);
 

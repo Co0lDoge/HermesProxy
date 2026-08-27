@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace HermesProxy.World.Objects.Version.Attributes;
 
@@ -509,6 +509,15 @@ public sealed class DescriptorCreatePlaceholderAttribute : Attribute
     /// When true, generator wraps this placeholder write in <c>if (IsOwner) { … }</c>.
     /// </summary>
     public bool OwnerOnly { get; set; }
+
+    /// <summary>
+    /// Repeat count. When greater than 1 the generator emits a <c>for</c> loop writing the
+    /// same literal <c>Count</c> times, instead of one member per wire slot. Use for the
+    /// large zero-fill runs (<c>QuestCompleted[875]</c>, <c>BankBagSlotFlags[7]</c>, …)
+    /// where unrolling would bury the generated writer. Ignored when
+    /// <see cref="CustomWriter"/> is set.
+    /// </summary>
+    public int Count { get; set; }
 
     /// <summary>
     /// When set, instead of emitting <c>data.Write{Type}({LiteralExpression})</c> the

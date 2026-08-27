@@ -2318,8 +2318,13 @@ public partial class WorldClient
 
                 if (objectType == ObjectType.Unit)
                     GetSession().GameState.StoreCreatureClass(guid, (Class)updateData.UnitData.ClassId);
-                else
+                else if (!LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+                {
+                    // Pre-WotLK carries no arena team on the wire, so fall back to race.
+                    // From WotLK on it comes from PLAYER_BYTES_3 byte 3 and guessing here
+                    // would overwrite the real value with "everyone is on my team".
                     updateData.PlayerData.ArenaFaction = (byte)(GameData.IsAllianceRace((Race)updateData.UnitData.RaceId) ? 1 : 0);
+                }
 
                 if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
                     guid == GetSession().GameState.CurrentPlayerGuid)
@@ -3132,7 +3137,16 @@ public partial class WorldClient
                 updateData.PlayerData.NativeSex = (byte)(genderAndInebriation & 0x1);
                 updateData.PlayerData.Inebriation = (byte)(genderAndInebriation & 0xFFFE);
                 updateData.PlayerData.PvpTitle = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 16) & 0xFF); // city protector
-                updateData.PlayerData.PvPRank = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 24) & 0xFF); // honor rank
+                byte playerBytes3High = (byte)((updates[PLAYER_BYTES_3].UInt32Value >> 24) & 0xFF);
+                // Byte 3 changed meaning when PvP ranks were removed. Vanilla/TBC keep the
+                // honor rank there; WotLK reuses it as the arena team (TC
+                // PLAYER_BYTES_3_OFFSET_ARENA_FACTION = 3). Reading it as a rank on WotLK
+                // both corrupts PvPRank and leaves ArenaFaction guessed from race, so every
+                // player in a skirmish renders on the same team.
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+                    updateData.PlayerData.ArenaFaction = playerBytes3High;
+                else
+                    updateData.PlayerData.PvPRank = playerBytes3High; // honor rank
             }
             int PLAYER_DUEL_TEAM = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DUEL_TEAM);
             if (PLAYER_DUEL_TEAM >= 0 && updateMaskArray[PLAYER_DUEL_TEAM])

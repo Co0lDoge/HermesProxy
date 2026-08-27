@@ -3034,6 +3034,156 @@ public partial class ObjectUpdateBuilder
         return false;
     }
 
+    internal void WriteCreateCorpseData(HermesProxy.World.WorldPacket data)
+    {
+        var src = _updateData.CorpseData ?? new HermesProxy.World.Objects.CorpseData();
+        data.WriteUInt32(src.DynamicFlags.GetValueOrDefault());
+        data.WritePackedGuid128(src.Owner ?? HermesProxy.World.WowGuid128.Empty);
+        data.WritePackedGuid128(src.PartyGUID ?? HermesProxy.World.WowGuid128.Empty);
+        data.WritePackedGuid128(src.GuildGUID ?? HermesProxy.World.WowGuid128.Empty);
+        data.WriteUInt32(src.DisplayID.GetValueOrDefault());
+        for (int i = 0; i < 19; i++)
+            data.WriteUInt32(src.Items != null && src.Items[i].HasValue ? src.Items[i]!.Value : 0u);
+        data.WriteUInt8(src.RaceId.GetValueOrDefault());
+        data.WriteUInt8(src.SexId.GetValueOrDefault());
+        data.WriteUInt8(src.ClassId.GetValueOrDefault());
+        data.WriteUInt32(0u);
+        data.WriteUInt32(src.Flags.GetValueOrDefault());
+        data.WriteInt32(src.FactionTemplate.GetValueOrDefault());
+    }
+
+    internal void WriteUpdateCorpseData(HermesProxy.World.WorldPacket data)
+    {
+        var src = _updateData.CorpseData ?? new HermesProxy.World.Objects.CorpseData();
+        uint mask = 0u;
+        if (src.DynamicFlags.HasValue) mask |= (1u << 2);
+        if (src.Owner != null) mask |= (1u << 3);
+        if (src.PartyGUID != null) mask |= (1u << 4);
+        if (src.GuildGUID != null) mask |= (1u << 5);
+        if (src.DisplayID.HasValue) mask |= (1u << 6);
+        if (src.Items != null && src.Items[0].HasValue) mask |= (1u << 13) | (1u << 12);
+        if (src.Items != null && src.Items[1].HasValue) mask |= (1u << 14) | (1u << 12);
+        if (src.Items != null && src.Items[2].HasValue) mask |= (1u << 15) | (1u << 12);
+        if (src.Items != null && src.Items[3].HasValue) mask |= (1u << 16) | (1u << 12);
+        if (src.Items != null && src.Items[4].HasValue) mask |= (1u << 17) | (1u << 12);
+        if (src.Items != null && src.Items[5].HasValue) mask |= (1u << 18) | (1u << 12);
+        if (src.Items != null && src.Items[6].HasValue) mask |= (1u << 19) | (1u << 12);
+        if (src.Items != null && src.Items[7].HasValue) mask |= (1u << 20) | (1u << 12);
+        if (src.Items != null && src.Items[8].HasValue) mask |= (1u << 21) | (1u << 12);
+        if (src.Items != null && src.Items[9].HasValue) mask |= (1u << 22) | (1u << 12);
+        if (src.Items != null && src.Items[10].HasValue) mask |= (1u << 23) | (1u << 12);
+        if (src.Items != null && src.Items[11].HasValue) mask |= (1u << 24) | (1u << 12);
+        if (src.Items != null && src.Items[12].HasValue) mask |= (1u << 25) | (1u << 12);
+        if (src.Items != null && src.Items[13].HasValue) mask |= (1u << 26) | (1u << 12);
+        if (src.Items != null && src.Items[14].HasValue) mask |= (1u << 27) | (1u << 12);
+        if (src.Items != null && src.Items[15].HasValue) mask |= (1u << 28) | (1u << 12);
+        if (src.Items != null && src.Items[16].HasValue) mask |= (1u << 29) | (1u << 12);
+        if (src.Items != null && src.Items[17].HasValue) mask |= (1u << 30) | (1u << 12);
+        if (src.Items != null && src.Items[18].HasValue) mask |= (1u << 31) | (1u << 12);
+        if (src.RaceId.HasValue) mask |= (1u << 7);
+        if (src.SexId.HasValue) mask |= (1u << 8);
+        if (src.ClassId.HasValue) mask |= (1u << 9);
+        if (src.Flags.HasValue) mask |= (1u << 10);
+        if (src.FactionTemplate.HasValue) mask |= (1u << 11);
+        if (mask != 0) mask |= 1u;
+        data.WriteBits(mask, 32);
+        data.FlushBits();
+        if ((mask & 1) == 0) return;
+        if (src.DynamicFlags.HasValue) data.WriteUInt32(src.DynamicFlags.Value);
+        if (src.Owner != null) data.WritePackedGuid128(src.Owner.Value);
+        if (src.PartyGUID != null) data.WritePackedGuid128(src.PartyGUID.Value);
+        if (src.GuildGUID != null) data.WritePackedGuid128(src.GuildGUID.Value);
+        if (src.DisplayID.HasValue) data.WriteUInt32(src.DisplayID.Value);
+        if (src.RaceId.HasValue) data.WriteUInt8(src.RaceId.Value);
+        if (src.SexId.HasValue) data.WriteUInt8(src.SexId.Value);
+        if (src.ClassId.HasValue) data.WriteUInt8(src.ClassId.Value);
+        if (src.Flags.HasValue) data.WriteUInt32(src.Flags.Value);
+        if (src.FactionTemplate.HasValue) data.WriteInt32(src.FactionTemplate.Value);
+        if ((mask & (1u << 13)) != 0) data.WriteUInt32(src.Items![0]!.Value);
+        if ((mask & (1u << 14)) != 0) data.WriteUInt32(src.Items![1]!.Value);
+        if ((mask & (1u << 15)) != 0) data.WriteUInt32(src.Items![2]!.Value);
+        if ((mask & (1u << 16)) != 0) data.WriteUInt32(src.Items![3]!.Value);
+        if ((mask & (1u << 17)) != 0) data.WriteUInt32(src.Items![4]!.Value);
+        if ((mask & (1u << 18)) != 0) data.WriteUInt32(src.Items![5]!.Value);
+        if ((mask & (1u << 19)) != 0) data.WriteUInt32(src.Items![6]!.Value);
+        if ((mask & (1u << 20)) != 0) data.WriteUInt32(src.Items![7]!.Value);
+        if ((mask & (1u << 21)) != 0) data.WriteUInt32(src.Items![8]!.Value);
+        if ((mask & (1u << 22)) != 0) data.WriteUInt32(src.Items![9]!.Value);
+        if ((mask & (1u << 23)) != 0) data.WriteUInt32(src.Items![10]!.Value);
+        if ((mask & (1u << 24)) != 0) data.WriteUInt32(src.Items![11]!.Value);
+        if ((mask & (1u << 25)) != 0) data.WriteUInt32(src.Items![12]!.Value);
+        if ((mask & (1u << 26)) != 0) data.WriteUInt32(src.Items![13]!.Value);
+        if ((mask & (1u << 27)) != 0) data.WriteUInt32(src.Items![14]!.Value);
+        if ((mask & (1u << 28)) != 0) data.WriteUInt32(src.Items![15]!.Value);
+        if ((mask & (1u << 29)) != 0) data.WriteUInt32(src.Items![16]!.Value);
+        if ((mask & (1u << 30)) != 0) data.WriteUInt32(src.Items![17]!.Value);
+        if ((mask & (1u << 31)) != 0) data.WriteUInt32(src.Items![18]!.Value);
+    }
+
+    internal bool HasAnyCorpseFieldSet()
+    {
+        var src = _updateData.CorpseData;
+        if (src == null) return false;
+        if (src.DynamicFlags.HasValue) return true;
+        if (src.Owner != null) return true;
+        if (src.PartyGUID != null) return true;
+        if (src.GuildGUID != null) return true;
+        if (src.DisplayID.HasValue) return true;
+        if (src.Items != null) for (int i = 0; i < 19; i++) if (src.Items[i].HasValue) return true;
+        if (src.RaceId.HasValue) return true;
+        if (src.SexId.HasValue) return true;
+        if (src.ClassId.HasValue) return true;
+        if (src.Flags.HasValue) return true;
+        if (src.FactionTemplate.HasValue) return true;
+        return false;
+    }
+
+    internal void WriteCreateDynamicObjectData(HermesProxy.World.WorldPacket data)
+    {
+        var src = _updateData.DynamicObjectData ?? new HermesProxy.World.Objects.DynamicObjectData();
+        data.WritePackedGuid128(src.Caster ?? HermesProxy.World.WowGuid128.Empty);
+        data.WriteUInt8((byte)0);
+        data.WriteInt32(src.SpellXSpellVisualID.GetValueOrDefault());
+        data.WriteInt32(src.SpellID.GetValueOrDefault());
+        data.WriteFloat(src.Radius.GetValueOrDefault());
+        data.WriteUInt32(src.CastTime.GetValueOrDefault());
+    }
+
+    internal void WriteUpdateDynamicObjectData(HermesProxy.World.WorldPacket data)
+    {
+        var src = _updateData.DynamicObjectData ?? new HermesProxy.World.Objects.DynamicObjectData();
+        uint mask = 0u;
+        if (src.Caster != null) mask |= (1u << 1);
+        if (src.Type.HasValue) mask |= (1u << 2);
+        if (src.SpellXSpellVisualID.HasValue) mask |= (1u << 3);
+        if (src.SpellID.HasValue) mask |= (1u << 4);
+        if (src.Radius.HasValue) mask |= (1u << 5);
+        if (src.CastTime.HasValue) mask |= (1u << 6);
+        if (mask != 0) mask |= 1u;
+        data.WriteBits(mask, 7);
+        data.FlushBits();
+        if ((mask & 1) == 0) return;
+        if (src.Caster != null) data.WritePackedGuid128(src.Caster.Value);
+        if (src.Type.HasValue) data.WriteUInt8((byte)src.Type.Value);
+        if (src.SpellXSpellVisualID.HasValue) data.WriteInt32(src.SpellXSpellVisualID.Value);
+        if (src.SpellID.HasValue) data.WriteInt32(src.SpellID.Value);
+        if (src.Radius.HasValue) data.WriteFloat(src.Radius.Value);
+        if (src.CastTime.HasValue) data.WriteUInt32(src.CastTime.Value);
+    }
+
+    internal bool HasAnyDynamicObjectFieldSet()
+    {
+        var src = _updateData.DynamicObjectData;
+        if (src == null) return false;
+        if (src.Caster != null) return true;
+        if (src.Type.HasValue) return true;
+        if (src.SpellXSpellVisualID.HasValue) return true;
+        if (src.SpellID.HasValue) return true;
+        if (src.Radius.HasValue) return true;
+        if (src.CastTime.HasValue) return true;
+        return false;
+    }
+
     internal void WriteCreateGameObjectData(HermesProxy.World.WorldPacket data)
     {
         var src = _updateData.GameObjectData ?? new HermesProxy.World.Objects.GameObjectData();

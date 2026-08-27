@@ -828,9 +828,12 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
 
     private static void EmitFlatMaskBits(StringBuilder sb, UpdateFieldEntry f)
     {
-        // Flat mode doesn't carry per-field ParentBit (only Blocks mode multi-bit gating
-        // applies). If a Flat-mode descriptor sets ParentBit it's ignored here — the group
-        // gate is always bit 0, set unconditionally above.
+        // Bit 0 is the section group gate, set unconditionally above. A field may name a
+        // second gate via ParentBit — CorpseData's Items[19] sit at bits 13-31 behind
+        // their own bit-12 gate, which is a sibling of bit 0 rather than nested under it.
+        // ParentBit 0 means "no extra gate" (bit 0 is already handled).
+        string parentGate = f.ParentBit > 0 ? $" | (1u << {f.ParentBit})" : "";
+
         if (f.ArrayCount > 0 && f.ArrayMode == ArrayMode.PerElement)
         {
             // Per-element bits at Bit..Bit+ArrayCount-1.
@@ -838,7 +841,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
             {
                 sb.Append("        if (src.").Append(f.SourceProperty)
                   .Append(" != null && ").Append(ArrayElementPresence(f, i))
-                  .Append(") mask |= (1u << ").Append(f.Bit + i).AppendLine(");");
+                  .Append(") mask |= (1u << ").Append(f.Bit + i).Append(")").Append(parentGate).AppendLine(";");
             }
             return;
         }
@@ -856,11 +859,12 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                     : $"src.{f.SourceProperty}[{i}].HasValue";
                 sb.Append(elemPresence);
             }
-            sb.Append(")) mask |= (1u << ").Append(f.Bit).AppendLine(");");
+            sb.Append(")) mask |= (1u << ").Append(f.Bit).Append(")").Append(parentGate).AppendLine(";");
             return;
         }
 
-        sb.Append("        if (").Append(ScalarPresence(f)).Append(") mask |= (1u << ").Append(f.Bit).AppendLine(");");
+        sb.Append("        if (").Append(ScalarPresence(f)).Append(") mask |= (1u << ")
+          .Append(f.Bit).Append(")").Append(parentGate).AppendLine(";");
     }
 
     private static void EmitFlatUpdateWrite(StringBuilder sb, UpdateFieldEntry f)

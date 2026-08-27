@@ -1302,36 +1302,6 @@ public partial class ObjectUpdateBuilder
     // WriteCreateGameObjectData emitted by HermesProxy.SourceGen.ObjectUpdateBuilderGenerator
     // from V3_4_3_54261.GameObjectField (see HermesProxy/obj/Generated/.../V3_4_3_54261.ObjectUpdateBuilder.g.cs).
 
-    private void WriteCreateDynamicObjectData(WorldPacket data)
-    {
-        var dyn = _updateData.DynamicObjectData ?? new DynamicObjectData();
-        data.WritePackedGuid128(dyn.Caster ?? WowGuid128.Empty);
-        data.WriteUInt8(0);
-        data.WriteInt32(dyn.SpellXSpellVisualID.GetValueOrDefault());
-        data.WriteInt32(dyn.SpellID.GetValueOrDefault());
-        data.WriteFloat(dyn.Radius.GetValueOrDefault());
-        data.WriteUInt32(dyn.CastTime.GetValueOrDefault());
-    }
-
-    private void WriteCreateCorpseData(WorldPacket data)
-    {
-        var corpse = _updateData.CorpseData ?? new CorpseData();
-        // TC343 field order: DynamicFlags FIRST, then Owner, Party, Guild, etc.
-        data.WriteUInt32(corpse.DynamicFlags.GetValueOrDefault());
-        data.WritePackedGuid128(corpse.Owner ?? WowGuid128.Empty);
-        data.WritePackedGuid128(corpse.PartyGUID ?? WowGuid128.Empty);
-        data.WritePackedGuid128(corpse.GuildGUID ?? WowGuid128.Empty);
-        data.WriteUInt32(corpse.DisplayID.GetValueOrDefault());
-        for (int i = 0; i < 19; i++)
-            data.WriteUInt32(corpse.Items?[i].GetValueOrDefault() ?? 0);
-        data.WriteUInt8(corpse.RaceId.GetValueOrDefault());
-        data.WriteUInt8(corpse.SexId.GetValueOrDefault());
-        data.WriteUInt8(corpse.ClassId.GetValueOrDefault());
-        data.WriteUInt32(0u); // Customizations.size() = 0
-        data.WriteUInt32(corpse.Flags.GetValueOrDefault());
-        data.WriteInt32(corpse.FactionTemplate.GetValueOrDefault());
-    }
-
     internal static bool HasAnySkillChanged(SkillInfo s)
     {
         for (int i = 0; i < 256; i++)
@@ -1513,6 +1483,8 @@ public partial class ObjectUpdateBuilder
         bool hasActivePlayerChanges = _objectTypeMask.HasAnyFlag(ObjectTypeMask.ActivePlayer) && HasAnyActivePlayerFieldSet();
         bool hasPlayerChanges = _objectTypeMask.HasAnyFlag(ObjectTypeMask.Player) && HasAnyPlayerFieldSet();
         bool hasGameObjectChanges = _objectTypeMask.HasAnyFlag(ObjectTypeMask.GameObject) && _updateData.GameObjectData != null && HasAnyGameObjectFieldSet();
+        bool hasDynamicObjectChanges = _objectTypeMask.HasAnyFlag(ObjectTypeMask.DynamicObject) && _updateData.DynamicObjectData != null && HasAnyDynamicObjectFieldSet();
+        bool hasCorpseChanges = _objectTypeMask.HasAnyFlag(ObjectTypeMask.Corpse) && _updateData.CorpseData != null && HasAnyCorpseFieldSet();
 
         if (hasObjectChanges) changedMask |= 1;
         if (hasItemChanges) changedMask |= 2;
@@ -1521,6 +1493,8 @@ public partial class ObjectUpdateBuilder
         if (hasPlayerChanges) changedMask |= 0x40;
         if (hasActivePlayerChanges) changedMask |= 0x80;
         if (hasGameObjectChanges) changedMask |= 0x100;
+        if (hasDynamicObjectChanges) changedMask |= 0x200;
+        if (hasCorpseChanges) changedMask |= 0x400;
 
         // Safety: if changedMask is 0, nothing to write — emit empty mask so the
         // outer wire format stays valid. Filter at QueryHandler/UpdateHandler will
@@ -1539,6 +1513,8 @@ public partial class ObjectUpdateBuilder
         if (hasPlayerChanges) WriteUpdatePlayerData(data);
         if (hasActivePlayerChanges) WriteUpdateActivePlayerData(data);
         if (hasGameObjectChanges) WriteUpdateGameObjectData(data);
+        if (hasDynamicObjectChanges) WriteUpdateDynamicObjectData(data);
+        if (hasCorpseChanges) WriteUpdateCorpseData(data);
     }
 
     // HasAnyContainerFieldSet emitted by HermesProxy.SourceGen.ObjectUpdateBuilderGenerator.
@@ -1563,8 +1539,14 @@ public partial class ObjectUpdateBuilder
         // TC's accepted format. CMSG_OBJECT_UPDATE_FAILED or `CMSG_LOG_DISCONNECT(reason=7)`
         // immediately after an UPDATE_OBJECT means the V3_4_3 client cannot parse what we
         // wrote — diff the hex against a known-good capture to find the bad byte.
+        //
+        // Gated on IsEnabled: this fires for every Unit Values update, and the hex
+        // formatting plus the GUID ToString allocate on each one. Log.Print only checks the
+        // level *inside*, so an ungated interpolated call pays full cost even when Debug is
+        // off — see the logging rule in CLAUDE.md.
         if (_updateData.Type == UpdateTypeModern.Values
-            && _objectTypeMask.HasAnyFlag(ObjectTypeMask.Unit | ObjectTypeMask.GameObject | ObjectTypeMask.DynamicObject | ObjectTypeMask.Corpse))
+            && _objectTypeMask.HasAnyFlag(ObjectTypeMask.Unit | ObjectTypeMask.GameObject | ObjectTypeMask.DynamicObject | ObjectTypeMask.Corpse)
+            && Framework.Logging.Log.IsEnabled(Framework.Logging.LogType.Debug))
         {
             int dumpLen = System.Math.Min(96, valuesData.Length);
             string hex = System.BitConverter.ToString(valuesData, 0, dumpLen);

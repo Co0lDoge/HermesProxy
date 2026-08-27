@@ -604,6 +604,33 @@ public class UpdateObject : ServerPacket
                 for (int i = 0; i < item.Enchantment.Length; i++)
                     if (item.Enchantment[i] != null) return false;
         }
+
+        // CorpseData Values deltas are almost always single-field: a battleground corpse
+        // gains or loses the lootable-insignia bit in DynamicFlags and nothing else. The
+        // Corpse section only grew an Update path once it was wired, so before that this
+        // probe had nothing to guard; without it the delta lands here and is dropped.
+        var corpse = u.CorpseData;
+        if (corpse != null)
+        {
+            if (corpse.DynamicFlags.HasValue || corpse.Flags.HasValue) return false;
+            if (corpse.Owner != null || corpse.PartyGUID != null || corpse.GuildGUID != null) return false;
+            if (corpse.DisplayID.HasValue || corpse.FactionTemplate.HasValue) return false;
+            if (corpse.RaceId.HasValue || corpse.SexId.HasValue || corpse.ClassId.HasValue) return false;
+            if (corpse.Items != null)
+                for (int i = 0; i < corpse.Items.Length; i++)
+                    if (corpse.Items[i].HasValue) return false;
+        }
+
+        // DynamicObjectData Values deltas carry Radius / CastTime changes on persistent-AoE
+        // spells (Blizzard, Rain of Fire, Consecration, Death and Decay).
+        var dyn = u.DynamicObjectData;
+        if (dyn != null)
+        {
+            if (dyn.Caster != null) return false;
+            if (dyn.Type.HasValue || dyn.SpellID.HasValue) return false;
+            if (dyn.SpellXSpellVisualID.HasValue) return false;
+            if (dyn.Radius.HasValue || dyn.CastTime.HasValue) return false;
+        }
         return true;
     }
 

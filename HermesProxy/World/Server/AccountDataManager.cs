@@ -228,7 +228,13 @@ public class AccountMetaDataManager
             return new CollectionFavorites();
 
         var loaded = JsonSerializer.Deserialize<CollectionFavorites>(File.ReadAllText(path, Encoding.UTF8));
-        return loaded ?? new CollectionFavorites();
+        if (loaded == null)
+            return new CollectionFavorites();
+        loaded.FavoritePetSpecies ??= [];
+        loaded.FavoriteMountSpells ??= [];
+        loaded.LearnedToys ??= [];
+        loaded.FavoriteToys ??= [];
+        return loaded;
     }
 
     public void SaveCollectionFavorites(CollectionFavorites favorites)
@@ -243,6 +249,8 @@ public sealed class CollectionFavorites
 {
     public HashSet<uint> FavoritePetSpecies { get; set; } = [];
     public HashSet<uint> FavoriteMountSpells { get; set; } = [];
+    public HashSet<uint> LearnedToys { get; set; } = [];
+    public HashSet<uint> FavoriteToys { get; set; } = [];
 }
 
 public class AccountData

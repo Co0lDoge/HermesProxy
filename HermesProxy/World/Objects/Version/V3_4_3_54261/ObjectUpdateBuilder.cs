@@ -11,8 +11,10 @@
 using Framework.GameMath;
 using Framework.Util;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
+using System.Linq;
 
 namespace HermesProxy.World.Objects.Version.V3_4_3_54261;
 
@@ -948,8 +950,8 @@ public partial class ObjectUpdateBuilder
     }
 
     // Dynamic-field payloads, in WPP wire order: KnownTitles (folded to 64-bit words),
-    // then Heirlooms[Count] and HeirloomFlags[Count]. Counts were written earlier by the
-    // resize prefixes, so payload length has to agree with them.
+    // then Heirlooms[Count], HeirloomFlags[Count], then Toys[Count]. Counts were
+    // written earlier by the resize prefixes, so payload length has to agree with them.
     internal void WriteCreateActivePlayerDynamicPayloads(WorldPacket data, ActivePlayerData src)
     {
         ulong[] foldedTitles = new ulong[6];
@@ -959,6 +961,26 @@ public partial class ObjectUpdateBuilder
         foreach (var itemId in GameData.Heirlooms)
             data.WriteInt32(itemId);
         for (int i = 0; i < GameData.Heirlooms.Count; i++)
+            data.WriteUInt32(0u);
+        var learnedToys = _gameState.CollectionFavorites?.LearnedToys;
+        if (learnedToys == null || learnedToys.Count == 0)
+            return;
+        var ordered = new int[learnedToys.Count];
+        int n = 0;
+        foreach (uint id in learnedToys)
+            ordered[n++] = (int)id;
+        Array.Sort(ordered);
+        for (int i = 0; i < ordered.Length; i++)
+            data.WriteInt32(ordered[i]);
+    }
+
+    // Toys.Resize + the seven empty prefixes after it (Transmog through TaskQuests).
+    // Empty session still writes 0 so the Create oracle stays byte-identical.
+    internal void WriteCreateActivePlayerToyResizePrefixes(WorldPacket data, ActivePlayerData src)
+    {
+        var learnedToys = _gameState.CollectionFavorites?.LearnedToys;
+        data.WriteUInt32(learnedToys != null ? (uint)learnedToys.Count : 0u);
+        for (int i = 0; i < 7; i++)
             data.WriteUInt32(0u);
     }
 
@@ -1142,6 +1164,24 @@ public partial class ObjectUpdateBuilder
         int count = FoldKnownTitles(src.KnownTitles, folded);
         for (int i = 0; i < count; i++)
             data.WriteUInt64(folded[i]);
+    }
+
+    internal static int GetToyCount(ActivePlayerData src) => src.Toys?.Count ?? 0;
+
+    internal void WriteUpdateActivePlayerToysPreamble(WorldPacket data, ref Framework.Util.StackBitMask blocks, ActivePlayerData src)
+    {
+        int count = GetToyCount(src);
+        data.WriteBits((uint)count, 32);
+        for (int i = 0; i < count; i++)
+            data.WriteBit(true);
+    }
+
+    internal void WriteUpdateActivePlayerToysBody(WorldPacket data, ActivePlayerData src)
+    {
+        if (src.Toys == null)
+            return;
+        foreach (int itemId in src.Toys)
+            data.WriteInt32(itemId);
     }
 
     // Skill (bit 32) — nested SkillInfo write via existing WriteUpdateSkillInfo helper.

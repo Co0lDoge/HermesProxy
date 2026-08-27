@@ -587,6 +587,7 @@ public class UpdateObject : ServerPacket
             if (ap.KeyringSlots != null)
                 for (int i = 0; i < ap.KeyringSlots.Length; i++)
                     if (ap.KeyringSlots[i] != null) return false;
+            if (ap.Toys != null && ap.Toys.Count > 0) return false;
             if (ap.Skill != null)
             {
                 for (int i = 0; i < 256; i++)

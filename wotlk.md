@@ -653,8 +653,11 @@ NPC (if present on the 3.3.5a server's DB) or quest reward
 visual-only mirror.
 
 Same dynamic-field-payload pattern applies to other empty-stub init
-packets (`EmptyAccountMountUpdate` for Mounts, `EmptyAccountToyUpdate`
-for Toys, Transmog, etc.) if those panels are ever wired in.
+packets (`EmptyAccountMountUpdate` for Mounts, Transmog, etc.) if those
+panels are ever wired in. Toys are no longer a stub: bag items in
+`Toy.db2` can be learned into the 3.4.3 Toy Box (`CMSG_ADD_TOY` /
+`ActivePlayerData.Toys` / `SMSG_ACCOUNT_TOY_UPDATE`) and used from the
+journal (`CMSG_USE_TOY` → legacy `CMSG_USE_ITEM` on the hidden bag copy).
 
 ### G3. ~~Heirloom inventory tooltip — broken stats~~ — FIXED 2026-05-23
 

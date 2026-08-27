@@ -49,6 +49,8 @@ public partial class WorldClient
                 session.GameState.CollectionFavorites = session.AccountMetaDataMgr.LoadCollectionFavorites();
             SendPacketToClient(BattlePetJournal.FromSession(session.GameState));
             SendPacketToClient(AccountMountUpdate.FromSession(session.GameState));
+            CollectionSync.HideLearnedToysStillInBags(session);
+            SendPacketToClient(AccountToyUpdate.FromSession(session.GameState));
             RestoreSummonedBattlePet(session);
         }
 

@@ -312,6 +312,9 @@ public sealed class GameSessionData
     public WowGuid128 SummonedCompanionCreatureGuid;
     public WowGuid64 SummonedCompanionLegacyGuid;
     public CollectionFavorites? CollectionFavorites;
+    // Learned toy copies still on the AC character, hidden from the 3.4.3 client
+    // so the bag matches native consume-on-learn. USE_TOY still finds them here.
+    public Dictionary<uint, WowGuid128> HiddenToyByItemId = [];
     // V3_4_3 DK rune snapshot. Null for non-DK or non-V3_4_3 sessions; allocated by
     // CharacterHandler.HandlePlayerLogin when the chosen char is a DK and the modern
     // client is V3_4_3_54261. Read by V3_4_3 ObjectUpdateBuilder (CREATE path) and
@@ -826,6 +829,80 @@ public sealed class GameSessionData
                 var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
                 if (slotGuid == itemGuid64)
                     return ((byte)bagIdx, (byte)slot);
+            }
+        }
+
+        return null;
+    }
+    public bool IsHiddenToyGuid(WowGuid128 guid)
+    {
+        if (guid.IsEmpty())
+            return false;
+        foreach (var hidden in HiddenToyByItemId.Values)
+        {
+            if (hidden == guid)
+                return true;
+        }
+        return false;
+    }
+    public bool TryHideLearnedToyCopy(WowGuid128 guid)
+    {
+        if (guid.IsEmpty() || CollectionFavorites == null)
+            return false;
+        uint itemId = GetItemId(guid);
+        if (itemId == 0 || !CollectionFavorites.LearnedToys.Contains(itemId))
+            return false;
+        if (HiddenToyByItemId.ContainsKey(itemId))
+            return false;
+        HiddenToyByItemId[itemId] = guid;
+        return true;
+    }
+    public WowGuid128 FilterHiddenToySlot(WowGuid128 guid)
+    {
+        if (guid.IsEmpty())
+            return guid;
+        if (IsHiddenToyGuid(guid) || TryHideLearnedToyCopy(guid))
+            return WowGuid128.Empty;
+        return guid;
+    }
+    public (WowGuid128 guid, byte containerSlot, byte slot)? FindItemInInventoryById(uint itemId)
+    {
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+        {
+            var itemGuid64 = GetInventorySlotItem(i);
+            if (itemGuid64 == WowGuid64.Empty)
+                continue;
+            var itemGuid128 = itemGuid64.To128(this);
+            if (GetItemId(itemGuid128) == itemId)
+                return (itemGuid128, ItemConst.NullSlot, (byte)i);
+        }
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return null;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null)
+                continue;
+            if (!bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                if (slotGuid == WowGuid64.Empty)
+                    continue;
+                var slotGuid128 = slotGuid.To128(this);
+                if (GetItemId(slotGuid128) == itemId)
+                    return (slotGuid128, (byte)bagIdx, (byte)slot);
             }
         }
 

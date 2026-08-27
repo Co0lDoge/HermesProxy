@@ -543,7 +543,14 @@ public sealed class GameSessionData
     }
     public World.Server.Packets.PartyUpdate? GetCurrentGroup()
     {
-        return CurrentGroups[GetCurrentPartyIndex()];
+        // A group is filed under one of two categories: home (0) or instance (1).
+        // GetCurrentPartyIndex only recognises battlegrounds, so an LFG dungeon group
+        // - which the group-list handler files under the instance category, matching
+        // TC's GROUP_CATEGORY_INSTANCE - was stored in slot 1 and looked up in slot 0,
+        // and every caller saw "no group" while the client showed a party. Prefer the
+        // category matching the current context, then fall back to the other.
+        var index = GetCurrentPartyIndex();
+        return CurrentGroups[index] ?? CurrentGroups[index == 0 ? 1 : 0];
     }
     public sbyte GetCurrentPartyIndex()
     {

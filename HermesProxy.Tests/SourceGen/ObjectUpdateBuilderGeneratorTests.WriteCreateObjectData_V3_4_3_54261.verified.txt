@@ -59,6 +59,63 @@ public partial class ObjectUpdateBuilder
         data.WriteFloat(src.OverrideAPBySpellPowerPercent.GetValueOrDefault());
         data.WriteInt32(src.ModTargetResistance.GetValueOrDefault());
         data.WriteInt32(src.ModTargetPhysicalResistance.GetValueOrDefault());
+        data.WriteUInt32(src.LocalFlags.GetValueOrDefault());
+        data.WriteUInt8(src.GrantableLevels.GetValueOrDefault());
+        data.WriteUInt8(src.MultiActionBars.GetValueOrDefault());
+        data.WriteUInt8(src.LifetimeMaxRank.GetValueOrDefault());
+        data.WriteUInt8(src.NumRespecs.GetValueOrDefault());
+        data.WriteInt32((int)src.AmmoID.GetValueOrDefault());
+        data.WriteUInt32(src.PvpMedals.GetValueOrDefault());
+        WriteCreateActivePlayerBuybackInterleaved(data, src);
+        data.WriteUInt16(src.TodayHonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.TodayDishonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.YesterdayHonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.YesterdayDishonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.LastWeekHonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.LastWeekDishonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.ThisWeekHonorableKills.GetValueOrDefault());
+        data.WriteUInt16(src.ThisWeekDishonorableKills.GetValueOrDefault());
+        data.WriteUInt32(src.ThisWeekContribution.GetValueOrDefault());
+        data.WriteUInt32(src.LifetimeHonorableKills.GetValueOrDefault());
+        data.WriteUInt32(src.LifetimeDishonorableKills.GetValueOrDefault());
+        data.WriteUInt32(0u);
+        data.WriteUInt32(src.YesterdayContribution.GetValueOrDefault());
+        data.WriteUInt32(src.LastWeekContribution.GetValueOrDefault());
+        data.WriteUInt32(src.LastWeekRank.GetValueOrDefault());
+        data.WriteInt32(src.WatchedFactionIndex ?? -1);
+        for (int i = 0; i < 32; i++)
+            data.WriteInt32(src.CombatRatings != null && src.CombatRatings[i].HasValue ? src.CombatRatings[i]!.Value : 0);
+        data.WriteInt32(src.MaxLevel ?? LegacyVersion.GetMaxLevel());
+        data.WriteInt32(0);
+        data.WriteInt32(0);
+        for (int i = 0; i < 4; i++)
+            data.WriteUInt32(0u);
+        data.WriteInt32(src.PetSpellPower.GetValueOrDefault());
+        data.WriteInt32(src.ProfessionSkillLine != null && src.ProfessionSkillLine[0].HasValue ? src.ProfessionSkillLine[0]!.Value : 0);
+        data.WriteInt32(src.ProfessionSkillLine != null && src.ProfessionSkillLine[1].HasValue ? src.ProfessionSkillLine[1]!.Value : 0);
+        data.WriteFloat(0f);
+        data.WriteFloat(0f);
+        data.WriteInt32(0);
+        data.WriteFloat(src.ModPetHaste ?? 1f);
+        data.WriteUInt8(src.LocalRegenFlags.GetValueOrDefault());
+        data.WriteUInt8(src.AuraVision.GetValueOrDefault());
+        data.WriteUInt8(src.NumBackpackSlots ?? 16);
+        data.WriteInt32(0);
+        data.WriteInt32(0);
+        data.WriteUInt16((ushort)0);
+        data.WriteUInt32(0u);
+        for (int i = 0; i < 4; i++)
+            data.WriteUInt32(0u);
+        for (int i = 0; i < 7; i++)
+            data.WriteUInt32(0u);
+        for (int i = 0; i < 875; i++)
+            data.WriteUInt64(0uL);
+        data.WriteInt32(src.Honor.GetValueOrDefault());
+        data.WriteInt32(src.HonorNextLevel ?? 5500);
+        data.WriteInt32(0);
+        WriteCreateActivePlayerPvPTierMax(data, src);
+        data.WriteUInt8(src.PvPRankProgress.GetValueOrDefault());
+        data.WriteInt32(0);
         WriteCreateActivePlayerRest(data, src);
     }
 

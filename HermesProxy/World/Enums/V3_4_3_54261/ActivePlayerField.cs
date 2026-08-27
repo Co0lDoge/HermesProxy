@@ -208,7 +208,184 @@ public enum ActivePlayerField
     [DescriptorCreateField(nameof(ActivePlayerData.ModTargetPhysicalResistance), DescriptorType.Int32)]
     ACTIVEPLAYER_CREATE_MOD_TARGET_PHYSICAL_RESISTANCE,
 
-    // Everything from bit 69 onward, not yet migrated.
+    // ---- Create slice 3: bits 69-114 ----
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LocalFlags), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_LOCAL_FLAGS,
+
+    // bits 71-74 (parent 70): block-70 byte cluster. Real values, not zeros — see 2026-05-21
+    // action-bar persistence fix.
+    [DescriptorCreateField(nameof(ActivePlayerData.GrantableLevels), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_GRANTABLE_LEVELS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.MultiActionBars), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_MULTI_ACTION_BARS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LifetimeMaxRank), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_LIFETIME_MAX_RANK,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.NumRespecs), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_NUM_RESPECS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.AmmoID), DescriptorType.Int32, Cast = "(int)")]
+    ACTIVEPLAYER_CREATE_AMMO_I_D,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.PvpMedals), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_PVP_MEDALS,
+
+    // bits 550/562 (parent 549): BuybackPrice[12] + BuybackTimestamp[12], interleaved by slot.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerBuybackInterleaved))]
+    ACTIVEPLAYER_CREATE_BUYBACK_INTERLEAVED_CUSTOM,
+
+    // bits 77-84: honorable/dishonorable kill counters.
+    [DescriptorCreateField(nameof(ActivePlayerData.TodayHonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_TODAY_HONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.TodayDishonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_TODAY_DISHONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.YesterdayHonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_YESTERDAY_HONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.YesterdayDishonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_YESTERDAY_DISHONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LastWeekHonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_LAST_WEEK_HONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LastWeekDishonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_LAST_WEEK_DISHONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ThisWeekHonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_THIS_WEEK_HONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ThisWeekDishonorableKills), DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_THIS_WEEK_DISHONORABLE_KILLS,
+
+    // bits 85-91: contribution / lifetime kills / lastweek rank.
+    [DescriptorCreateField(nameof(ActivePlayerData.ThisWeekContribution), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_THIS_WEEK_CONTRIBUTION,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LifetimeHonorableKills), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_LIFETIME_HONORABLE_KILLS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LifetimeDishonorableKills), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_LIFETIME_DISHONORABLE_KILLS,
+
+    // bit 88: Field_F24 — unused, no source property.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_FIELD_F24_PLACEHOLDER,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.YesterdayContribution), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_YESTERDAY_CONTRIBUTION,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LastWeekContribution), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_LAST_WEEK_CONTRIBUTION,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LastWeekRank), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_LAST_WEEK_RANK,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.WatchedFactionIndex), DescriptorType.Int32, DefaultExpression = "-1")]
+    ACTIVEPLAYER_CREATE_WATCHED_FACTION_INDEX,
+
+    // bit 575 (parent 574): CombatRatings[32].
+    [DescriptorCreateField(nameof(ActivePlayerData.CombatRatings), DescriptorType.Int32, ArrayCount = 32)]
+    ACTIVEPLAYER_CREATE_COMBAT_RATINGS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.MaxLevel), DescriptorType.Int32, DefaultExpression = "LegacyVersion.GetMaxLevel()")]
+    ACTIVEPLAYER_CREATE_MAX_LEVEL,
+
+    // bits 94-95: ScalingPlayerLevelDelta / MaxCreatureScalingLevel — live properties
+    // exist but legacy 3.3.5 never populates them.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_SCALING_PLAYER_LEVEL_DELTA_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_MAX_CREATURE_SCALING_LEVEL_PLACEHOLDER,
+
+    // bit 616 (parent 615): NoReagentCostMask[4] — live property exists; TODO per-element read.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 4)]
+    ACTIVEPLAYER_CREATE_NO_REAGENT_COST_MASK_PLACEHOLDER,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.PetSpellPower), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_PET_SPELL_POWER,
+
+    // bit 621 (parent 620): ProfessionSkillLine[2].
+    [DescriptorCreateField(nameof(ActivePlayerData.ProfessionSkillLine), DescriptorType.Int32, ArrayCount = 2)]
+    ACTIVEPLAYER_CREATE_PROFESSION_SKILL_LINE,
+
+    // bits 97-99: UiHitModifier / UiSpellHitModifier / HomeRealmTimeOffset — live
+    // properties exist but legacy 3.3.5 never populates them.
+    [DescriptorCreatePlaceholder(DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_UI_HIT_MODIFIER_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_UI_SPELL_HIT_MODIFIER_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_HOME_REALM_TIME_OFFSET_PLACEHOLDER,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModPetHaste), DescriptorType.Float, DefaultExpression = "1f")]
+    ACTIVEPLAYER_CREATE_MOD_PET_HASTE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.LocalRegenFlags), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_LOCAL_REGEN_FLAGS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.AuraVision), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_AURA_VISION,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.NumBackpackSlots), DescriptorType.UInt8, DefaultExpression = "16")]
+    ACTIVEPLAYER_CREATE_NUM_BACKPACK_SLOTS,
+
+    // bits 105-108: no WotLK source.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_OVERRIDE_SPELLS_ID_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_LFG_BONUS_FACTION_ID_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.UInt16)]
+    ACTIVEPLAYER_CREATE_LOOT_SPEC_ID_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_OVERRIDE_ZONE_PVP_TYPE_PLACEHOLDER,
+
+    // bit 624 (parent 623): BagSlotFlags[4] — live property exists; TODO per-element read.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 4)]
+    ACTIVEPLAYER_CREATE_BAG_SLOT_FLAGS_PLACEHOLDER,
+
+    // bit 629 (parent 628): BankBagSlotFlags[7] — live property exists; TODO per-element read.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 7)]
+    ACTIVEPLAYER_CREATE_BANK_BAG_SLOT_FLAGS_PLACEHOLDER,
+
+    // bit 637 (parent 636): QuestCompleted[875] — live property exists; TODO per-element read.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt64, Count = 875)]
+    ACTIVEPLAYER_CREATE_QUEST_COMPLETED_PLACEHOLDER,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Honor), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_HONOR,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.HonorNextLevel), DescriptorType.Int32, DefaultExpression = "5500")]
+    ACTIVEPLAYER_CREATE_HONOR_NEXT_LEVEL,
+
+    // bit 111: Field_F74 — descriptor: unused.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_FIELD_F74_PLACEHOLDER,
+
+    // bits 112-113: PvP tier maxima, sentinel -1 when unset.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerPvPTierMax))]
+    ACTIVEPLAYER_CREATE_PVP_TIER_MAX_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.PvPRankProgress), DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_PVP_RANK_PROGRESS,
+
+    // PerksProgramCurrency — no WotLK source.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_PERKS_PROGRAM_CURRENCY_PLACEHOLDER,
+
+    // Everything from the dynamic-field count prefixes onward, not yet migrated.
     [DescriptorCreatePlaceholder(DescriptorType.Int32,
         CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerRest))]
     ACTIVEPLAYER_CREATE_REST_CUSTOM,

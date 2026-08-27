@@ -922,93 +922,7 @@ public partial class ObjectUpdateBuilder
 
         // (bits 33-68 migrated to descriptor members)
 
-        data.WriteUInt32(active.LocalFlags.GetValueOrDefault());                   // bit 69: LocalFlags (UInt32)
-        // bits 71-74 (parent 70): block-70 byte cluster — fixed 2026-05-21
-        // (was the action-bar 2/3/4/5 persistence bug).
-        data.WriteUInt8(active.GrantableLevels ?? 0);                              // bit 71: GrantableLevels (UInt8)
-        data.WriteUInt8(active.MultiActionBars ?? 0);                              // bit 72: MultiActionBars (UInt8)
-        data.WriteUInt8(active.LifetimeMaxRank ?? 0);                              // bit 73: LifetimeMaxRank (UInt8)
-        data.WriteUInt8(active.NumRespecs ?? 0);                                   // bit 74: NumRespecs (UInt8)
-        data.WriteInt32((int)active.AmmoID.GetValueOrDefault());                   // bit 75: AmmoID (UInt32?→Int32 cast)
-        data.WriteUInt32(active.PvpMedals ?? 0u);                                  // bit 76: PvpMedals (UInt32) — was hardcoded 0; live property exists
-
-        // bits 550/562 (parent 549): BuybackPrice[12] (UInt32), BuybackTimestamp[12] (Int64 cast from uint?).
-        // Interleaved by slot. Populated from legacy PLAYER_FIELD_BUYBACK_PRICE_1 / _TIMESTAMP_1.
-        WriteCreateActivePlayerBuybackInterleaved(data, active);
-
-        // bits 77-84 (block 70): 8 UInt16 honorable/dishonorable kill counters
-        // (Today/Yesterday/LastWeek/ThisWeek × Honorable/Dishonorable). TC UpdateFields.cpp:2954-2961.
-        // Populated from legacy PLAYER_FIELD_KILLS / *_CONTRIBUTION fields.
-        data.WriteUInt16(active.TodayHonorableKills.GetValueOrDefault());          // bit 77
-        data.WriteUInt16(active.TodayDishonorableKills.GetValueOrDefault());       // bit 78
-        data.WriteUInt16(active.YesterdayHonorableKills.GetValueOrDefault());      // bit 79
-        data.WriteUInt16(active.YesterdayDishonorableKills.GetValueOrDefault());   // bit 80
-        data.WriteUInt16(active.LastWeekHonorableKills.GetValueOrDefault());       // bit 81
-        data.WriteUInt16(active.LastWeekDishonorableKills.GetValueOrDefault());    // bit 82
-        data.WriteUInt16(active.ThisWeekHonorableKills.GetValueOrDefault());       // bit 83
-        data.WriteUInt16(active.ThisWeekDishonorableKills.GetValueOrDefault());    // bit 84
-
-        // bits 85-91 (block 70): 7 UInt32 contribution / lifetime kills / lastweek rank. TC UpdateFields.cpp:2962-2968.
-        // Field_F24 (4th slot) is unused — no ActivePlayerData property.
-        data.WriteUInt32(active.ThisWeekContribution.GetValueOrDefault());         // bit 85: ThisWeekContribution
-        data.WriteUInt32(active.LifetimeHonorableKills.GetValueOrDefault());       // bit 86: LifetimeHonorableKills
-        data.WriteUInt32(active.LifetimeDishonorableKills.GetValueOrDefault());    // bit 87: LifetimeDishonorableKills
-        data.WriteUInt32(0u);                                                      // bit 88: Field_F24 — unused
-        data.WriteUInt32(active.YesterdayContribution.GetValueOrDefault());        // bit 89: YesterdayContribution
-        data.WriteUInt32(active.LastWeekContribution.GetValueOrDefault());         // bit 90: LastWeekContribution
-        data.WriteUInt32(active.LastWeekRank.GetValueOrDefault());                 // bit 91: LastWeekRank
-
-        data.WriteInt32(active.WatchedFactionIndex ?? -1);                         // bit 92: WatchedFactionIndex (Int32, default -1)
-
-        // bit 575 (parent 574): CombatRatings[32] (Int32).
-        for (int c = 0; c < 32; c++)
-            data.WriteInt32(active.CombatRatings?[c].GetValueOrDefault() ?? 0);
-
-        data.WriteInt32(active.MaxLevel ?? LegacyVersion.GetMaxLevel());           // bit 93: MaxLevel (Int32, default = per-build cap)
-        data.WriteInt32(0);                                                        // bit 94: ScalingPlayerLevelDelta (Int32) — live property exists, TODO
-        data.WriteInt32(0);                                                        // bit 95: MaxCreatureScalingLevel (Int32) — live property exists, TODO
-
-        // bit 616 (parent 615): NoReagentCostMask[4] (UInt32). Live property exists; TODO per-element read.
-        for (int q = 0; q < 4; q++)
-            data.WriteUInt32(0u);
-
-        data.WriteInt32(active.PetSpellPower.GetValueOrDefault());                 // bit 96: PetSpellPower (Int32)
-
-        // bit 621 (parent 620): ProfessionSkillLine[2] (Int32).
-        for (int s = 0; s < 2; s++)
-            data.WriteInt32(active.ProfessionSkillLine?[s].GetValueOrDefault() ?? 0);
-
-        data.WriteFloat(0f);                                                       // bit 97: UiHitModifier (Float) — live property exists, TODO
-        data.WriteFloat(0f);                                                       // bit 98: UiSpellHitModifier (Float) — live property exists, TODO
-        data.WriteInt32(0);                                                        // bit 99: HomeRealmTimeOffset (Int32) — live property exists, TODO
-        data.WriteFloat(active.ModPetHaste ?? 1f);                                 // bit 100: ModPetHaste (Float, default 1f)
-        data.WriteUInt8(active.LocalRegenFlags.GetValueOrDefault());               // bit 101: LocalRegenFlags (UInt8)
-        data.WriteUInt8(active.AuraVision.GetValueOrDefault());                    // bit 103: AuraVision (UInt8) — populated from PLAYER_FIELD_BYTES2
-        data.WriteUInt8(active.NumBackpackSlots ?? 16);                            // bit 104: NumBackpackSlots (UInt8, default 16)
-        data.WriteInt32(0);                                                        // bit 105: OverrideSpellsID (Int32) — live property exists, TODO
-        data.WriteInt32(0);                                                        // bit 106: LfgBonusFactionID (Int32) — live property exists, TODO
-        data.WriteUInt16(0);                                                       // bit 107: LootSpecID (UInt16 from uint? via (ushort) cast) — live property exists, TODO
-        data.WriteUInt32(0u);                                                      // bit 108: OverrideZonePVPType (UInt32) — live property exists, TODO
-
-        // bit 624 (parent 623): BagSlotFlags[4] (UInt32). Live property exists; TODO per-element read.
-        for (int b = 0; b < 4; b++)
-            data.WriteUInt32(0u);
-
-        // bit 629 (parent 628): BankBagSlotFlags[7] (UInt32). Live property exists; TODO per-element read.
-        for (int b = 0; b < 7; b++)
-            data.WriteUInt32(0u);
-
-        // bit 637 (parent 636): QuestCompleted[875] (UInt64). Live property exists; TODO per-element read.
-        for (int qc = 0; qc < 875; qc++)
-            data.WriteUInt64(0uL);
-
-        data.WriteInt32(active.Honor.GetValueOrDefault());                         // bit 109: Honor (Int32)
-        data.WriteInt32(active.HonorNextLevel ?? 5500);                            // bit 110: HonorNextLevel (Int32, default 5500)
-        data.WriteInt32(0);                                                        // bit 111: Field_F74 — descriptor: unused
-        data.WriteInt32((int?)active.PvPTierMaxFromWins ?? -1);                    // bit 112: PvPTierMaxFromWins (uint?→Int32 cast, default -1)
-        data.WriteInt32((int?)active.PvPLastWeeksTierMaxFromWins ?? -1);           // bit 113: PvPLastWeeksTierMaxFromWins (uint?→Int32 cast, default -1)
-        data.WriteUInt8(active.PvPRankProgress.GetValueOrDefault());               // bit 114: PvPRankProgress (UInt8) — populated from PLAYER_FIELD_BYTES2
-        data.WriteInt32(0);                                                        // PerksProgramCurrency (Int32) — no WotLK source (TC UpdateFields.cpp:3015)
+        // (bits 69-114 migrated to descriptor members)
 
         // 16 dynamic-field count prefixes. Per WPP V3_4_0 ReadCreateActivePlayerData
         // wire order. Slots 6 + 7 = Heirlooms.Resize + HeirloomFlags.Resize; we ship
@@ -1094,6 +1008,15 @@ public partial class ObjectUpdateBuilder
             data.WriteUInt32(src.RestInfo[i]?.Threshold ?? 0u);
             data.WriteUInt8((byte)(src.RestInfo[i]?.StateID ?? 1));
         }
+    }
+
+    // bits 112-113: PvPTierMaxFromWins / PvPLastWeeksTierMaxFromWins. Custom because the
+    // source is uint? but the sentinel for "unset" is -1, so the cast has to happen before
+    // the null-coalesce ((int?)x ?? -1) rather than after it.
+    internal void WriteCreateActivePlayerPvPTierMax(WorldPacket data, ActivePlayerData src)
+    {
+        data.WriteInt32((int?)src.PvPTierMaxFromWins ?? -1);
+        data.WriteInt32((int?)src.PvPLastWeeksTierMaxFromWins ?? -1);
     }
 
     // ---- Create slice 1: members migrated out of the mega-writer ----

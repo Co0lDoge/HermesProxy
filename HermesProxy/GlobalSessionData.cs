@@ -348,6 +348,7 @@ public sealed class GameSessionData
     public HashSet<uint> RequestedItemTextIds = [];
     public Dictionary<uint, string> ItemTexts = [];
     public Dictionary<uint, uint> BattleFieldQueueTypes = [];
+    public Dictionary<uint, byte> BattleFieldQueueArenaTypes = [];
     public Dictionary<uint, long> BattleFieldQueueTimes = [];
     public Dictionary<uint, uint> DailyQuestsDone = [];
     public HashSet<WowGuid128> FlagCarrierGuids = [];
@@ -933,6 +934,20 @@ public sealed class GameSessionData
     public uint GetBattleFieldQueueType(uint queueSlot)
     {
         return BattleFieldQueueTypes.TryGetValue(queueSlot, out var value) ? value : 0u;
+    }
+    public void StoreBattleFieldQueueArenaType(uint queueSlot, byte arenaType)
+    {
+        BattleFieldQueueArenaTypes[queueSlot] = arenaType;
+    }
+    public byte GetBattleFieldQueueArenaType(uint queueSlot)
+    {
+        return BattleFieldQueueArenaTypes.TryGetValue(queueSlot, out var value) ? value : (byte)0;
+    }
+    public void RemoveBattleFieldQueue(uint queueSlot)
+    {
+        BattleFieldQueueTypes.Remove(queueSlot);
+        BattleFieldQueueArenaTypes.Remove(queueSlot);
+        BattleFieldQueueTimes.Remove(queueSlot);
     }
     public void StoreAuraDurationLeft(WowGuid128 guid, byte slot, int duration, int currentTime)
     {

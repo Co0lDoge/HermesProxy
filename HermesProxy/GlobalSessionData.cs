@@ -169,6 +169,11 @@ public sealed class GameSessionData
     public WowGuid128 AwaitingQuestGiver = WowGuid128.Empty;
     public bool JustSentOfferReward;
     public HermesProxy.World.Server.Packets.QuestGiverRequestItems? LastRequestItems;
+    public GossipMessagePkt? LastGossip;
+    public QuestGiverQuestListMessage? LastQuestList;
+    public QuestGiverQuestDetails? LastQuestDetails;
+    public bool QuestDetailsOpen;
+    public bool JustLeftGossipForDetails;
     // Last (quest, item) count pushed to the client as SMSG_QUEST_UPDATE_ADD_CREDIT.
     // Resends are skipped so an unrelated pickup does not replay every objective toast.
     public readonly Dictionary<(uint QuestId, uint ItemId), ushort> SentItemQuestCredits = new();
@@ -206,6 +211,13 @@ public sealed class GameSessionData
         AwaitingQuestGiver = WowGuid128.Empty;
         LastRequestItems = null;
         JustSentOfferReward = false;
+    }
+
+    public void CloseQuestDetails()
+    {
+        QuestDetailsOpen = false;
+        JustLeftGossipForDetails = false;
+        LastQuestDetails = null;
     }
     public uint LastWhoRequestId;
     public WowGuid128 CurrentPetGuid;

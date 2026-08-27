@@ -68,6 +68,7 @@ public partial class WorldClient
             quest.DescEmotes[i].Type = packet.ReadUInt32();
             quest.DescEmotes[i].Delay = packet.ReadUInt32();
         }
+        MarkQuestDetailsOpen(quest);
         SendPacketToClient(quest);
     }
 
@@ -183,6 +184,10 @@ public partial class WorldClient
             ClientGossipQuest quest = ReadGossipQuestOption(packet);
             quests.QuestOptions.Add(quest);
         }
+        var state = GetSession().GameState;
+        state.LastQuestList = quests;
+        state.LastGossip = null;
+        state.CloseQuestDetails();
         SendPacketToClient(quests);
     }
 
@@ -254,6 +259,18 @@ public partial class WorldClient
         return quest;
     }
 
+    void MarkQuestDetailsOpen(QuestGiverQuestDetails quest)
+    {
+        var state = GetSession().GameState;
+        if (state.LastGossip != null && state.LastGossip.GossipGUID != quest.QuestGiverGUID)
+            state.LastGossip = null;
+        if (state.LastQuestList != null && state.LastQuestList.QuestGiverGUID != quest.QuestGiverGUID)
+            state.LastQuestList = null;
+        state.LastQuestDetails = quest;
+        state.QuestDetailsOpen = true;
+        state.JustLeftGossipForDetails = true;
+    }
+
     [PacketHandler(Opcode.SMSG_QUEST_GIVER_REQUEST_ITEMS)]
     void HandleQuestGiverRequestItems(WorldPacket packet)
     {
@@ -304,6 +321,7 @@ public partial class WorldClient
         GetSession().GameState.AwaitingQuestRewardId = quest.QuestID;
         GetSession().GameState.AwaitingQuestGiver = quest.QuestGiverGUID;
         GetSession().GameState.LastRequestItems = quest;
+        GetSession().GameState.CloseQuestDetails();
         Framework.Logging.Log.Print(Framework.Logging.LogType.Server,
             $"[RequestItems] quest={quest.QuestID} status=0x{quest.StatusFlags:X} flags=0x{quest.QuestFlags[0]:X} collect={quest.Collect.Count} auto={quest.AutoLaunched}");
         SendPacketToClient(quest);
@@ -356,6 +374,7 @@ public partial class WorldClient
         GetSession().GameState.JustSentOfferReward = true;
         GetSession().GameState.LastRequestItems = null;
         GetSession().GameState.AwaitingQuestRewardId = 0;
+        GetSession().GameState.CloseQuestDetails();
         SendPacketToClient(quest);
     }
 
@@ -421,6 +440,9 @@ public partial class WorldClient
                 quest.LaunchGossip = true;
         }
 
+        GetSession().GameState.CloseQuestDetails();
+        GetSession().GameState.LastGossip = null;
+        GetSession().GameState.LastQuestList = null;
         SendPacketToClient(quest);
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
             SendPacketToClient(new GossipComplete());

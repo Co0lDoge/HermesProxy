@@ -101,4 +101,15 @@ internal static partial class WorldSocketLogMessages
         int ItemCount,
         bool FullUpdate,
         ulong Money);
+
+    [LoggerMessage(
+        EventId = 112,
+        Level = LogLevel.Debug,
+        Message = "Quest close quest={QuestId} action={Action}")]
+    public static partial void QuestClose(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int QuestId,
+        string Action);
 }

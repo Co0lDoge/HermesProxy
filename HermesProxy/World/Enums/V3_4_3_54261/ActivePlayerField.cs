@@ -77,7 +77,138 @@ public enum ActivePlayerField
         CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerSkillInterleaved))]
     ACTIVEPLAYER_CREATE_SKILL_INTERLEAVED_CUSTOM,
 
-    // Everything from bit 33 onward, not yet migrated.
+    // ---- Create slice 2: bits 33-68 ----
+
+    [DescriptorCreateField(nameof(ActivePlayerData.CharacterPoints), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_CHARACTER_POINTS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.MaxTalentTiers), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_MAX_TALENT_TIERS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.TrackCreatureMask), DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_TRACK_CREATURE_MASK,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.TrackResourceMask), DescriptorType.UInt32, ArrayCount = 2)]
+    ACTIVEPLAYER_CREATE_TRACK_RESOURCE_MASK,
+
+    // bits 36-48: block-38 expertise / percentage floats.
+    [DescriptorCreateField(nameof(ActivePlayerData.MainhandExpertise), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MAINHAND_EXPERTISE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.OffhandExpertise), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_OFFHAND_EXPERTISE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.RangedExpertise), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_RANGED_EXPERTISE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.CombatRatingExpertise), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_COMBAT_RATING_EXPERTISE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.BlockPercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_BLOCK_PERCENTAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.DodgePercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_DODGE_PERCENTAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.DodgePercentageFromAttribute), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_DODGE_PERCENTAGE_FROM_ATTRIBUTE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ParryPercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_PARRY_PERCENTAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ParryPercentageFromAttribute), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_PARRY_PERCENTAGE_FROM_ATTRIBUTE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.CritPercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_CRIT_PERCENTAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.RangedCritPercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_RANGED_CRIT_PERCENTAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.OffhandCritPercentage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_OFFHAND_CRIT_PERCENTAGE,
+
+    // 7 stat groups x 4 parallel float arrays (Min/Max/ModPos/ModNeg) woven per group.
+    [DescriptorCreatePlaceholder(DescriptorType.Float,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerDamageDoneInterleaved))]
+    ACTIVEPLAYER_CREATE_DAMAGE_DONE_INTERLEAVED_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ShieldBlock), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_SHIELD_BLOCK,
+
+    // bit 50: ShieldBlockCritPercentage — no WotLK source property.
+    [DescriptorCreatePlaceholder(DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_SHIELD_BLOCK_CRIT_PERCENTAGE_PLACEHOLDER,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Mastery), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MASTERY,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Speed), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_SPEED,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Avoidance), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_AVOIDANCE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Sturdiness), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_STURDINESS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.Versatility), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_VERSATILITY,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.VersatilityBonus), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_VERSATILITY_BONUS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.PvpPowerDamage), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_PVP_POWER_DAMAGE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.PvpPowerHealing), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_PVP_POWER_HEALING,
+
+    // bit 299 (parent 298): ExploredZones[240].
+    [DescriptorCreateField(nameof(ActivePlayerData.ExploredZones), DescriptorType.UInt64, ArrayCount = 240)]
+    ACTIVEPLAYER_CREATE_EXPLORED_ZONES,
+
+    // bits 540-541 (parent 539): RestInfo[2] nested struct; StateID defaults to 1.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerRestInfo))]
+    ACTIVEPLAYER_CREATE_REST_INFO_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModHealingDonePos), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_MOD_HEALING_DONE_POS,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModHealingPercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MOD_HEALING_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModHealingDonePercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MOD_HEALING_DONE_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModPeriodicHealingDonePercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MOD_PERIODIC_HEALING_DONE_PERCENT,
+
+    // bits 543/546 (parent 542): WeaponDmgMultipliers[3] + WeaponAtkSpeedMultipliers[3], default 1f.
+    [DescriptorCreatePlaceholder(DescriptorType.Float,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerWeaponMultipliersInterleaved))]
+    ACTIVEPLAYER_CREATE_WEAPON_MULTIPLIERS_INTERLEAVED_CUSTOM,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModSpellPowerPercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MOD_SPELL_POWER_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModResiliencePercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_MOD_RESILIENCE_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.OverrideSpellPowerByAPPercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_OVERRIDE_SPELL_POWER_BY_AP_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.OverrideAPBySpellPowerPercent), DescriptorType.Float)]
+    ACTIVEPLAYER_CREATE_OVERRIDE_AP_BY_SPELL_POWER_PERCENT,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModTargetResistance), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_MOD_TARGET_RESISTANCE,
+
+    [DescriptorCreateField(nameof(ActivePlayerData.ModTargetPhysicalResistance), DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_MOD_TARGET_PHYSICAL_RESISTANCE,
+
+    // Everything from bit 69 onward, not yet migrated.
     [DescriptorCreatePlaceholder(DescriptorType.Int32,
         CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerRest))]
     ACTIVEPLAYER_CREATE_REST_CUSTOM,

@@ -72,22 +72,35 @@ A green equivalence test plus a snapshot diff limited to your intended lines is 
 Neither alone is. And neither proves the *oracle* is right — for anything user-visible, finish
 with a play-test.
 
-## In-progress: ActivePlayer Create migration
+## ActivePlayer Create migration — done
 
-`WriteCreateActivePlayerRest` is the shrinking remainder of what used to be one ~293-line
-`WriteCreateActivePlayerAll` mega-writer, declared as a single placeholder. It is being migrated
-top-down into declarative members. The census of the original block:
+What used to be one ~1800-line `WriteCreateActivePlayerAll` mega-writer, declared as a single
+placeholder, is now fully declarative. It came apart in four slices, each one: add members in
+wire order, delete the matching lines from the remainder, run the equivalence test, accept the
+snapshot diff. The remainder shrank 293 → 177 → 91 → 0 lines.
 
-- 84 simple field writes, 42 literal placeholders, 6 simple array loops
-- 4 zero-fill loops, 4 interleaved loops, 6 bit-writes, **0 conditionals**
+What is left is thirteen named, single-purpose `WriteCreateActivePlayer*` hooks, positioned by
+`DescriptorCreatePlaceholder(CustomWriter = …)`. Each one exists for a shape the per-field form
+genuinely cannot express — interleaved parallel arrays (`Skill`, `DamageDone`,
+`WeaponMultipliers`, `Buyback`), session-sourced state (`Glyphs`, `HeirloomCounts`,
+`SummonedBattlePet`), computed values (`InvSlots`, `KnownTitlesCount`, `DynamicPayloads`),
+a nested struct with a non-zero default (`RestInfo`), a cast that has to precede the
+null-coalesce (`PvPTierMax`), and bit-level element framing (`PvpInfo`).
 
 `ActivePlayerSectionEquivalenceTests.WriteCreateActivePlayerData_HandPort` is the frozen
-pre-migration oracle. **Do not "fix" that copy** — its value is that it does not change while
-the real writer is decomposed.
+pre-migration oracle. **Do not "fix" that copy** — its value is that it does not change. It
+still pins the whole Create wire, so future edits to these members stay honest.
 
-Worth finishing: those 42 literal zeros include several marked `live property exists, TODO`,
-and a hand-written zero in this block is what caused the action-bar-reset bug (`8087167e`)
-while the generated Update path was correct.
+Two attribute features exist for this migration and are worth reusing:
+`DescriptorCreatePlaceholder.Count` emits a literal in a loop (the zero-fill runs like
+`QuestCompleted[875]`), and create-path arrays longer than 8 slots with a uniform fallback emit
+as a loop rather than unrolled writes.
+
+Still worth doing: several literal zeros are marked `live property exists, TODO per-element
+read` — `NoReagentCostMask`, `BagSlotFlags`, `BankBagSlotFlags`, `QuestCompleted`,
+`ExploredZones` payloads, `PvpInfo`. A hand-written zero in this block is what caused the
+action-bar-reset bug (`8087167e`) while the generated Update path was correct; now that the
+positions are named members, filling one in is a one-line change.
 
 ## Not yet wired
 

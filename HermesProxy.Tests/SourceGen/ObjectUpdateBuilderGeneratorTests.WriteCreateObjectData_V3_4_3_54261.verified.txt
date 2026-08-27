@@ -116,7 +116,33 @@ public partial class ObjectUpdateBuilder
         WriteCreateActivePlayerPvPTierMax(data, src);
         data.WriteUInt8(src.PvPRankProgress.GetValueOrDefault());
         data.WriteInt32(0);
-        WriteCreateActivePlayerRest(data, src);
+        for (int i = 0; i < 6; i++)
+            data.WriteUInt32(0u);
+        WriteCreateActivePlayerHeirloomCounts(data, src);
+        for (int i = 0; i < 8; i++)
+            data.WriteUInt32(0u);
+        data.WriteInt32(0);
+        for (int i = 0; i < 2; i++)
+            data.WriteUInt32(0u);
+        WriteCreateActivePlayerGlyphs(data, src);
+        data.WriteUInt8((byte)0);
+        for (int i = 0; i < 2; i++)
+            data.WriteUInt32(0u);
+        data.WriteUInt8((byte)0);
+        WriteCreateActivePlayerDynamicPayloads(data, src);
+        WriteCreateActivePlayerPvpInfo(data, src);
+        data.WriteBits(0u, 0);
+        data.FlushBits();
+        data.WriteBits(0u, 3);
+        data.FlushBits();
+        data.WriteUInt32(0u);
+        for (int i = 0; i < 8; i++)
+            data.WriteInt32(0);
+        data.WriteInt64(0L);
+        data.WriteBits(0u, 1);
+        data.FlushBits();
+        data.WriteBits(0u, 0);
+        data.FlushBits();
     }
 
     internal void WriteUpdateActivePlayerData(HermesProxy.World.WorldPacket data)

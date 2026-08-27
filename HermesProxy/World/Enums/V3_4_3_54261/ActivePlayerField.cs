@@ -32,11 +32,12 @@ namespace HermesProxy.World.Enums.V3_4_3_54261;
 public enum ActivePlayerField
 {
     // ===========================================================================
-    // Create — being migrated from one mega custom writer into declarative members,
-    // in wire order. Everything not yet migrated stays in WriteCreateActivePlayerRest,
-    // which shrinks with each slice. ActivePlayerSectionEquivalenceTests pins the whole
-    // Create wire against a frozen copy of the pre-migration hand-port, so every slice
-    // has to stay byte-identical.
+    // Create — fully declarative. What was one 1800-line hand-written writer is now
+    // members in wire order; the writers that remain are named, single-purpose hooks for
+    // shapes a per-field descriptor cannot express (computed values, session-sourced state,
+    // interleaved parallel arrays, nested structs with non-zero defaults).
+    // ActivePlayerSectionEquivalenceTests pins the whole Create wire against a frozen copy
+    // of the pre-migration hand-port, so this stays byte-identical to it.
     //
     // Writes below are emitted in declaration order — this enum IS the wire order.
     // ===========================================================================
@@ -385,10 +386,82 @@ public enum ActivePlayerField
     [DescriptorCreatePlaceholder(DescriptorType.Int32)]
     ACTIVEPLAYER_CREATE_PERKS_PROGRAM_CURRENCY_PLACEHOLDER,
 
-    // Everything from the dynamic-field count prefixes onward, not yet migrated.
-    [DescriptorCreatePlaceholder(DescriptorType.Int32,
-        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerRest))]
-    ACTIVEPLAYER_CREATE_REST_CUSTOM,
+    // ---- Create slice 4: dynamic-field prefixes, payloads and bit tail ----
+
+    // Resize prefixes: ResearchSites, ResearchSiteProgress, Research,
+    // DailyQuestsCompleted, AvailableQuestLineXQuestIDs, Field_1000 — all empty.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 6)]
+    ACTIVEPLAYER_CREATE_DYNAMIC_RESIZE_PREFIXES_A_PLACEHOLDER,
+
+    // Heirlooms.Resize + HeirloomFlags.Resize — the two non-zero prefixes.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerHeirloomCounts))]
+    ACTIVEPLAYER_CREATE_HEIRLOOM_COUNTS_CUSTOM,
+
+    // Resize prefixes: Toys, Transmog, ConditionalTransmog, SelfResSpells,
+    // CharacterRestrictions, SpellPctModByLabel, SpellFlatModByLabel, TaskQuests.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 8)]
+    ACTIVEPLAYER_CREATE_DYNAMIC_RESIZE_PREFIXES_B_PLACEHOLDER,
+
+    // TransportServerTime — no WotLK source.
+    [DescriptorCreatePlaceholder(DescriptorType.Int32)]
+    ACTIVEPLAYER_CREATE_TRANSPORT_SERVER_TIME_PLACEHOLDER,
+
+    // TraitConfigs.size (always 0) + ActiveCombatTraitConfigID — no WotLK source.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 2)]
+    ACTIVEPLAYER_CREATE_TRAIT_CONFIG_PLACEHOLDER,
+
+    // bit 1512 GlyphsGroup + bit 120 GlyphsEnabled, both sourced from session state.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerGlyphs))]
+    ACTIVEPLAYER_CREATE_GLYPHS_CUSTOM,
+
+    // LfgRoles.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_LFG_ROLES_PLACEHOLDER,
+
+    // CategoryCooldownMods.Resize + WeeklySpellUses.Resize.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 2)]
+    ACTIVEPLAYER_CREATE_SPELL_USES_RESIZE_PLACEHOLDER,
+
+    // NumStableSlots.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt8)]
+    ACTIVEPLAYER_CREATE_NUM_STABLE_SLOTS_PLACEHOLDER,
+
+    // Dynamic-field payloads: KnownTitles, Heirlooms, HeirloomFlags.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt64,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerDynamicPayloads))]
+    ACTIVEPLAYER_CREATE_DYNAMIC_PAYLOADS_CUSTOM,
+
+    // bits 608-614 (parent 607): PvpInfo[7], each element ending in its own FlushBits.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerPvpInfo))]
+    ACTIVEPLAYER_CREATE_PVP_INFO_CUSTOM,
+
+    // Align after the PvpInfo group (WriteBits with a zero count is a bare flush).
+    [DescriptorCreateBitsPlaceholder(0u, 0)]
+    ACTIVEPLAYER_CREATE_PVP_INFO_TAIL_FLUSH,
+
+    // Three trailing group-cap bits.
+    [DescriptorCreateBitsPlaceholder(0u, 3)]
+    ACTIVEPLAYER_CREATE_TAIL_BITS_3,
+
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
+    ACTIVEPLAYER_CREATE_TAIL_UINT32_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Int32, Count = 8)]
+    ACTIVEPLAYER_CREATE_TAIL_INT32_PLACEHOLDER,
+
+    [DescriptorCreatePlaceholder(DescriptorType.Int64)]
+    ACTIVEPLAYER_CREATE_TAIL_INT64_PLACEHOLDER,
+
+    // Final trailing bit.
+    [DescriptorCreateBitsPlaceholder(0u, 1)]
+    ACTIVEPLAYER_CREATE_TAIL_BIT_1,
+
+    // Closing flush the hand-port emitted twice; the first is already above.
+    [DescriptorCreateBitsPlaceholder(0u, 0)]
+    ACTIVEPLAYER_CREATE_TAIL_FINAL_FLUSH,
 
     // ===========================================================================
     // Update — mask mutators (run before all scalar bit-setting)

@@ -905,99 +905,6 @@ public partial class ObjectUpdateBuilder
     // Whole-Create writer — kept as one method because the byte-stream is mostly
     // zero placeholders interleaved with a few real fields; declarative per-write
     // enum members would balloon to ~200 entries with no readability win.
-    internal void WriteCreateActivePlayerRest(WorldPacket data, ActivePlayerData src)
-    {
-        // V3_4_3 ActivePlayerData wire — written in TC field-declaration order, NOT
-        // descriptor bit order. Many lines below are "zero placeholders": legacy 3.3.5
-        // does not populate the field, but the modern client expects a value at this
-        // wire position so we emit 0 / type-default. Where a property IS available on
-        // ActivePlayerData (Class A — see plan), read it. Otherwise annotate and ship 0.
-        //
-        // Bit numbers refer to ActivePlayerField.cs declarations.
-
-        var active = src;
-
-        ulong[] foldedTitles = new ulong[6];
-        int knownTitlesCount = FoldKnownTitles(active.KnownTitles, foldedTitles);
-
-        // (bits 33-68 migrated to descriptor members)
-
-        // (bits 69-114 migrated to descriptor members)
-
-        // 16 dynamic-field count prefixes. Per WPP V3_4_0 ReadCreateActivePlayerData
-        // wire order. Slots 6 + 7 = Heirlooms.Resize + HeirloomFlags.Resize; we ship
-        // the full 38-item set so the Collections panel renders X/38 owned. Matching
-        // payload bytes are written below, before the PvpInfo loop.
-        uint heirloomCount = (uint)GameData.Heirlooms.Count;
-        data.WriteUInt32(0u);                                                      // ResearchSites.Resize
-        data.WriteUInt32(0u);                                                      // ResearchSiteProgress.Resize
-        data.WriteUInt32(0u);                                                      // Research.Resize
-        data.WriteUInt32(0u);                                                      // DailyQuestsCompleted.Resize
-        data.WriteUInt32(0u);                                                      // AvailableQuestLineXQuestIDs.Resize
-        data.WriteUInt32(0u);                                                      // Field_1000.Resize
-        data.WriteUInt32(heirloomCount);                                           // Heirlooms.Resize
-        data.WriteUInt32(heirloomCount);                                           // HeirloomFlags.Resize
-        data.WriteUInt32(0u);                                                      // Toys.Resize
-        data.WriteUInt32(0u);                                                      // Transmog.Resize
-        data.WriteUInt32(0u);                                                      // ConditionalTransmog.Resize
-        data.WriteUInt32(0u);                                                      // SelfResSpells.Resize
-        data.WriteUInt32(0u);                                                      // CharacterRestrictions.Resize
-        data.WriteUInt32(0u);                                                      // SpellPctModByLabel.Resize
-        data.WriteUInt32(0u);                                                      // SpellFlatModByLabel.Resize
-        data.WriteUInt32(0u);                                                      // TaskQuests.Resize
-
-        data.WriteInt32(0);                                                        // TransportServerTime (Int32) — no WotLK source (TC UpdateFields.cpp:3047)
-        data.WriteUInt32(0u);                                                      // TraitConfigs.size — always 0 (TC UpdateFields.cpp:3048)
-        data.WriteUInt32(0u);                                                      // ActiveCombatTraitConfigID (UInt32) — no WotLK source (TC UpdateFields.cpp:3049)
-
-        // bit 1512 GlyphsGroup (CustomField, sources from _gameState — not ActivePlayerData).
-        for (int g = 0; g < PlayerConst.MaxGlyphSlots; g++)
-        {
-            data.WriteUInt32(_gameState.ActiveGlyphSlotIds[g]);                    // GlyphSlots[g]
-            data.WriteUInt32(_gameState.ActiveGlyphs[g]);                          // Glyphs[g]
-        }
-        data.WriteUInt8(_gameState.GlyphsEnabled);                                 // bit 120: GlyphsEnabled (UInt8, from _gameState)
-        data.WriteUInt8(0);                                                        // LfgRoles placeholder
-        data.WriteUInt32(0u);                                                      // CategoryCooldownMods.Resize
-        data.WriteUInt32(0u);                                                      // WeeklySpellUses.Resize
-        data.WriteUInt8(0);                                                        // NumStableSlots
-
-        // Dynamic-field payloads. WPP wire order: KnownTitles, DailyQuestsCompleted,
-        // AvailableQuestLineXQuestIDs, Field_1000, then Heirlooms[Count],
-        // HeirloomFlags[Count], then Toys/Transmog/etc, then PvpInfo.
-        for (int i = 0; i < knownTitlesCount; i++)
-            data.WriteUInt64(foldedTitles[i]);
-        foreach (var itemId in GameData.Heirlooms)
-            data.WriteInt32(itemId);
-        for (int i = 0; i < GameData.Heirlooms.Count; i++)
-            data.WriteUInt32(0u);
-
-        // bits 608-614 (parent 607): PvpInfo[7] nested struct.
-        // Per-element layout per WriteUpdateActivePlayerPvpInfo: Int8 + 16×UInt32 + 1 bit + FlushBits.
-        // Live property is PVPInfo[6] on ActivePlayerData. TODO mirror update writer.
-        for (int t = 0; t < 7; t++)
-        {
-            data.WriteInt8(0);                                                     // PvpInfo[t]: per-element prefix byte
-            for (int x = 0; x < 16; x++)
-                data.WriteUInt32(0u);                                              // PvpInfo[t]: 16× UInt32 payload (Rating/SeasonPlayed/WeeklyPlayed/etc.)
-            data.WriteBit(false);                                                  // PvpInfo[t]: Disqualified bit
-            data.FlushBits();
-        }
-        data.FlushBits();
-        data.WriteBit(false);                                                      // trailing bit placeholder (PvpInfo group cap?)
-        data.WriteBit(false);                                                      // trailing bit placeholder
-        data.WriteBit(false);                                                      // trailing bit placeholder
-        data.FlushBits();
-        data.WriteUInt32(0u);                                                      // trailing UInt32 placeholder
-        for (int e = 0; e < 8; e++)
-            data.WriteInt32(0);                                                    // trailing 8× Int32 placeholder
-        data.WriteInt64(0L);                                                       // trailing Int64 placeholder
-        data.WriteBit(false);                                                      // trailing bit placeholder
-        data.FlushBits();
-        data.FlushBits();
-    }
-
-
     // bits 540-541 (parent 539): RestInfo[2] nested {Threshold:UInt32, StateID:UInt8}.
     // Custom because StateID defaults to 1 rather than the type's natural zero, and the
     // element is a nested struct the per-field descriptor shape cannot express.
@@ -1017,6 +924,57 @@ public partial class ObjectUpdateBuilder
     {
         data.WriteInt32((int?)src.PvPTierMaxFromWins ?? -1);
         data.WriteInt32((int?)src.PvPLastWeeksTierMaxFromWins ?? -1);
+    }
+
+    // Heirlooms.Resize + HeirloomFlags.Resize. We ship the full owned set so the
+    // Collections panel renders X/38; the count is session data, not ActivePlayerData.
+    internal void WriteCreateActivePlayerHeirloomCounts(WorldPacket data, ActivePlayerData src)
+    {
+        uint heirloomCount = (uint)GameData.Heirlooms.Count;
+        data.WriteUInt32(heirloomCount);
+        data.WriteUInt32(heirloomCount);
+    }
+
+    // bit 1512 GlyphsGroup + bit 120 GlyphsEnabled. Sources from _gameState rather than
+    // ActivePlayerData — the legacy glyph state is tracked per session, not per update.
+    internal void WriteCreateActivePlayerGlyphs(WorldPacket data, ActivePlayerData src)
+    {
+        for (int g = 0; g < PlayerConst.MaxGlyphSlots; g++)
+        {
+            data.WriteUInt32(_gameState.ActiveGlyphSlotIds[g]);
+            data.WriteUInt32(_gameState.ActiveGlyphs[g]);
+        }
+        data.WriteUInt8(_gameState.GlyphsEnabled);
+    }
+
+    // Dynamic-field payloads, in WPP wire order: KnownTitles (folded to 64-bit words),
+    // then Heirlooms[Count] and HeirloomFlags[Count]. Counts were written earlier by the
+    // resize prefixes, so payload length has to agree with them.
+    internal void WriteCreateActivePlayerDynamicPayloads(WorldPacket data, ActivePlayerData src)
+    {
+        ulong[] foldedTitles = new ulong[6];
+        int knownTitlesCount = FoldKnownTitles(src.KnownTitles, foldedTitles);
+        for (int i = 0; i < knownTitlesCount; i++)
+            data.WriteUInt64(foldedTitles[i]);
+        foreach (var itemId in GameData.Heirlooms)
+            data.WriteInt32(itemId);
+        for (int i = 0; i < GameData.Heirlooms.Count; i++)
+            data.WriteUInt32(0u);
+    }
+
+    // bits 608-614 (parent 607): PvpInfo[7]. Per-element layout mirrors
+    // WriteUpdateActivePlayerPvpInfo: Int8 + 16x UInt32 + one bit + FlushBits.
+    // Live property is PVPInfo[6] on ActivePlayerData. TODO mirror the update writer.
+    internal void WriteCreateActivePlayerPvpInfo(WorldPacket data, ActivePlayerData src)
+    {
+        for (int t = 0; t < 7; t++)
+        {
+            data.WriteInt8(0);
+            for (int x = 0; x < 16; x++)
+                data.WriteUInt32(0u);
+            data.WriteBit(false);
+            data.FlushBits();
+        }
     }
 
     // ---- Create slice 1: members migrated out of the mega-writer ----

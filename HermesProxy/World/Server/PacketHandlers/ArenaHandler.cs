@@ -63,6 +63,7 @@ public partial class WorldSocket
         packet.WriteUInt8(join.TeamIndex);
         packet.WriteBool(true); // As Group
         packet.WriteBool(true); // Is Rated
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEMASTER_JOIN_ARENA: teamIndex={join.TeamIndex} asGroup=1 rated=1.");
         SendPacketToServer(packet);
     }
 
@@ -74,6 +75,7 @@ public partial class WorldSocket
         packet.WriteUInt8(join.TeamSize);
         packet.WriteBool(join.AsGroup);
         packet.WriteBool(false); // Is Rated
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEMASTER_JOIN_SKIRMISH: teamSize={join.TeamSize} asGroup={join.AsGroup}.");
         SendPacketToServer(packet);
     }
 

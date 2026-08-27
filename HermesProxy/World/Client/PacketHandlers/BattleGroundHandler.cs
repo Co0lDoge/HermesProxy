@@ -1,5 +1,6 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
+using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -168,7 +169,7 @@ public partial class WorldClient
             failed.Reason = 30;
             failed.BattlefieldListId = GameData.GetBattlegroundIdFromMapId(queuedMapId);
             SendPacketToClient(failed);
-            GetSession().GameState.BattleFieldQueueTimes.Remove(hdr.Ticket.Id);
+            GetSession().GameState.RemoveBattleFieldQueue(hdr.Ticket.Id);
         }
         GetSession().GameState.StoreBattleFieldQueueType(hdr.Ticket.Id, mapId);
     }
@@ -257,9 +258,11 @@ public partial class WorldClient
             failed.Reason = 30;
             failed.BattlefieldListId = GetSession().GameState.GetBattleFieldQueueType(hdr.Ticket.Id);
             SendPacketToClient(failed);
-            GetSession().GameState.BattleFieldQueueTimes.Remove(hdr.Ticket.Id);
+            GetSession().GameState.RemoveBattleFieldQueue(hdr.Ticket.Id);
         }
         GetSession().GameState.StoreBattleFieldQueueType(hdr.Ticket.Id, battlefieldListId);
+        if (battlefieldListId != 0)
+            GetSession().GameState.StoreBattleFieldQueueArenaType(hdr.Ticket.Id, hdr.ArenaTeamSize);
     }
 
     [PacketHandler(Opcode.MSG_PVP_LOG_DATA, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
@@ -450,6 +453,47 @@ public partial class WorldClient
             GetSession().GameState.FlagCarrierGuids.Add(position.Guid);
         }
         SendPacketToClient(bglist);
+    }
+
+    // Legacy 0x2E8 is SMSG_GROUP_JOINED_BATTLEGROUND (int32 result). The 3.3.5
+    // table names it SMSG_BATTLEFIELD_STATUS_QUEUED. Rated join-as-group failures
+    // only send this packet, so dropping it made Join as Group look like a no-op.
+    [PacketHandler(Opcode.SMSG_BATTLEFIELD_STATUS_QUEUED)]
+    void HandleGroupJoinedBattleground(WorldPacket packet)
+    {
+        int result = packet.ReadInt32();
+        WowGuid128? playerGuid = null;
+        if (packet.CanRead())
+            playerGuid = packet.ReadGuid().To128(GetSession().GameState);
+
+        Log.Print(LogType.Debug, $"[BG] SMSG_GROUP_JOINED_BATTLEGROUND: result={result} hasGuid={playerGuid.HasValue}.");
+
+        if (result > 0 || result == -1)
+            return;
+
+        string? playerName = playerGuid.HasValue
+            ? GetSession().GameState.GetPlayerName(playerGuid.Value)
+            : null;
+        string? text = BattlefieldQueueArenaType.JoinErrorText(result, playerName);
+        if (!string.IsNullOrEmpty(text))
+        {
+            PrintNotification notify = new PrintNotification();
+            notify.NotifyText = text;
+            SendPacketToClient(notify);
+        }
+
+        BattlefieldStatusFailed failed = new BattlefieldStatusFailed();
+        failed.Ticket.Id = 1;
+        failed.Ticket.RequesterGuid = GetSession().GameState.CurrentPlayerGuid;
+        failed.Ticket.Time = GetSession().GameState.GetBattleFieldQueueTime(failed.Ticket.Id);
+        failed.Ticket.Type = RideType.Battlegrounds;
+        failed.BattlefieldListId = GetSession().GameState.GetBattleFieldQueueType(failed.Ticket.Id);
+        if (failed.BattlefieldListId == 0)
+            failed.BattlefieldListId = 6; // BATTLEGROUND_AA
+        failed.Reason = BattlefieldQueueArenaType.ToModernJoinError(result);
+        if (playerGuid.HasValue)
+            failed.ClientID = playerGuid.Value;
+        SendPacketToClient(failed);
     }
 
     [PacketHandler(Opcode.SMSG_BATTLEGROUND_PLAYER_JOINED)]

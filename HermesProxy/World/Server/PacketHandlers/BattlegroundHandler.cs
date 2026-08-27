@@ -56,14 +56,13 @@ public partial class WorldSocket
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_PORT);
         uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id);
 
-        // arenatype byte. V3_4_3-only fix: send 0 for non-arena battlegrounds. The legacy
-        // server derives the BattlegroundQueueTypeId from (bgTypeId, arenaType); a non-zero
-        // arenatype on a non-arena BG resolves to a queue the player isn't in, so the server
-        // silently dropped "Enter Battle" and the player never entered the popped BG (#102).
-        // V1_14/V2_5 keep the prior constant (2) so older modern clients are unaffected.
-        byte arenaType = 2;
-        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-            arenaType = (byte)(GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena ? 2 : 0);
+        // arenatype byte. The legacy server derives BattlegroundQueueTypeId from
+        // (bgTypeId, arenaType). A non-zero type on a real BG misses the queue (#102).
+        // A hardcoded 2 on arenas misses 3v3/5v5. V1_14/V2_5 keep the prior constant.
+        bool isArena = GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena;
+        byte queuedArenaType = GetSession().GameState.GetBattleFieldQueueArenaType(port.Ticket.Id);
+        byte arenaType = BattlefieldQueueArenaType.ForLegacyPort(
+            ModernVersion.Build == ClientVersionBuild.V3_4_3_54261, isArena, queuedArenaType);
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
@@ -102,9 +101,14 @@ public partial class WorldSocket
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LEAVE);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt8(2);
+            uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(1);
+            bool isArena = GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena;
+            byte arenaType = BattlefieldQueueArenaType.ForLegacyPort(
+                ModernVersion.Build == ClientVersionBuild.V3_4_3_54261, isArena,
+                GetSession().GameState.GetBattleFieldQueueArenaType(1));
+            packet.WriteUInt8(arenaType);
             packet.WriteUInt8(0);
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(1));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
         }
         else

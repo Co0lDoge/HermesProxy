@@ -23,6 +23,7 @@ using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
 using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
 
@@ -1205,6 +1206,13 @@ public class InspectResult : ServerPacket
     public override void Write()
     {
         DisplayInfo.Write(_worldPacket);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            WriteV343();
+            return;
+        }
+
         _worldPacket.WriteInt32(Glyphs.Count);
         _worldPacket.WriteInt32(Talents.Count);
         _worldPacket.WriteInt32(ItemLevel);
@@ -1234,9 +1242,47 @@ public class InspectResult : ServerPacket
             _worldPacket.WriteUInt32((uint)AzeriteLevel);
     }
 
+    // Wrathion InspectPackets.cpp / InspectHandler.cpp. Fixed 71-slot array,
+    // not a counted list. The four constants after honor are from their 3.4.3 sniff.
+    void WriteV343()
+    {
+        _worldPacket.WriteUInt16(0);
+        _worldPacket.WriteUInt16(0);
+        _worldPacket.WriteInt32(ItemLevel);
+        _worldPacket.WriteUInt8(LifetimeMaxRank);
+        _worldPacket.WriteUInt16(TodayHK);
+        _worldPacket.WriteUInt16(YesterdayHK);
+        _worldPacket.WriteUInt32(LifetimeHK);
+        _worldPacket.WriteUInt32(HonorLevel);
+
+        _worldPacket.WriteUInt64(2199023255552UL);
+        _worldPacket.WriteUInt32(1776384);
+        _worldPacket.WriteUInt32(101056512);
+        _worldPacket.WriteUInt32(33554432);
+
+        for (int i = 0; i < 71; ++i)
+        {
+            if (i < InspectedTalents.Count)
+            {
+                _worldPacket.WriteUInt32(InspectedTalents[i].TalentID);
+                _worldPacket.WriteUInt8((byte)InspectedTalents[i].Rank);
+            }
+            else
+            {
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt8(0);
+            }
+        }
+
+        for (int i = 0; i < 61; ++i)
+            _worldPacket.WriteUInt64(0);
+        _worldPacket.WriteUInt32(0);
+    }
+
     public PlayerModelDisplayInfo DisplayInfo = new();
     public List<ushort> Glyphs = new();
     public List<byte> Talents = new();
+    public List<TalentEntry> InspectedTalents = new();
     public InspectGuildData GuildData = null!;
     public PVPBracketData[] Bracket = new PVPBracketData[6];
     public uint? AzeriteLevel;

@@ -1,6 +1,7 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
@@ -695,16 +696,35 @@ public partial class WorldClient
             }
         }
 
-        // TODO: format seems to be different in new client
         if (packet.GetUniversalOpcode(false) == Opcode.SMSG_INSPECT_TALENT)
         {
-            uint talentsCount = packet.ReadUInt32();
-            for (uint i = 0; i < talentsCount; i++)
+            // BuildPlayerTalentsInfoData (no isPet prefix). Unspent points are
+            // not a rank-byte count — treating them as one emptied the tree.
+            uint unspent = packet.ReadUInt32();
+            byte specsCount = packet.ReadUInt8();
+            byte activeSpec = packet.ReadUInt8();
+            int totalTalents = 0;
+
+            for (byte specIdx = 0; specIdx < specsCount; ++specIdx)
             {
-                byte talent = packet.ReadUInt8();
-                if (i < 25)
-                    inspect.Talents.Add(talent);
+                byte talentCount = packet.ReadUInt8();
+                for (byte t = 0; t < talentCount; ++t)
+                {
+                    uint talentId = packet.ReadUInt32();
+                    byte rank = packet.ReadUInt8();
+                    if (specIdx == activeSpec)
+                        inspect.InspectedTalents.Add(new TalentEntry { TalentID = talentId, Rank = rank });
+                }
+
+                byte glyphSlots = packet.ReadUInt8();
+                for (byte g = 0; g < glyphSlots; ++g)
+                    packet.ReadUInt16();
+
+                totalTalents += talentCount;
             }
+
+            WorldClientLogMessages.InspectTalents(
+                _melLog, _sourceFile, "C P<S", unspent, specsCount, activeSpec, totalTalents);
         }
 
         SendPacketToClient(inspect);

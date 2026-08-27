@@ -184,7 +184,7 @@ public partial class WorldClient
         hdr.Ticket.Type = RideType.Battlegrounds;
 
         hdr.ArenaTeamSize = packet.ReadUInt8();
-        packet.ReadUInt8(); // unk
+        byte bracketId = packet.ReadUInt8(); // bracket id, echoed back on PORT/LEAVE
         uint battlefieldListId = packet.ReadUInt32();
         packet.ReadUInt16(); // 0x1F90
 
@@ -262,7 +262,10 @@ public partial class WorldClient
         }
         GetSession().GameState.StoreBattleFieldQueueType(hdr.Ticket.Id, battlefieldListId);
         if (battlefieldListId != 0)
+        {
             GetSession().GameState.StoreBattleFieldQueueArenaType(hdr.Ticket.Id, hdr.ArenaTeamSize);
+            GetSession().GameState.StoreBattleFieldQueueBracketId(hdr.Ticket.Id, bracketId);
+        }
     }
 
     [PacketHandler(Opcode.MSG_PVP_LOG_DATA, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]

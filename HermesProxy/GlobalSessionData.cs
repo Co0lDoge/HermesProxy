@@ -1,4 +1,4 @@
-using HermesProxy.Auth;
+﻿using HermesProxy.Auth;
 using HermesProxy.Configuration.Options;
 using HermesProxy.World;
 using HermesProxy.World.Client;
@@ -349,6 +349,7 @@ public sealed class GameSessionData
     public Dictionary<uint, string> ItemTexts = [];
     public Dictionary<uint, uint> BattleFieldQueueTypes = [];
     public Dictionary<uint, byte> BattleFieldQueueArenaTypes = [];
+    public Dictionary<uint, byte> BattleFieldQueueBracketIds = [];
     public Dictionary<uint, long> BattleFieldQueueTimes = [];
     public Dictionary<uint, uint> DailyQuestsDone = [];
     public HashSet<WowGuid128> FlagCarrierGuids = [];
@@ -943,10 +944,23 @@ public sealed class GameSessionData
     {
         return BattleFieldQueueArenaTypes.TryGetValue(queueSlot, out var value) ? value : (byte)0;
     }
+    // Legacy CMSG_BATTLEFIELD_PORT packs (BattlemasterListId, BracketId, TeamSize) into
+    // the leading uint64. TrinityCore matches the whole struct, so a hardcoded bracket
+    // misses the queue of any character above the first level bracket. The value comes
+    // back on every SMSG_BATTLEFIELD_STATUS.
+    public void StoreBattleFieldQueueBracketId(uint queueSlot, byte bracketId)
+    {
+        BattleFieldQueueBracketIds[queueSlot] = bracketId;
+    }
+    public byte GetBattleFieldQueueBracketId(uint queueSlot)
+    {
+        return BattleFieldQueueBracketIds.TryGetValue(queueSlot, out var value) ? value : (byte)0;
+    }
     public void RemoveBattleFieldQueue(uint queueSlot)
     {
         BattleFieldQueueTypes.Remove(queueSlot);
         BattleFieldQueueArenaTypes.Remove(queueSlot);
+        BattleFieldQueueBracketIds.Remove(queueSlot);
         BattleFieldQueueTimes.Remove(queueSlot);
     }
     public void StoreAuraDurationLeft(WowGuid128 guid, byte slot, int duration, int currentTime)

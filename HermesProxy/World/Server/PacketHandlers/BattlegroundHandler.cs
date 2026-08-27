@@ -67,7 +67,7 @@ public partial class WorldSocket
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
             packet.WriteUInt8(arenaType);
-            packet.WriteUInt8(0);
+            packet.WriteUInt8(GetSession().GameState.GetBattleFieldQueueBracketId(port.Ticket.Id));
             packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
             packet.WriteBool(port.AcceptedInvite);
@@ -107,7 +107,7 @@ public partial class WorldSocket
                 ModernVersion.Build == ClientVersionBuild.V3_4_3_54261, isArena,
                 GetSession().GameState.GetBattleFieldQueueArenaType(1));
             packet.WriteUInt8(arenaType);
-            packet.WriteUInt8(0);
+            packet.WriteUInt8(GetSession().GameState.GetBattleFieldQueueBracketId(1));
             packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
         }

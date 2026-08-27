@@ -104,8 +104,14 @@ positions are named members, filling one in is a one-line change.
 
 ## Not yet wired
 
-- `Corpse` and `DynamicObject` have `*Field.cs` enums but no `[DescriptorSection]`. Create is
-  hand-written; **Update does not exist** — the Values dispatch has no branch for them
+All nine object sections that a WotLK backend actually sends are wired on both paths.
+Corpse and DynamicObject were the last two (see the migration note above); wiring them was
+not just a refactor, because neither had an Update path and their Values deltas were being
+parsed and then dropped. If you wire another section, remember the third step: a section
+needs a probe in `IsEmptyValuesDelta` (`World/Server/Packets/UpdatePackets.cs`) or its
+single-field deltas get filtered as "empty" before the builder runs.
+
+
 - All 12 `*DynamicField` enums are unwired; dynamic fields are handled via custom callbacks
 - `AreaTrigger` / `Conversation` / `SceneObject` — enums exist, nothing wired, likely dead for
   a WotLK backend

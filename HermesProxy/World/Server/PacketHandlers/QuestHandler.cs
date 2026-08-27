@@ -2,6 +2,7 @@
 using Framework.Logging;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -26,6 +27,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST)]
     void HandleQuestGiverAcceptQuest(QuestGiverAcceptQuest quest)
     {
+        GetSession().GameState.CloseQuestDetails();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -83,6 +85,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_HELLO)]
     void HandleQuestGiverHello(QuestGiverHello hello)
     {
+        GetSession().GameState.CloseQuestDetails();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_HELLO);
         packet.WriteGuid(hello.QuestGiverGUID.To64());
         SendPacketToServer(packet);
@@ -90,32 +93,69 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_CLOSE_QUEST)]
     void HandleQuestGiverCloseQuest(QuestGiverCloseQuest close)
     {
-        _ = close;
-        // 3.4.3 only. On every other build this opcode stayed unhandled, and legacy
-        // servers do not expect an unsolicited SMSG_GOSSIP_COMPLETE here.
         if (ModernVersion.Build != HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
             return;
 
-        // The first CLOSE_QUEST after OfferReward is the client leaving the item
-        // list, not Cancel. The next one is the real Cancel.
-        if (GetSession().GameState.JustSentOfferReward)
+        var state = GetSession().GameState;
+        // First CLOSE_QUEST after OfferReward is leaving the item list
+        if (state.JustSentOfferReward)
         {
-            GetSession().GameState.JustSentOfferReward = false;
+            state.JustSentOfferReward = false;
+            WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, close.QuestID, "swallow-offer");
             return;
         }
 
-        GetSession().GameState.ClearQuestRewardWait();
-        SendPacket(new GossipComplete());
+        state.CloseQuestDetails();
     }
 
     [PacketHandler(Opcode.CMSG_CLOSE_INTERACTION)]
     void HandleCloseInteraction(CloseInteraction close)
     {
-        // Leaving gossip after RequestItems. Continue is REQUEST_REWARD, not this.
-        // The reward wait is deliberately kept: the client re-talks to the same NPC
-        // straight after, and NPCHandler replays the item list to rebind the frame.
-        // Any interaction with a different NPC clears it there.
+        var state = GetSession().GameState;
+        if (state.AwaitingQuestRewardId != 0)
+            return;
+
+        if (!state.QuestDetailsOpen)
+            return;
+
+        int questId = (int)(state.LastQuestDetails?.QuestID ?? 0);
+
+        // GossipFrame hid under QuestFrame. Leave details up
+        if (state.JustLeftGossipForDetails)
+        {
+            state.JustLeftGossipForDetails = false;
+            WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, "swallow-left-gossip");
+            return;
+        }
+
+        state.CloseQuestDetails();
+        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, "release-details");
         _ = close;
+    }
+
+    // 3.4.3 Decline is TALK_TO_GOSSIP, not a cancel opcode. Dismiss the
+    // parchment, then put back this NPC's cached list only.
+    void ReturnDetailsToGossip(string action)
+    {
+        var state = GetSession().GameState;
+        int questId = (int)(state.LastQuestDetails?.QuestID ?? 0);
+        WowGuid128 npc = state.LastQuestDetails?.QuestGiverGUID ?? default;
+        var gossip = state.LastGossip;
+        var list = state.LastQuestList;
+        state.CloseQuestDetails();
+
+        SendPacket(new QuestGiverInvalidQuest
+        {
+            Reason = QuestFailedReasons.None,
+            SendErrorMessage = false
+        });
+
+        if (gossip != null && npc != default && gossip.GossipGUID == npc)
+            SendPacket(gossip);
+        else if (list != null && npc != default && list.QuestGiverGUID == npc)
+            SendPacket(list);
+
+        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, action);
     }
 
 

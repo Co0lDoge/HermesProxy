@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -49,6 +50,13 @@ public partial class WorldSocket
             }
 
             GetSession().GameState.ClearQuestRewardWait();
+        }
+
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261
+            && GetSession().GameState.QuestDetailsOpen)
+        {
+            ReturnDetailsToGossip("decline-talk");
+            return;
         }
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_TALK_TO_GOSSIP);

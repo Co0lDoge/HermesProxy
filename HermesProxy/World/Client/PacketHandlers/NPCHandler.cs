@@ -74,13 +74,17 @@ public partial class WorldClient
                 $"[V343Trace][Gossip] guid={gossip.GossipGUID} gossipId={gossip.GossipID} textId={gossip.TextID} options={gossip.GossipOptions.Count} quests={gossip.GossipQuests.Count} optTextLen(total/max)={totalOptionTextLen}/{maxOptionTextLen} questTextLen(total/max)={totalQuestTextLen}/{maxQuestTextLen}");
         }
 
-        // V3_4_3 only: a gossip list from the NPC we are mid-turn-in with would replace
-        // the RequestItems frame with a dead overlay. Gossip from any other NPC is real.
+        var state = GetSession().GameState;
+        // V3_4_3 only: a gossip list from the NPC we are mid-quest with would
+        // replace the details / RequestItems frame with a dead overlay.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
-            && GetSession().GameState.AwaitingQuestRewardId != 0
-            && gossip.GossipGUID == GetSession().GameState.AwaitingQuestGiver)
+            && gossip.GossipGUID == state.CurrentInteractedWithNPC
+            && (state.AwaitingQuestRewardId != 0 || state.QuestDetailsOpen))
             return;
 
+        state.LastGossip = gossip;
+        state.LastQuestList = null;
+        state.CloseQuestDetails();
         SendPacketToClient(gossip);
     }
 

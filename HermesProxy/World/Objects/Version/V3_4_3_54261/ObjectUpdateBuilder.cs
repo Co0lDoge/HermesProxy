@@ -917,6 +917,9 @@ public partial class ObjectUpdateBuilder
 
         var active = src;
 
+        ulong[] foldedTitles = new ulong[6];
+        int knownTitlesCount = FoldKnownTitles(active.KnownTitles, foldedTitles);
+
         // InvSlots[141] — modern flat layout fanned from legacy 23/24/28/7/12/32 slots.
         for (int i = 0; i < 141; i++)
             data.WritePackedGuid128(GetModernInvSlot(active, i) ?? WowGuid128.Empty);
@@ -924,7 +927,7 @@ public partial class ObjectUpdateBuilder
         data.WritePackedGuid128(active.FarsightObject ?? WowGuid128.Empty);       // bit 26: FarsightObject (PackedGuid128)
         data.WritePackedGuid128(active.SummonedBattlePetGUID
             ?? _gameState.SummonedBattlePetGuid);                                  // bit 27: SummonedBattlePetGUID
-        data.WriteUInt32(0u);                                                      // bit 3 dynamic field: KnownTitles.size — proxy does not track titles
+        data.WriteUInt32((uint)knownTitlesCount);                                  // bit 3 dynamic field: KnownTitles.size
         data.WriteUInt64(active.Coinage.GetValueOrDefault());                      // bit 28: Coinage (UInt64)
         data.WriteInt32(active.XP.GetValueOrDefault());                            // bit 29: XP (Int32)
         data.WriteInt32(active.NextLevelXP.GetValueOrDefault());                   // bit 30: NextLevelXP (Int32)
@@ -1159,10 +1162,10 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt8(0);                                                        // NumStableSlots
 
         // Dynamic-field payloads. WPP wire order: KnownTitles, DailyQuestsCompleted,
-        // AvailableQuestLineXQuestIDs, Field_1000 (all 0-count → 0 bytes),
-        // then Heirlooms[Count], HeirloomFlags[Count], then Toys/Transmog/etc
-        // (all 0-count → 0 bytes), then PvpInfo. Only Heirlooms + HeirloomFlags
-        // carry real payload bytes.
+        // AvailableQuestLineXQuestIDs, Field_1000, then Heirlooms[Count],
+        // HeirloomFlags[Count], then Toys/Transmog/etc, then PvpInfo.
+        for (int i = 0; i < knownTitlesCount; i++)
+            data.WriteUInt64(foldedTitles[i]);
         foreach (var itemId in GameData.Heirlooms)
             data.WriteInt32(itemId);
         for (int i = 0; i < GameData.Heirlooms.Count; i++)

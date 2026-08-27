@@ -3153,7 +3153,8 @@ public partial class WorldClient
             int PLAYER_FIELD_KNOWN_TITLES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KNOWN_TITLES);
             if (PLAYER_FIELD_KNOWN_TITLES >= 0)
             {
-                int count = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056) ? 3 : 2;
+                // TBC: one LONG (2 uint32). WotLK: TITLES + TITLES1 + TITLES2 (6 uint32 / 3 uint64).
+                int count = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056) ? 6 : 2;
                 for (int i = 0; i < count; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_KNOWN_TITLES + i])

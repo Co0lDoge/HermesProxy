@@ -1350,16 +1350,19 @@ public partial class ObjectUpdateBuilder
         }
     }
 
-    // Glyphs group (bit 1512) — interleaved GlyphSlots[0..5] then Glyphs[0..5],
-    // each gated on its element bit (1513+i / 1519+i). Source = _gameState.
+    // Glyphs group (bit 1512). Native WriteUpdate interleaves per index
+    // (Slot[i] then Glyph[i]), not all slots then all glyphs. A slots-then-glyphs
+    // dump makes the client reread glyph IDs as GlyphSlot.dbc rows, so only the
+    // first Major/Minor sockets stay valid drop targets.
     internal void WriteUpdateActivePlayerGlyphsGroup(WorldPacket data, ref Framework.Util.StackBitMask blocks, ActivePlayerData src)
     {
         for (int i = 0; i < PlayerConst.MaxGlyphSlots; i++)
+        {
             if (blocks.IsBitSet(1513 + i))
                 data.WriteUInt32(_gameState.ActiveGlyphSlotIds[i]);
-        for (int i = 0; i < PlayerConst.MaxGlyphSlots; i++)
             if (blocks.IsBitSet(1519 + i))
                 data.WriteUInt32((uint)_gameState.ActiveGlyphs[i]);
+        }
     }
 
     // HasAny helper for the InvSlots mask-mutator. Returns true when any of the 141

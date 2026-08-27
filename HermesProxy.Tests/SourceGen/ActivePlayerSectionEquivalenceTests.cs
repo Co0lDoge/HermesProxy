@@ -742,9 +742,10 @@ public class ActivePlayerSectionEquivalenceTests
         if (blocks.IsBitSet(1512))
         {
             for (int i = 0; i < PlayerConst.MaxGlyphSlots; i++)
+            {
                 if (blocks.IsBitSet(1513 + i)) data.WriteUInt32(gameState.ActiveGlyphSlotIds[i]);
-            for (int i = 0; i < PlayerConst.MaxGlyphSlots; i++)
                 if (blocks.IsBitSet(1519 + i)) data.WriteUInt32((uint)(gameState.ActiveGlyphs[i]));
+            }
         }
         if (blocks.IsBitSet(607))
         {

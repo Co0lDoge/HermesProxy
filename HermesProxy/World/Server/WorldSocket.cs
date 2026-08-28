@@ -1287,16 +1287,18 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         AvailableHotfixes hotfixes = new AvailableHotfixes();
         hotfixes.VirtualRealmAddress = GetSession().RealmId.GetAddress();
-        // V3_4_3: ship the char-customization tables. Filtered scope keeps the index
-        // around 14 KB (vs 5 MB for full 600k records) — and now that compression is
-        // disabled for V3_4_3 (no SMSG_COMPRESSED_PACKET mapping), the raw packet
-        // actually reaches the client.
+        // V3_4_3: advertise only tables where we actually override the client's own data.
+        // Hotfixes are an override channel — a record identical to the baked-in DB2 costs a
+        // round trip and changes nothing.
+        //
+        // ChrCustomizationChoice (1064 rows) and ChrCustomizationOption (190) used to be
+        // advertised here. Both were verified byte-identical to the client's 3.4.3.54261
+        // DB2s (1064/1064 and 190/190, zero differing, zero new), i.e. 1254 wasted records
+        // per login. Neither store is read anywhere else in the proxy.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
         {
             hotfixes.TableFilter = new HashSet<DB2Hash>
             {
-                DB2Hash.ChrCustomizationChoice,
-                DB2Hash.ChrCustomizationOption,
                 DB2Hash.AreaTrigger,
             };
         }

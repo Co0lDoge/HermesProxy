@@ -159,9 +159,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_MOVE_SET_COLLISION_HEIGHT_ACK)]
     void HandleMoveSetCollisionHeightAck(MoveSetCollisionHeightAck collisionHeightAck)
     {
-        // This opcode doesn't exist in legacy servers (Vanilla/TBC/WotLK).
-        // The modern client sends it in response to SMSG_MOVE_SET_COLLISION_HEIGHT,
-        // but legacy servers don't expect or need it. Simply discard the packet.
+        // 3.3.5 does have CMSG_MOVE_SET_COLLISION_HGT_ACK (0x517), but Hermes
+        // already emits SMSG_MOVE_SET_COLLISION_HEIGHT from UNIT_FIELD_MOUNTDISPLAYID
+        // Values. Forwarding the ACK would make AC emit MSG 0x518 and we would
+        // double-send SET. Discard.
     }
 
     [PacketHandler(Opcode.CMSG_SET_ACTIVE_MOVER)]

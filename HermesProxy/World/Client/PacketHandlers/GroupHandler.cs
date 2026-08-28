@@ -37,6 +37,12 @@ public partial class WorldClient
         SendPacketToClient(party);
     }
 
+    [PacketHandler(Opcode.SMSG_GROUP_DESTROYED)]
+    void HandleGroupDestroyed(WorldPacket packet)
+    {
+        SendPacketToClient(new GroupDestroyed());
+    }
+
     [PacketHandler(Opcode.SMSG_PARTY_INVITE)]
     void HandleGroupInvite(WorldPacket packet)
     {

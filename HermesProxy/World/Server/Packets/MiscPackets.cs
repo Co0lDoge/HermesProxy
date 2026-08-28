@@ -824,6 +824,27 @@ public class DeathReleaseLoc : ServerPacket, ISpanWritable
     public Vector3 Location;
 }
 
+public class PreRessurect : ServerPacket, ISpanWritable
+{
+    public PreRessurect() : base(Opcode.SMSG_PRE_RESSURECT) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(PlayerGUID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(PlayerGUID.Low, PlayerGUID.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 PlayerGUID;
+}
+
 public class ReclaimCorpse : ClientPacket
 {
     public ReclaimCorpse(WorldPacket packet) : base(packet) { }

@@ -2487,3 +2487,247 @@ public struct SpellModifierData
     public int ModifierValue;
     public byte ClassIndex;
 }
+
+class SpellExecuteLog : ServerPacket, ISpanWritable
+{
+    private const int MaxEffects = 3;
+    private const int MaxTargets = 8;
+
+    public SpellExecuteLog() : base(Opcode.SMSG_SPELL_EXECUTE_LOG, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Caster);
+        _worldPacket.WriteInt32(SpellID);
+        _worldPacket.WriteUInt32((uint)Effects.Count);
+        foreach (var effect in Effects)
+        {
+            _worldPacket.WriteInt32(effect.Effect);
+            _worldPacket.WriteUInt32((uint)effect.PowerDrainTargets.Count);
+            _worldPacket.WriteUInt32((uint)effect.ExtraAttacksTargets.Count);
+            _worldPacket.WriteUInt32((uint)effect.DurabilityDamageTargets.Count);
+            _worldPacket.WriteUInt32((uint)effect.GenericVictimTargets.Count);
+            _worldPacket.WriteUInt32((uint)effect.TradeSkillTargets.Count);
+            _worldPacket.WriteUInt32((uint)effect.FeedPetTargets.Count);
+
+            foreach (var t in effect.PowerDrainTargets)
+            {
+                _worldPacket.WritePackedGuid128(t.Victim);
+                _worldPacket.WriteUInt32(t.Points);
+                _worldPacket.WriteUInt32(t.PowerType);
+                _worldPacket.WriteFloat(t.Amplitude);
+            }
+            foreach (var t in effect.ExtraAttacksTargets)
+            {
+                _worldPacket.WritePackedGuid128(t.Victim);
+                _worldPacket.WriteUInt32(t.NumAttacks);
+            }
+            foreach (var t in effect.DurabilityDamageTargets)
+            {
+                _worldPacket.WritePackedGuid128(t.Victim);
+                _worldPacket.WriteInt32(t.ItemID);
+                _worldPacket.WriteInt32(t.Amount);
+            }
+            foreach (var t in effect.GenericVictimTargets)
+                _worldPacket.WritePackedGuid128(t);
+            foreach (int itemId in effect.TradeSkillTargets)
+                _worldPacket.WriteInt32(itemId);
+            foreach (int itemId in effect.FeedPetTargets)
+                _worldPacket.WriteInt32(itemId);
+        }
+
+        _worldPacket.WriteBit(false);
+        _worldPacket.FlushBits();
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 8 + 1
+        + MaxEffects * (28 + MaxTargets * (PackedGuidHelper.MaxPackedGuid128Size + 12));
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        if (Effects.Count > MaxEffects)
+            return -1;
+        foreach (var effect in Effects)
+        {
+            if (effect.PowerDrainTargets.Count > MaxTargets
+                || effect.ExtraAttacksTargets.Count > MaxTargets
+                || effect.DurabilityDamageTargets.Count > MaxTargets
+                || effect.GenericVictimTargets.Count > MaxTargets
+                || effect.TradeSkillTargets.Count > MaxTargets
+                || effect.FeedPetTargets.Count > MaxTargets)
+                return -1;
+        }
+
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Caster.Low, Caster.High);
+        writer.WriteInt32(SpellID);
+        writer.WriteUInt32((uint)Effects.Count);
+        foreach (var effect in Effects)
+        {
+            writer.WriteInt32(effect.Effect);
+            writer.WriteUInt32((uint)effect.PowerDrainTargets.Count);
+            writer.WriteUInt32((uint)effect.ExtraAttacksTargets.Count);
+            writer.WriteUInt32((uint)effect.DurabilityDamageTargets.Count);
+            writer.WriteUInt32((uint)effect.GenericVictimTargets.Count);
+            writer.WriteUInt32((uint)effect.TradeSkillTargets.Count);
+            writer.WriteUInt32((uint)effect.FeedPetTargets.Count);
+
+            foreach (var t in effect.PowerDrainTargets)
+            {
+                writer.WritePackedGuid128(t.Victim.Low, t.Victim.High);
+                writer.WriteUInt32(t.Points);
+                writer.WriteUInt32(t.PowerType);
+                writer.WriteFloat(t.Amplitude);
+            }
+            foreach (var t in effect.ExtraAttacksTargets)
+            {
+                writer.WritePackedGuid128(t.Victim.Low, t.Victim.High);
+                writer.WriteUInt32(t.NumAttacks);
+            }
+            foreach (var t in effect.DurabilityDamageTargets)
+            {
+                writer.WritePackedGuid128(t.Victim.Low, t.Victim.High);
+                writer.WriteInt32(t.ItemID);
+                writer.WriteInt32(t.Amount);
+            }
+            foreach (var t in effect.GenericVictimTargets)
+                writer.WritePackedGuid128(t.Low, t.High);
+            foreach (int itemId in effect.TradeSkillTargets)
+                writer.WriteInt32(itemId);
+            foreach (int itemId in effect.FeedPetTargets)
+                writer.WriteInt32(itemId);
+        }
+
+        writer.WriteBit(false);
+        writer.FlushBits();
+        return writer.Position;
+    }
+
+    public WowGuid128 Caster;
+    public int SpellID;
+    public List<SpellExecuteLogEffect> Effects = new();
+}
+
+class SpellExecuteLogEffect
+{
+    public int Effect;
+    public List<SpellLogEffectPowerDrain> PowerDrainTargets = new();
+    public List<SpellLogEffectExtraAttacks> ExtraAttacksTargets = new();
+    public List<SpellLogEffectDurabilityDamage> DurabilityDamageTargets = new();
+    public List<WowGuid128> GenericVictimTargets = new();
+    public List<int> TradeSkillTargets = new();
+    public List<int> FeedPetTargets = new();
+}
+
+struct SpellLogEffectPowerDrain
+{
+    public WowGuid128 Victim;
+    public uint Points;
+    public uint PowerType;
+    public float Amplitude;
+}
+
+struct SpellLogEffectExtraAttacks
+{
+    public WowGuid128 Victim;
+    public uint NumAttacks;
+}
+
+struct SpellLogEffectDurabilityDamage
+{
+    public WowGuid128 Victim;
+    public int ItemID;
+    public int Amount;
+}
+
+class SpellMissLog : ServerPacket, ISpanWritable
+{
+    private const int MaxEntries = 16;
+
+    public SpellMissLog() : base(Opcode.SMSG_SPELL_MISS_LOG, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteInt32(SpellID);
+        _worldPacket.WritePackedGuid128(Caster);
+        _worldPacket.WriteUInt32((uint)Entries.Count);
+        foreach (var entry in Entries)
+        {
+            _worldPacket.WritePackedGuid128(entry.Victim);
+            _worldPacket.WriteUInt8(entry.MissReason);
+            _worldPacket.WriteBit(false);
+            _worldPacket.FlushBits();
+        }
+    }
+
+    public int MaxSize => 4 + PackedGuidHelper.MaxPackedGuid128Size + 4
+        + MaxEntries * (PackedGuidHelper.MaxPackedGuid128Size + 2);
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        if (Entries.Count > MaxEntries)
+            return -1;
+
+        var writer = new SpanPacketWriter(buffer);
+        writer.WriteInt32(SpellID);
+        writer.WritePackedGuid128(Caster.Low, Caster.High);
+        writer.WriteUInt32((uint)Entries.Count);
+        foreach (var entry in Entries)
+        {
+            writer.WritePackedGuid128(entry.Victim.Low, entry.Victim.High);
+            writer.WriteUInt8(entry.MissReason);
+            writer.WriteBit(false);
+            writer.FlushBits();
+        }
+        return writer.Position;
+    }
+
+    public int SpellID;
+    public WowGuid128 Caster;
+    public List<SpellMissLogEntry> Entries = new();
+}
+
+struct SpellMissLogEntry
+{
+    public WowGuid128 Victim;
+    public byte MissReason;
+}
+
+class DispelFailed : ServerPacket, ISpanWritable
+{
+    private const int MaxFailed = 16;
+
+    public DispelFailed() : base(Opcode.SMSG_DISPEL_FAILED, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(CasterGUID);
+        _worldPacket.WritePackedGuid128(VictimGUID);
+        _worldPacket.WriteUInt32(SpellID);
+        _worldPacket.WriteInt32(FailedSpells.Count);
+        foreach (int spell in FailedSpells)
+            _worldPacket.WriteInt32(spell);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 8 + MaxFailed * 4;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        if (FailedSpells.Count > MaxFailed)
+            return -1;
+
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(CasterGUID.Low, CasterGUID.High);
+        writer.WritePackedGuid128(VictimGUID.Low, VictimGUID.High);
+        writer.WriteUInt32(SpellID);
+        writer.WriteInt32(FailedSpells.Count);
+        foreach (int spell in FailedSpells)
+            writer.WriteInt32(spell);
+        return writer.Position;
+    }
+
+    public WowGuid128 CasterGUID;
+    public WowGuid128 VictimGUID;
+    public uint SpellID;
+    public List<int> FailedSpells = new();
+}

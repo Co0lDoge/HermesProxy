@@ -22,6 +22,31 @@ public partial class WorldClient
 
         SendPacketToClient(attack);
     }
+
+    [PacketHandler(Opcode.SMSG_DISMOUNT)]
+    void HandleDismount(WorldPacket packet)
+    {
+        Dismount dismount = new();
+        dismount.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(dismount);
+    }
+
+    [PacketHandler(Opcode.SMSG_BREAK_TARGET)]
+    void HandleBreakTarget(WorldPacket packet)
+    {
+        BreakTarget pkt = new();
+        pkt.UnitGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(pkt);
+    }
+
+    [PacketHandler(Opcode.SMSG_CLEAR_TARGET)]
+    void HandleClearTarget(WorldPacket packet)
+    {
+        ClearTarget pkt = new();
+        pkt.Guid = packet.ReadGuid().To128(GetSession().GameState);
+        SendPacketToClient(pkt);
+    }
+
     [PacketHandler(Opcode.SMSG_ATTACK_STOP)]
     void HandleAttackStop(WorldPacket packet)
     {

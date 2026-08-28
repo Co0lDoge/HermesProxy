@@ -435,6 +435,17 @@ class GroupUninvite : ServerPacket, ISpanWritable
     public int WriteToSpan(Span<byte> buffer) => 0;
 }
 
+class GroupDestroyed : ServerPacket, ISpanWritable
+{
+    public GroupDestroyed() : base(Opcode.SMSG_GROUP_DESTROYED) { }
+
+    public override void Write() { }
+
+    public int MaxSize => 0;
+
+    public int WriteToSpan(Span<byte> buffer) => 0;
+}
+
 class SetAssistantLeader : ClientPacket
 {
     public SetAssistantLeader(WorldPacket packet) : base(packet) { }

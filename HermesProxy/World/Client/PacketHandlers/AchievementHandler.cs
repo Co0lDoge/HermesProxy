@@ -100,6 +100,15 @@ public partial class WorldClient
         SendPacketToClient(update);
     }
 
+    [PacketHandler(Opcode.SMSG_CRITERIA_DELETED)]
+    void HandleCriteriaDeleted(WorldPacket packet)
+    {
+        if (!LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+            return;
+
+        SendPacketToClient(new CriteriaDeletedPkt { CriteriaID = packet.ReadUInt32() });
+    }
+
     [PacketHandler(Opcode.SMSG_ACHIEVEMENT_EARNED)]
     void HandleAchievementEarned(WorldPacket packet)
     {

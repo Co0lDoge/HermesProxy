@@ -168,6 +168,7 @@ public partial class WorldSocket
         }
 
         GetSession().AccountMetaDataMgr.SaveLastSelectedCharacter(realm.Name, selectedChar.Name!, playerLogin.Guid.Low, Time.UnixTime);
+        GetSession().GameState.CollectionFavorites ??= GetSession().AccountMetaDataMgr.LoadCollectionFavorites();
 
         if (GetSession().AuthClient != null)
             GetSession().AuthClient.Disconnect();

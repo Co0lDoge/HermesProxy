@@ -1,8 +1,10 @@
 using HermesProxy;
+using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
+using System.Collections.Generic;
 
 namespace HermesProxy.World.Server;
 
@@ -63,5 +65,81 @@ public static class CollectionSync
         var updatePacket = new UpdateObject(state);
         updatePacket.ObjectUpdates.Add(updateData);
         session.WorldClient?.SendPacketToClient(updatePacket);
+    }
+
+    // WotLK "Learning" (55884) — same visual mount/companion items use when consumed
+    public const uint LearningSpellId = 55884;
+    public const uint LearningSpellXSpellVisualId = 346509;
+
+    public static void PlayToyLearnVisual(GlobalSessionData session)
+    {
+        var state = session.GameState;
+        var player = state.CurrentPlayerGuid;
+        if (player.IsEmpty() || session.WorldClient == null)
+            return;
+
+        uint mapId = (uint)(state.CurrentMapId ?? 0);
+        var castId = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, mapId, LearningSpellId, LearningSpellId + player.GetCounter());
+
+        var cast = new SpellCastData
+        {
+            CasterGUID = player,
+            CasterUnit = player,
+            CastID = castId,
+            SpellID = (int)LearningSpellId,
+            SpellXSpellVisualID = LearningSpellXSpellVisualId,
+            CastTime = 0,
+        };
+        cast.Target.Flags = SpellCastTargetFlags.Unit;
+        cast.Target.Unit = player;
+        cast.HitTargets.Add(player);
+
+        session.WorldClient.SendPacketToClient(new SpellStart { Cast = cast });
+        session.WorldClient.SendPacketToClient(new SpellGo { Cast = cast });
+    }
+
+    public static void SendToys(GlobalSessionData session)
+    {
+        var state = session.GameState;
+        if (state.CurrentPlayerGuid.IsEmpty() || session.WorldClient == null)
+            return;
+
+        var usable = state.GetUsableToysOrdered();
+        state.LastSentUsableToys = usable;
+        var updateData = new ObjectUpdate(state.CurrentPlayerGuid, UpdateTypeModern.Values, session);
+        updateData.ActivePlayerData.Toys = new List<int>(usable.Length);
+        for (int i = 0; i < usable.Length; i++)
+            updateData.ActivePlayerData.Toys.Add((int)usable[i]);
+        var updatePacket = new UpdateObject(state);
+        updatePacket.ObjectUpdates.Add(updateData);
+        session.WorldClient.SendPacketToClient(updatePacket);
+    }
+
+    public static void RefreshUsableToys(GlobalSessionData session)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+        var state = session.GameState;
+        if (state.CurrentPlayerGuid.IsEmpty() || session.WorldClient == null)
+            return;
+
+        var usable = state.GetUsableToysOrdered();
+        if (ToysMatch(state.LastSentUsableToys, usable))
+            return;
+
+        SendToys(session);
+        session.WorldClient.SendPacketToClient(AccountToyUpdate.FromSession(state));
+    }
+
+    static bool ToysMatch(uint[] left, uint[] right)
+    {
+        if (left.Length != right.Length)
+            return false;
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (left[i] != right[i])
+                return false;
+        }
+        return true;
     }
 }

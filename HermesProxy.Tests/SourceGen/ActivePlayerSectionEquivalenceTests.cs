@@ -302,6 +302,17 @@ public class ActivePlayerSectionEquivalenceTests
     }
 
     [Fact]
+    public void HasAnyActivePlayerFieldSet_ToysOnly_ReturnsTrue()
+    {
+        var session = CreateGameSession();
+        var guid = WowGuid128.Create(HighGuidType703.Player, 1);
+        var builder = MakeBuilder(guid, session, out var update);
+
+        update.ActivePlayerData!.Toys = [32566];
+        Assert.True(builder.HasAnyActivePlayerFieldSet());
+    }
+
+    [Fact]
     public void HasAnyActivePlayerFieldSet_AllEmpty_ReturnsFalse()
     {
         var session = CreateGameSession();

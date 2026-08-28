@@ -61,6 +61,7 @@ public static partial class GameData
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<ushort, uint> GlyphSpellById = FrozenDictionary<ushort, uint>.Empty;
     public static FrozenSet<int> Heirlooms = FrozenSet<int>.Empty;
+    public static FrozenSet<uint> Toys = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, BattlePetSpeciesInfo> BattlePetSpeciesBySummonSpell
         = FrozenDictionary<uint, BattlePetSpeciesInfo>.Empty;
     public static FrozenSet<uint> MountSpells = FrozenSet<uint>.Empty;
@@ -246,6 +247,26 @@ public static partial class GameData
                 return item.Value;
         }
         return null;
+    }
+
+    // ITEM_SPELLTRIGGER_ON_USE = 0. Used when CMSG_USE_TOY has no bag copy on this
+    // character and the spell is already in the 3.3.5a spellbook (native Use Toy).
+    public static bool TryGetItemOnUseSpellId(uint itemId, out uint spellId)
+    {
+        spellId = 0;
+        ItemEffect? best = null;
+        foreach (var item in ItemEffectStore)
+        {
+            var effect = item.Value;
+            if (effect.ParentItemID != (int)itemId || effect.TriggerType != 0 || effect.SpellID <= 0)
+                continue;
+            if (best == null || effect.LegacySlotIndex < best.LegacySlotIndex)
+                best = effect;
+        }
+        if (best == null)
+            return false;
+        spellId = (uint)best.SpellID;
+        return true;
     }
 
     // Caller-provided cursor turns the linear ContainsKey scan from O(N) per call
@@ -611,6 +632,7 @@ public static partial class GameData
             LoadGems,
             LoadGlyphProperties,
             LoadHeirlooms,
+            LoadToys,
             LoadBattlePetSpecies,
             LoadMountSpells,
             LoadCreatureDisplayInfo,
@@ -1180,6 +1202,26 @@ public static partial class GameData
 
         Heirlooms = ids.ToFrozenSet();
     }
+
+    // Toy.db2 for V3_4_3.54261. 3.3.5a has no toy box; bag items still fire via CMSG_USE_ITEM.
+    public static void LoadToys()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"Toy{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var ids = new HashSet<uint>();
+        foreach (var row in reader)
+            ids.Add(uint.Parse(row[1].Span));
+
+        Toys = ids.ToFrozenSet();
+    }
+
+    public static bool IsToyItem(uint itemId) => Toys.Contains(itemId);
 
     // BattlePetSpecies.db2 for V3_4_3.54261, keyed by SummonSpellID so a learned
     // 3.3.5a companion spell can fill SMSG_BATTLE_PET_JOURNAL. WotLK-range spells

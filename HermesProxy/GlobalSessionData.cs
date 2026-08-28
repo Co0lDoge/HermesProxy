@@ -312,6 +312,7 @@ public sealed class GameSessionData
     public WowGuid128 SummonedCompanionCreatureGuid;
     public WowGuid64 SummonedCompanionLegacyGuid;
     public CollectionFavorites? CollectionFavorites;
+    public uint[] LastSentUsableToys = [];
     // V3_4_3 DK rune snapshot. Null for non-DK or non-V3_4_3 sessions; allocated by
     // CharacterHandler.HandlePlayerLogin when the chosen char is a DK and the modern
     // client is V3_4_3_54261. Read by V3_4_3 ObjectUpdateBuilder (CREATE path) and
@@ -830,6 +831,133 @@ public sealed class GameSessionData
         }
 
         return null;
+    }
+    (WowGuid128 guid, byte containerSlot, byte slot)? MatchInventorySlotItem(byte slot, uint itemId)
+    {
+        var itemGuid64 = GetInventorySlotItem(slot);
+        if (itemGuid64 == WowGuid64.Empty)
+            return null;
+        var itemGuid128 = itemGuid64.To128(this);
+        if (GetItemId(itemGuid128) != itemId)
+            return null;
+        return (itemGuid128, ItemConst.NullSlot, slot);
+    }
+    public (WowGuid128 guid, byte containerSlot, byte slot)? FindItemInInventoryById(uint itemId)
+    {
+        // Equipped first so Use Toy finds a worn trinket/head instead of a bag copy
+        for (int i = EquipmentSlot.Start; i < EquipmentSlot.End; i++)
+        {
+            var equipped = MatchInventorySlotItem((byte)i, itemId);
+            if (equipped != null)
+                return equipped;
+        }
+
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+        {
+            var packed = MatchInventorySlotItem((byte)i, itemId);
+            if (packed != null)
+                return packed;
+        }
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return null;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null)
+                continue;
+            if (!bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                if (slotGuid == WowGuid64.Empty)
+                    continue;
+                var slotGuid128 = slotGuid.To128(this);
+                if (GetItemId(slotGuid128) == itemId)
+                    return (slotGuid128, (byte)bagIdx, (byte)slot);
+            }
+        }
+
+        return null;
+    }
+    public bool CanUseToy(uint itemId)
+    {
+        if (FindItemInInventoryById(itemId) != null)
+            return true;
+        return GameData.TryGetItemOnUseSpellId(itemId, out uint spellId)
+            && spellId != 0
+            && KnownSpells.Contains(spellId);
+    }
+    public uint[] GetUsableToysOrdered()
+    {
+        var usable = new List<uint>();
+        if (!CurrentPlayerGuid.IsEmpty() && ObjectCacheLock != null)
+            CollectInventoryToyIds(usable);
+        var learned = CollectionFavorites?.LearnedToys;
+        if (learned != null)
+        {
+            foreach (uint id in learned)
+            {
+                if (usable.Contains(id))
+                    continue;
+                if (GameData.TryGetItemOnUseSpellId(id, out uint spellId)
+                    && spellId != 0
+                    && KnownSpells.Contains(spellId))
+                    usable.Add(id);
+            }
+        }
+        if (usable.Count == 0)
+            return [];
+        usable.Sort();
+        return usable.ToArray();
+    }
+    void CollectInventoryToyIds(List<uint> dest)
+    {
+        void Consider(WowGuid64 guid64)
+        {
+            if (guid64 == WowGuid64.Empty)
+                return;
+            uint itemId = GetItemId(guid64.To128(this));
+            if (itemId == 0 || !GameData.IsToyItem(itemId) || dest.Contains(itemId))
+                return;
+            dest.Add(itemId);
+        }
+
+        for (int i = EquipmentSlot.Start; i < EquipmentSlot.End; i++)
+            Consider(GetInventorySlotItem(i));
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+            Consider(GetInventorySlotItem(i));
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null || !bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                Consider(slotGuid);
+            }
+        }
     }
     public (byte containerSlot, byte slot)? FindEmptyInventorySlot()
     {

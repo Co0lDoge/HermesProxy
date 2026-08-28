@@ -5,6 +5,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections;
@@ -422,6 +423,7 @@ public partial class WorldClient
         {
             GetSession().GameState.InventoryChangedSinceQuestResync = false;
             ResyncItemQuestCredits();
+            CollectionSync.RefreshUsableToys(GetSession());
         }
 
         foreach (uint itemId in missingItemTemplates)

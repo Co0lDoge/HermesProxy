@@ -398,9 +398,11 @@ public enum ActivePlayerField
         CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerHeirloomCounts))]
     ACTIVEPLAYER_CREATE_HEIRLOOM_COUNTS_CUSTOM,
 
-    // Resize prefixes: Toys, Transmog, ConditionalTransmog, SelfResSpells,
-    // CharacterRestrictions, SpellPctModByLabel, SpellFlatModByLabel, TaskQuests.
-    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 8)]
+    // Resize prefixes: Toys (learned count), then Transmog / ConditionalTransmog /
+    // SelfResSpells / CharacterRestrictions / SpellPctModByLabel / SpellFlatModByLabel /
+    // TaskQuests (all empty).
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerToyResizePrefixes))]
     ACTIVEPLAYER_CREATE_DYNAMIC_RESIZE_PREFIXES_B_PLACEHOLDER,
 
     // TransportServerTime — no WotLK source.
@@ -502,6 +504,19 @@ public enum ActivePlayerField
         CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteUpdateActivePlayerKnownTitlesBody),
         CustomPredicate = "HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyKnownTitle(src.KnownTitles)")]
     ACTIVEPLAYER_KNOWN_TITLES,
+
+    // Toys: DynamicUpdateField<int32, 0, 9> in Wrathion UpdateFields.h.
+    // PlayerHasToy / Already known / journal count read this field, not
+    // SMSG_ACCOUNT_TOY_UPDATE. A live Values write is what makes learn
+    // show up without a relog.
+    [DescriptorMaskPreamble(bit: 9,
+        customWriter: nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteUpdateActivePlayerToysPreamble))]
+    ACTIVEPLAYER_TOYS_PREAMBLE,
+
+    [DescriptorUpdateField(nameof(ActivePlayerData.Toys), DescriptorType.Int32, bit: 9, ParentBit = 0,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteUpdateActivePlayerToysBody),
+        CustomPredicate = "src.Toys != null && src.Toys.Count > 0")]
+    ACTIVEPLAYER_TOYS,
 
     // ===========================================================================
     // Update — Block 0 scalars (group bit 0, bits 26-37)

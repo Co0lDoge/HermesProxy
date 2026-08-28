@@ -49,6 +49,7 @@ public partial class WorldClient
                 session.GameState.CollectionFavorites = session.AccountMetaDataMgr.LoadCollectionFavorites();
             SendPacketToClient(BattlePetJournal.FromSession(session.GameState));
             SendPacketToClient(AccountMountUpdate.FromSession(session.GameState));
+            SendPacketToClient(AccountToyUpdate.FromSession(session.GameState));
             RestoreSummonedBattlePet(session);
         }
 
@@ -166,6 +167,7 @@ public partial class WorldClient
                 SendPacketToClient(BattlePetJournal.FromSession(GetSession().GameState));
             else if (GameData.MountSpells.Contains(spellId))
                 SendPacketToClient(AccountMountUpdate.FromSession(GetSession().GameState));
+            CollectionSync.RefreshUsableToys(GetSession());
         }
     }
 

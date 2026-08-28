@@ -205,26 +205,58 @@ public partial class WorldSocket
             castRequest.PrepareSent = true;
         }
 
-        SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Cast.Target);
+        SendLegacyCastSpell(cast.Cast, cast.Cast.SpellID);
+    }
+    // CMSG_CAST_SPELL for a spell the 3.3.5a character already knows. Use Toy
+    // takes this path when the bag item is on another character.
+    void ForwardKnownSpellCast(SpellCastRequest cast, uint serverSpellId)
+    {
+        ClientCastRequest castRequest = new ClientCastRequest();
+        castRequest.Timestamp = Environment.TickCount;
+        castRequest.SpellId = cast.SpellID;
+        castRequest.SpellXSpellVisualId = cast.SpellXSpellVisualID;
+        castRequest.ClientGUID = cast.CastID;
+        castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, cast.SpellID, 10000 + cast.CastID.GetCounter());
+        if (serverSpellId != 0 && serverSpellId != cast.SpellID)
+            castRequest.LegacySpellId = serverSpellId;
+
+        if (GetSession().GameState.HasStartedNormalCast())
+        {
+            SendCastRequestFailed(castRequest, false);
+            return;
+        }
+
+        GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+        SendPacket(new SpellPrepare
+        {
+            ClientCastID = castRequest.ClientGUID,
+            ServerCastID = castRequest.ServerGUID,
+        });
+        castRequest.PrepareSent = true;
+        SendLegacyCastSpell(cast, serverSpellId != 0 ? serverSpellId : cast.SpellID);
+    }
+    void SendLegacyCastSpell(SpellCastRequest cast, uint spellId)
+    {
+        SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Target);
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CAST_SPELL);
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt32(cast.Cast.SpellID);
+            packet.WriteUInt32(spellId);
         }
         else if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
         {
-            packet.WriteUInt32(cast.Cast.SpellID);
+            packet.WriteUInt32(spellId);
             packet.WriteUInt8(0); // cast count
         }
         else
         {
             packet.WriteUInt8(0); // cast count
-            packet.WriteUInt32(cast.Cast.SpellID);
-            packet.WriteUInt8((byte)cast.Cast.SendCastFlags);
+            packet.WriteUInt32(spellId);
+            packet.WriteUInt8((byte)cast.SendCastFlags);
         }
-        WriteSpellTargets(cast.Cast.Target, targetFlags, packet);
-        WriteClientCastFlagsTrailer(cast.Cast.SendCastFlags, cast.Cast.MissileTrajectory, packet);
+        WriteSpellTargets(cast.Target, targetFlags, packet);
+        WriteClientCastFlagsTrailer(cast.SendCastFlags, cast.MissileTrajectory, packet);
         SendPacketToServer(packet);
     }
     [PacketHandler(Opcode.CMSG_PET_CAST_SPELL)]
@@ -337,6 +369,37 @@ public partial class WorldSocket
         SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(use.Cast.Target);
         WriteSpellTargets(use.Cast.Target, targetFlags, packet);
         WriteClientCastFlagsTrailer(use.Cast.SendCastFlags, use.Cast.MissileTrajectory, packet);
+        SendPacketToServer(packet);
+    }
+
+    void UseInventoryItem(WowGuid128 itemGuid, byte containerSlot, byte slot, SpellCastRequest cast)
+    {
+        ClientCastRequest castRequest = new ClientCastRequest();
+        castRequest.Timestamp = Environment.TickCount;
+        castRequest.SpellId = cast.SpellID;
+        castRequest.SpellXSpellVisualId = cast.SpellXSpellVisualID;
+        castRequest.ClientGUID = cast.CastID;
+        castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, cast.SpellID, 10000 + cast.CastID.GetCounter());
+        castRequest.ItemGUID = itemGuid;
+
+        uint legacySpellId = GetSession().GameState.GetLegacyItemSpellId(itemGuid, cast.SpellID);
+        if (legacySpellId != 0)
+            castRequest.LegacySpellId = legacySpellId;
+
+        GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_USE_ITEM);
+        packet.WriteUInt8(containerSlot);
+        packet.WriteUInt8(slot);
+        uint resolvedSpellId = legacySpellId != 0 ? legacySpellId : cast.SpellID;
+        packet.WriteUInt8(0);
+        packet.WriteUInt32(resolvedSpellId);
+        packet.WriteGuid(itemGuid.To64());
+        packet.WriteUInt32(0); // glyphIndex — Misc[0] is the toy item id on CMSG_USE_TOY
+        packet.WriteUInt8((byte)cast.SendCastFlags);
+        SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Target);
+        WriteSpellTargets(cast.Target, targetFlags, packet);
+        WriteClientCastFlagsTrailer(cast.SendCastFlags, cast.MissileTrajectory, packet);
         SendPacketToServer(packet);
     }
     [PacketHandler(Opcode.CMSG_CANCEL_CAST)]

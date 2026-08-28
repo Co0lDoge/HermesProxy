@@ -153,4 +153,5 @@ public class ActivePlayerData
     // Dynamic Fields
     public List<uint> SelfResSpells = null!;
     public bool HasDailyQuestsUpdate;
+    public List<int>? Toys;
 }

@@ -1,5 +1,6 @@
 using Framework.Constants;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Objects;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -96,5 +97,112 @@ public class MountSetFavorite : ClientPacket
     }
 
     public uint MountSpellID;
+    public bool IsFavorite;
+}
+
+// SMSG_ACCOUNT_TOY_UPDATE — Wrathion ToyPackets.cpp AccountToyUpdate::Write
+public class AccountToyUpdate : ServerPacket
+{
+    public AccountToyUpdate() : base(Opcode.SMSG_ACCOUNT_TOY_UPDATE, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteBit(IsFullUpdate);
+        _worldPacket.FlushBits();
+        _worldPacket.WriteInt32(Toys.Count);
+        _worldPacket.WriteInt32(Toys.Count);
+        _worldPacket.WriteInt32(Toys.Count);
+        foreach (var (itemId, _, _) in Toys)
+            _worldPacket.WriteUInt32(itemId);
+        foreach (var (_, isFavorite, _) in Toys)
+            _worldPacket.WriteBit(isFavorite);
+        foreach (var (_, _, hasFanfare) in Toys)
+            _worldPacket.WriteBit(hasFanfare);
+        _worldPacket.FlushBits();
+    }
+
+    public bool IsFullUpdate = true;
+    public List<(uint ItemId, bool IsFavorite, bool HasFanfare)> Toys = [];
+
+    public static AccountToyUpdate FromSession(GameSessionData state)
+    {
+        var favorites = state.CollectionFavorites;
+        var packet = new AccountToyUpdate { IsFullUpdate = true };
+        if (favorites == null)
+            return packet;
+
+        foreach (uint itemId in state.GetUsableToysOrdered())
+        {
+            bool isFavorite = favorites.FavoriteToys.Contains(itemId);
+            packet.Toys.Add((itemId, isFavorite, false));
+        }
+        return packet;
+    }
+}
+
+public class ToyClearFanfare : ClientPacket
+{
+    public ToyClearFanfare(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        ItemID = _worldPacket.ReadUInt32();
+    }
+
+    public uint ItemID;
+}
+
+public class AddToy : ClientPacket
+{
+    public AddToy(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Guid = _worldPacket.ReadPackedGuid128();
+    }
+
+    public WowGuid128 Guid = WowGuid128.Empty;
+}
+
+public class UseToy : ClientPacket
+{
+    public UseToy(WorldPacket packet) : base(packet)
+    {
+        Cast = new SpellCastRequest();
+    }
+
+    public override void Read()
+    {
+        Cast.Read(_worldPacket);
+    }
+
+    public SpellCastRequest Cast;
+
+    public uint ItemId => Cast.Misc[0];
+}
+
+public enum ItemCollectionType : byte
+{
+    None = 0,
+    Toy = 1,
+    Heirloom = 2,
+    Transmog = 3,
+    TransmogSetFavorite = 4,
+}
+
+public class CollectionItemSetFavorite : ClientPacket
+{
+    public CollectionItemSetFavorite(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        // Wrathion CollectionPackets.cpp: CollectionType is int32, not uint8
+        Type = (ItemCollectionType)_worldPacket.ReadInt32();
+        ID = _worldPacket.ReadUInt32();
+        IsFavorite = _worldPacket.ReadBit();
+    }
+
+    public ItemCollectionType Type;
+    public uint ID;
     public bool IsFavorite;
 }

@@ -421,7 +421,9 @@ public partial class WorldClient
             SendPacketToClient(BuildActiveGlyphsPacket(GetSession().GameState));
             SendPacketToClient(new EmptyEquipmentSetList());
             SendPacketToClient(new EmptyAccountMountUpdate());
-            SendPacketToClient(new EmptyAccountToyUpdate());
+            if (GetSession().GameState.CollectionFavorites == null)
+                GetSession().GameState.CollectionFavorites = GetSession().AccountMetaDataMgr.LoadCollectionFavorites();
+            SendPacketToClient(AccountToyUpdate.FromSession(GetSession().GameState));
             SendPacketToClient(new AccountHeirloomUpdate());
             SendPacketToClient(new BattlePetJournalLockAcquired());
 

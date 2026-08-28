@@ -1297,6 +1297,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             {
                 DB2Hash.ChrCustomizationChoice,
                 DB2Hash.ChrCustomizationOption,
+                DB2Hash.AreaTrigger,
             };
         }
         SendPacket(hotfixes);

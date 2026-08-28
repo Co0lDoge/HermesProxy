@@ -46,6 +46,11 @@ public static partial class GameData
     public static Dictionary<uint, ItemModifiedAppearance> ItemModifiedAppearanceStore = [];
     public static Dictionary<uint, ItemEffect> ItemEffectStore = [];
     public static FrozenDictionary<uint, Battleground> Battlegrounds = FrozenDictionary<uint, Battleground>.Empty;
+    // Modern AreaTrigger id -> the 3.3.5a-era id the legacy server's areatrigger_teleport
+    // (and BattlegroundWS::HandleAreaTrigger) is keyed on. Cataclysm renumbered most static
+    // triggers; the Classic clients ship the post-Cataclysm DB2 while legacy cores kept the
+    // WotLK ids. Data-driven via CSV/AreaTriggerRemap*.csv — adding a remap needs no code.
+    public static FrozenDictionary<uint, uint> AreaTriggerModernToLegacy = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, ChatChannel> ChatChannels = FrozenDictionary<uint, ChatChannel>.Empty;
     public static Dictionary<uint, Dictionary<uint, byte>> ItemEffects = [];
     // Maps a legacy (1.12) spell id to its modern client spell id, populated when an item-effect
@@ -623,6 +628,7 @@ public static partial class GameData
             LoadItemEffect,
             LoadItemSpellsData,
             LoadItemDisplayIdToFileDataId,
+            LoadAreaTriggerRemap,
             LoadBattlegrounds,
             LoadChatChannels,
             LoadItemEnchantVisuals,
@@ -1025,6 +1031,33 @@ public static partial class GameData
         V3_4_3ItemEffectRecordIdByItemSlot = dict.ToFrozenDictionary();
         Log.Print(LogType.Server,
             $"LoadV3_4_3ItemEffectLookup: loaded {V3_4_3ItemEffectRecordIdByItemSlot.Count} (itemId, slot) -> RecordID entries.");
+    }
+
+    public static void LoadAreaTriggerRemap()
+    {
+        var path = Path.Combine("CSV", $"AreaTriggerRemap{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+        {
+            AreaTriggerModernToLegacy = FrozenDictionary<uint, uint>.Empty;
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<uint, uint>();
+
+        foreach (var row in reader)
+        {
+            if (!uint.TryParse(row[0].Span, out uint modernId) ||
+                !uint.TryParse(row[1].Span, out uint legacyId) ||
+                modernId == 0 || legacyId == 0)
+            {
+                Log.Print(LogType.Error,
+                    $"LoadAreaTriggerRemap: malformed row in {path}, skipping.");
+                continue;
+            }
+            dict[modernId] = legacyId;
+        }
+        AreaTriggerModernToLegacy = dict.ToFrozenDictionary();
     }
 
     public static void LoadBattlegrounds()
@@ -1818,7 +1851,15 @@ public static partial class GameData
             HotfixRecord record = new()
             {
                 TableHash = DB2Hash.AreaTrigger,
-                HotfixId = HotfixAreaTriggerBegin + counter
+                // Push ids must be STABLE across sessions: the client caches applied
+                // hotfixes in Cache/ADB/<locale>/DBCache.bin keyed by push id, and
+                // SMSG_AVAILABLE_HOTFIXES is only a list of ids -- the client diffs that
+                // against its cache and re-requests just the ones it is missing. Keying off
+                // the row's position in the CSV made a record's id depend on how many rows
+                // preceded it, so shipping a different subset silently re-keyed every
+                // record and defeated the diff. The AreaTrigger id space (max ~10546) fits
+                // inside this table's 100k window.
+                HotfixId = HotfixAreaTriggerBegin + at.Id
             };
             record.UniqueId = record.HotfixId;
             record.RecordId = at.Id;

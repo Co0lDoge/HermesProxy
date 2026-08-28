@@ -975,7 +975,7 @@ public partial class ObjectUpdateBuilder
     }
 
     // Toys.Resize + the seven empty prefixes after it (Transmog through TaskQuests).
-    // Empty session still writes 0 so the Create oracle stays byte-identical.
+    // Missing LearnedToys still writes Resize 0 so the later payload length stays valid.
     internal void WriteCreateActivePlayerToyResizePrefixes(WorldPacket data, ActivePlayerData src)
     {
         var learnedToys = _gameState.CollectionFavorites?.LearnedToys;

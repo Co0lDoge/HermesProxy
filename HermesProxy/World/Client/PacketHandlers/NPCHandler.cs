@@ -163,7 +163,8 @@ public partial class WorldClient
             vendorItem.StackCount = packet.ReadUInt32();
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 vendorItem.ExtendedCostID = packet.ReadInt32();
-            vendorItem.MuID = (uint)(i + 1);
+            // MuID is the 1-based vendor-array slot the server wrote, not the packed row index.
+            vendorItem.MuID = (uint)vendorItem.Slot;
             GetSession().GameState.SetItemBuyCount(vendorItem.Item.ItemID, vendorItem.StackCount);
             vendor.Items.Add(vendorItem);
         }

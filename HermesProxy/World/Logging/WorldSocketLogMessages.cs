@@ -112,4 +112,37 @@ internal static partial class WorldSocketLogMessages
         string NetDir,
         int QuestId,
         string Action);
+
+    [LoggerMessage(
+        EventId = 113,
+        Level = LogLevel.Debug,
+        Message = "Arena team invite team={TeamId} name={Name}")]
+    public static partial void ArenaTeamPartyInvite(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint TeamId,
+        string Name);
+
+    [LoggerMessage(
+        EventId = 114,
+        Level = LogLevel.Debug,
+        Message = "CMSG_BATTLEMASTER_JOIN_ARENA teamIndex={TeamIndex} teamId={TeamId}")]
+    public static partial void BattlemasterJoinArena(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint TeamIndex,
+        uint TeamId);
+
+    [LoggerMessage(
+        EventId = 115,
+        Level = LogLevel.Debug,
+        Message = "CMSG_BATTLEMASTER_JOIN_SKIRMISH teamSize={TeamSize} asGroup={AsGroup}")]
+    public static partial void BattlemasterJoinSkirmish(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        byte TeamSize,
+        bool AsGroup);
 }

@@ -1,6 +1,7 @@
 ﻿using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -34,8 +35,22 @@ public partial class WorldClient
                 petition.RequiredSignatures = 9;
 
             petitions.Petitions.Add(petition);
-
         }
+
+        // 3.4.3 has no arena registrar; a non-guild SHOW_LIST opens GuildRegistrar.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && PetitionShowListCompat.ShouldDropArenaList(petitions.Petitions))
+        {
+            WorldClientLogMessages.ArenaPetitionDropped(
+                _melLog, _sourceFile, _netDirSend,
+                petitions.Petitions.Count, petitions.Petitions[0].CharterEntry);
+            SendPacketToClient(new PrintNotification
+            {
+                NotifyText = "Arena teams are no longer available."
+            });
+            return;
+        }
+
         SendPacketToClient(petitions);
     }
 

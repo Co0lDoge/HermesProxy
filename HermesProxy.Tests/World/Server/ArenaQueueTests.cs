@@ -1,5 +1,6 @@
 ﻿using System;
 using HermesProxy.World;
+using HermesProxy.World.Server.Packets;
 using Xunit;
 
 namespace HermesProxy.Tests.World.Server;
@@ -27,6 +28,20 @@ public class ArenaQueueTests
     public void ToModernJoinError_NegatesAcCodes(int ac, int modern)
     {
         Assert.Equal(modern, BattlefieldQueueArenaType.ToModernJoinError(ac));
+    }
+
+    [Fact]
+    public void ShouldDropArenaList_DropsNonGuildCharters()
+    {
+        Assert.False(PetitionShowListCompat.ShouldDropArenaList([]));
+        Assert.False(PetitionShowListCompat.ShouldDropArenaList(
+        [
+            new PetitionEntry { CharterEntry = PetitionShowListCompat.GuildCharterEntry }
+        ]));
+        Assert.True(PetitionShowListCompat.ShouldDropArenaList(
+        [
+            new PetitionEntry { CharterEntry = 23560 }
+        ]));
     }
 
     [Fact]

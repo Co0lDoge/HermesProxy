@@ -135,4 +135,15 @@ internal static partial class WorldClientLogMessages
         byte Specs,
         byte Active,
         int Talents);
+
+    [LoggerMessage(
+        EventId = 212,
+        Level = LogLevel.Debug,
+        Message = "Dropped arena petition list count={Count} firstEntry={FirstEntry}")]
+    public static partial void ArenaPetitionDropped(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int Count,
+        uint FirstEntry);
 }

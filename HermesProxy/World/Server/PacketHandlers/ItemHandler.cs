@@ -25,10 +25,7 @@ public partial class WorldSocket
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
         {
-            // The legacy "Slot" field for CMSG_BUY_ITEM is the 1-based vendor
-            // index. V3_4_3 sends that as MuID (which we populate in
-            // NPCHandler.HandleVendorInventory as i+1); older modern clients
-            // sent it as Slot. Forward whichever the client gave us.
+            // Legacy slot is the 1-based vendor-array index. 3.4.3 sends that as MuID.
             uint legacySlot = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? item.MuID : item.Slot;
             packet.WriteUInt32(legacySlot);
             packet.WriteUInt32(quantity);

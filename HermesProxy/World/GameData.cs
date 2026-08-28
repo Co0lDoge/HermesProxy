@@ -249,6 +249,26 @@ public static partial class GameData
         return null;
     }
 
+    // ITEM_SPELLTRIGGER_ON_USE = 0. Used when CMSG_USE_TOY has no bag copy on this
+    // character and the spell is already in the 3.3.5a spellbook (native Use Toy).
+    public static bool TryGetItemOnUseSpellId(uint itemId, out uint spellId)
+    {
+        spellId = 0;
+        ItemEffect? best = null;
+        foreach (var item in ItemEffectStore)
+        {
+            var effect = item.Value;
+            if (effect.ParentItemID != (int)itemId || effect.TriggerType != 0 || effect.SpellID <= 0)
+                continue;
+            if (best == null || effect.LegacySlotIndex < best.LegacySlotIndex)
+                best = effect;
+        }
+        if (best == null)
+            return false;
+        spellId = (uint)best.SpellID;
+        return true;
+    }
+
     // Caller-provided cursor turns the linear ContainsKey scan from O(N) per call
     // into amortized O(1). Append-only callers (hotfix RecordIDs) would otherwise
     // re-scan from `after+1` every time, doing O(N²) work over a session. The

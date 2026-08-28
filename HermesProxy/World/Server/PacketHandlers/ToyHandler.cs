@@ -48,6 +48,11 @@ public partial class WorldSocket
         var found = GetSession().GameState.FindItemInInventoryById(itemId);
         if (found == null)
         {
+            // Native 3.4.3 Use Toy casts the item spell with no bag item. 3.3.5a
+            // only accepts that when the spell is already in this character's
+            // spellbook (HasActiveSpell). Otherwise AC silently drops CMSG_CAST_SPELL.
+            if (TryCastToyWithoutItem(use, itemId))
+                return;
             RejectToyUse(use, SpellCastResultV343.ItemNotFound);
             return;
         }
@@ -62,6 +67,20 @@ public partial class WorldSocket
         }
 
         UseInventoryItem(found.Value.guid, found.Value.containerSlot, found.Value.slot, use.Cast);
+    }
+
+    bool TryCastToyWithoutItem(UseToy use, uint itemId)
+    {
+        uint serverSpellId = use.Cast.SpellID;
+        if (GameData.TryGetItemOnUseSpellId(itemId, out uint onUse) && onUse != 0)
+            serverSpellId = onUse;
+
+        var known = GetSession().GameState.KnownSpells;
+        if (!known.Contains(serverSpellId) && !known.Contains(use.Cast.SpellID))
+            return false;
+
+        ForwardKnownSpellCast(use.Cast, serverSpellId);
+        return true;
     }
 
     void RejectToyUse(UseToy use, SpellCastResultV343 reason)

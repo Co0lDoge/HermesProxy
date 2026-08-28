@@ -291,20 +291,8 @@ public partial class WorldClient
             for (int j = 0; j < statsCount; j++)
                 player.Stats.Add(packet.ReadUInt32());
 
-            PlayerCache? cache;
-            if (GetSession().GameState.CachedPlayers.TryGetValue(player.PlayerGUID, out cache))
-            {
-                player.Sex = cache.SexId;
-                player.PlayerRace = cache.RaceId;
-                player.PlayerClass = cache.ClassId;
-                player.Faction = GameData.IsAllianceRace(cache.RaceId);
-            }
-            else
-            {
-                player.Sex = Gender.Male;
-                player.PlayerRace = Race.Human;
-                player.PlayerClass = Class.Warrior;
-            }
+            FillBgScoreAppearance(player, setFactionFromRace: true);
+            pvp.PlayerCount[player.Faction ? 1 : 0]++;
             pvp.Statistics.Add(player);
         }
         SendPacketToClient(pvp);
@@ -364,25 +352,31 @@ public partial class WorldClient
             for (int j = 0; j < statsCount; j++)
                 player.Stats.Add(packet.ReadUInt32());
 
-            PlayerCache? cache;
-            if (GetSession().GameState.CachedPlayers.TryGetValue(player.PlayerGUID, out cache))
-            {
-                player.Sex = cache.SexId;
-                player.PlayerRace = cache.RaceId;
-                player.PlayerClass = cache.ClassId;
-
-                if (pvp.ArenaTeams == null)
-                    player.Faction = GameData.IsAllianceRace(cache.RaceId);
-            }
-            else
-            {
-                player.Sex = Gender.Male;
-                player.PlayerRace = Race.Human;
-                player.PlayerClass = Class.Warrior;
-            }
+            FillBgScoreAppearance(player, setFactionFromRace: pvp.ArenaTeams == null);
+            if (pvp.ArenaTeams == null)
+                pvp.PlayerCount[player.Faction ? 1 : 0]++;
             pvp.Statistics.Add(player);
         }
         SendPacketToClient(pvp);
+    }
+
+    void FillBgScoreAppearance(PVPMatchPlayerStatistics player, bool setFactionFromRace)
+    {
+        if (GetSession().GameState.TryGetCachedPlayerAppearance(player.PlayerGUID, out var race, out var classId, out var sex))
+        {
+            player.Sex = sex;
+            player.PlayerRace = race;
+            player.PlayerClass = classId;
+            if (setFactionFromRace)
+                player.Faction = GameData.IsAllianceRace(race);
+            return;
+        }
+
+        player.Sex = Gender.Male;
+        player.PlayerRace = Race.Human;
+        player.PlayerClass = Class.Warrior;
+        if (setFactionFromRace)
+            player.Faction = GetSession().GameState.IsAlliancePlayer(player.PlayerGUID);
     }
 
     BattlegroundPlayerPosition ReadBattlegroundPlayerPosition(WorldPacket packet)

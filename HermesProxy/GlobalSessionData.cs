@@ -1031,11 +1031,34 @@ public sealed class GameSessionData
         else
             DailyQuestsDone.Remove(slot);
     }
+    public bool TryGetCachedPlayerAppearance(WowGuid128 guid, out Race race, out Class classId, out Gender sex)
+    {
+        race = Race.None;
+        classId = Class.None;
+        sex = Gender.None;
+        if (CachedPlayers.TryGetValue(guid, out var cache))
+        {
+            race = cache.RaceId;
+            classId = cache.ClassId;
+            sex = cache.SexId;
+        }
+        if (race == Race.None)
+        {
+            uint bytes0 = GetLegacyFieldValueUInt32(guid, UnitField.UNIT_FIELD_BYTES_0);
+            if (bytes0 != 0)
+            {
+                race = (Race)(bytes0 & 0xFF);
+                classId = (Class)((bytes0 >> 8) & 0xFF);
+                sex = (Gender)((bytes0 >> 16) & 0xFF);
+            }
+        }
+        return race != Race.None;
+    }
+
     public bool IsAlliancePlayer(WowGuid128 guid)
     {
-        PlayerCache? cache;
-        if (CachedPlayers.TryGetValue(guid, out cache))
-            return GameData.IsAllianceRace(cache.RaceId);
+        if (TryGetCachedPlayerAppearance(guid, out var race, out _, out _))
+            return GameData.IsAllianceRace(race);
         return false;
     }
     public bool IsInBattleground()

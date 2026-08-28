@@ -2394,6 +2394,16 @@ public partial class WorldClient
                 updateData.UnitData.SexId = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 16) & 0xFF);
                 updateData.UnitData.DisplayPower = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 24) & 0xFF);
 
+                if (objectType == ObjectType.Player)
+                {
+                    GetSession().GameState.UpdatePlayerCache(guid, new PlayerCache
+                    {
+                        RaceId = (Race)updateData.UnitData.RaceId,
+                        ClassId = (Class)updateData.UnitData.ClassId,
+                        SexId = (Gender)updateData.UnitData.SexId
+                    });
+                }
+
                 if (guid.GetHighType() == HighGuidType.Pet && updateData.UnitData.DisplayPower == (uint)PowerType.Focus)
                     GetSession().GameState.HunterPetGuids.Add(guid);
 

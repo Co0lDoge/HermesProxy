@@ -3050,9 +3050,10 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt8(src.RaceId.GetValueOrDefault());
         data.WriteUInt8(src.SexId.GetValueOrDefault());
         data.WriteUInt8(src.ClassId.GetValueOrDefault());
-        data.WriteUInt32(0u);
+        WriteCreateCorpseCustomizationsCount(data, src);
         data.WriteUInt32(src.Flags.GetValueOrDefault());
         data.WriteInt32(src.FactionTemplate.GetValueOrDefault());
+        WriteCreateCorpseCustomizationsData(data, src);
     }
 
     internal void WriteUpdateCorpseData(HermesProxy.World.WorldPacket data)

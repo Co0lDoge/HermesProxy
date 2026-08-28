@@ -825,6 +825,31 @@ public partial class ObjectUpdateBuilder
         }
     }
 
+    internal void WriteCreateCorpseCustomizationsCount(WorldPacket data, CorpseData src)
+    {
+        int customizationCount = 0;
+        if (src.Customizations != null)
+        {
+            for (int i = 0; i < src.Customizations.Length; i++)
+                if (src.Customizations[i] != null) customizationCount++;
+        }
+        data.WriteUInt32((uint)customizationCount);
+    }
+
+    internal void WriteCreateCorpseCustomizationsData(WorldPacket data, CorpseData src)
+    {
+        if (src.Customizations == null) return;
+        for (int m = 0; m < src.Customizations.Length; m++)
+        {
+            var choice = src.Customizations[m];
+            if (choice != null)
+            {
+                data.WriteUInt32(choice.ChrCustomizationOptionID);
+                data.WriteUInt32(choice.ChrCustomizationChoiceID);
+            }
+        }
+    }
+
     internal void WriteCreatePlayerQuestLog(WorldPacket data, PlayerData src)
     {
         // Owner-gated by generator (placeholder declares OwnerOnly = true). Iterates

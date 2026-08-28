@@ -1,4 +1,4 @@
-using HermesProxy.World.Objects;
+﻿using HermesProxy.World.Objects;
 using HermesProxy.World.Objects.Version.Attributes;
 
 namespace HermesProxy.World.Enums.V3_4_3_54261;
@@ -65,11 +65,13 @@ public enum CorpseField
     [DescriptorUpdateField(nameof(CorpseData.ClassId), DescriptorType.UInt8, bit: 9)]
     CORPSE_FIELD_CLASS_ID,
 
-    // Customizations.size(). Always 0: the proxy converts legacy appearance bytes into
-    // CorpseData.Customizations but has never shipped them, and bit 1 (the matching dynamic
-    // field) is likewise never set. Sending a non-zero count here without also writing the
-    // payload below would desync the stream.
-    [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
+    // Customizations.size(). Counts the non-null entries UpdateHandler populated from the
+    // legacy CORPSE_FIELD_BYTES_1/_2 appearance bytes; the payload is written after
+    // FactionTemplate below, matching TC CorpseData::WriteCreate. A native 3.4.3 server
+    // always ships these (5 entries for a human corpse) — see
+    // refs/native-captures/wrathion_343_corpse_bones_20260829.pkt packet 2639.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateCorpseCustomizationsCount))]
     CORPSE_CUSTOMIZATIONS_COUNT,
 
     [DescriptorCreateField(nameof(CorpseData.Flags), DescriptorType.UInt32)]
@@ -79,4 +81,10 @@ public enum CorpseField
     [DescriptorCreateField(nameof(CorpseData.FactionTemplate), DescriptorType.Int32)]
     [DescriptorUpdateField(nameof(CorpseData.FactionTemplate), DescriptorType.Int32, bit: 11)]
     CORPSE_FIELD_FACTION_TEMPLATE,
+
+    // Customizations payload — 2x UInt32 per non-null entry, written last, after
+    // FactionTemplate. Count is emitted above between Class and Flags.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateCorpseCustomizationsData))]
+    CORPSE_CUSTOMIZATIONS_DATA_CUSTOM,
 }

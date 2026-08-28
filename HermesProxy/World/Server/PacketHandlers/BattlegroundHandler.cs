@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -53,6 +54,22 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_PORT)]
     void HandleBattlefieldPort(BattlefieldPort port)
     {
+        if (BattlefieldMgrTranslation.TryDecodeTicket(port.Ticket.Id, out uint mgrBattleId, out var mgrKind))
+        {
+            Opcode mgrOpcode = mgrKind == BattlefieldMgrTicketKind.Queue
+                ? Opcode.CMSG_BF_MGR_QUEUE_INVITE_RESPONSE
+                : Opcode.CMSG_BF_MGR_ENTRY_INVITE_RESPONSE;
+            WorldPacket mgrPacket = new WorldPacket(mgrOpcode);
+            mgrPacket.WriteUInt32(mgrBattleId);
+            mgrPacket.WriteUInt8(port.AcceptedInvite ? (byte)1 : (byte)0);
+            BattleGroundLogMessages.PortAsMgr(
+                _melLog, port.Ticket.Id, port.AcceptedInvite, mgrOpcode.ToString(), mgrBattleId);
+            SendPacketToServer(mgrPacket);
+            if (!port.AcceptedInvite)
+                GetSession().GameState.RemoveBattleFieldQueue(port.Ticket.Id);
+            return;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_PORT);
         uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id);
 
@@ -98,6 +115,21 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_LEAVE)]
     void HandleBattlefieldLeave(BattlefieldLeave leave)
     {
+        uint entryTicket = BattlefieldMgrTranslation.TicketFor(
+            BattlefieldMgrTranslation.WintergraspBattleId, BattlefieldMgrTicketKind.Entry);
+        uint queueTicket = BattlefieldMgrTranslation.TicketFor(
+            BattlefieldMgrTranslation.WintergraspBattleId, BattlefieldMgrTicketKind.Queue);
+        bool hasMgrTicket = GetSession().GameState.GetBattleFieldQueueType(entryTicket) != 0 ||
+            GetSession().GameState.GetBattleFieldQueueType(queueTicket) != 0;
+        if (BattlefieldMgrTranslation.ShouldRouteLeaveToMgr(GetSession().GameState.CurrentZoneId, hasMgrTicket))
+        {
+            WorldPacket exit = new WorldPacket(Opcode.CMSG_BF_MGR_QUEUE_EXIT_REQUEST);
+            exit.WriteUInt32(BattlefieldMgrTranslation.WintergraspBattleId);
+            BattleGroundLogMessages.LeaveAsMgr(_melLog, BattlefieldMgrTranslation.WintergraspBattleId);
+            SendPacketToServer(exit);
+            return;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LEAVE);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {

@@ -1,5 +1,6 @@
 ﻿using Framework;
 using HermesProxy.Enums;
+using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -57,9 +58,13 @@ public partial class WorldClient
 
         if (GetSession().GameState.CurrentZoneId != states.ZoneID)
         {
-            string oldZoneName = GameData.GetAreaName(GetSession().GameState.CurrentZoneId);
+            uint previousZone = GetSession().GameState.CurrentZoneId;
+            string oldZoneName = GameData.GetAreaName(previousZone);
             string newZoneName = GameData.GetAreaName(states.ZoneID);
             GetSession().GameState.CurrentZoneId = states.ZoneID;
+            if (previousZone == BattlefieldMgrTranslation.WintergraspZoneId &&
+                states.ZoneID != BattlefieldMgrTranslation.WintergraspZoneId)
+                ClearWintergraspMgrState();
             if (!String.IsNullOrEmpty(oldZoneName) && !String.IsNullOrEmpty(newZoneName))
             {
                 foreach (var channel in GameData.GetChatChannelsWithFlags(ChannelFlags.AutoJoin | ChannelFlags.ZoneBased))

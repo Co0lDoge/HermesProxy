@@ -375,6 +375,18 @@ public partial class WorldClient
         player.Sex = Gender.Male;
         player.PlayerRace = Race.Human;
         player.PlayerClass = Class.Warrior;
+        if (setFactionFromRace)
+            player.Faction = InferBgFactionFromRaid(player.PlayerGUID);
+    }
+
+    bool InferBgFactionFromRaid(WowGuid128 guid)
+    {
+        var bgRaid = GetSession().GameState.CurrentGroups[1];
+        if (bgRaid?.PlayerList == null)
+            return false;
+        bool inOurRaid = bgRaid.PlayerList.Exists(m => m.GUID == guid);
+        bool weAreAlliance = GetSession().GameState.IsAlliancePlayer(GetSession().GameState.CurrentPlayerGuid);
+        return inOurRaid ? weAreAlliance : !weAreAlliance;
     }
 
     BattlegroundPlayerPosition ReadBattlegroundPlayerPosition(WorldPacket packet)

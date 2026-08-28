@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using HermesProxy;
 using HermesProxy.Enums;
 using HermesProxy.World;
@@ -93,6 +93,25 @@ public class CorpseDynamicObjectSectionEquivalenceTests
             c.Flags = 0x08u;
             c.FactionTemplate = 1801;
         }) };
+
+        // A real corpse always carries appearance choices — UpdateHandler builds them from
+        // the legacy CORPSE_FIELD_BYTES_1/_2 bytes. Native 3.4.3 ships 5 for a human corpse.
+        yield return new object[] { "customizations", new System.Action<CorpseData>(c =>
+        {
+            c.DynamicFlags = 0u;
+            c.Owner = WowGuid128.Create(HighGuidType703.Player, 95);
+            c.DisplayID = 16125u;
+            c.RaceId = (byte)11;
+            c.SexId = (byte)0;
+            c.ClassId = (byte)1;
+            c.Flags = 1u;
+            c.FactionTemplate = 1629;
+            c.Customizations[0] = new ChrCustomizationChoice(128, 18027);
+            c.Customizations[1] = new ChrCustomizationChoice(129, 18047);
+            c.Customizations[2] = new ChrCustomizationChoice(130, 28662);
+            c.Customizations[3] = new ChrCustomizationChoice(131, 18058);
+            c.Customizations[4] = new ChrCustomizationChoice(132, 18072);
+        }) };
     }
 
     [Theory]
@@ -147,9 +166,28 @@ public class CorpseDynamicObjectSectionEquivalenceTests
         data.WriteUInt8(corpse.RaceId.GetValueOrDefault());
         data.WriteUInt8(corpse.SexId.GetValueOrDefault());
         data.WriteUInt8(corpse.ClassId.GetValueOrDefault());
-        data.WriteUInt32(0u); // Customizations.size() = 0
+        // Customizations.size(), then Flags/FactionTemplate, then the payload — matching
+        // TC CorpseData::WriteCreate and the native 3.4.3 capture
+        // (refs/native-captures/wrathion_343_corpse_bones_20260829.pkt, packet 2639, 5 entries).
+        int customizationCount = 0;
+        if (corpse.Customizations != null)
+            for (int i = 0; i < corpse.Customizations.Length; i++)
+                if (corpse.Customizations[i] != null) customizationCount++;
+        data.WriteUInt32((uint)customizationCount);
         data.WriteUInt32(corpse.Flags.GetValueOrDefault());
         data.WriteInt32(corpse.FactionTemplate.GetValueOrDefault());
+        if (corpse.Customizations != null)
+        {
+            for (int i = 0; i < corpse.Customizations.Length; i++)
+            {
+                var choice = corpse.Customizations[i];
+                if (choice != null)
+                {
+                    data.WriteUInt32(choice.ChrCustomizationOptionID);
+                    data.WriteUInt32(choice.ChrCustomizationChoiceID);
+                }
+            }
+        }
     }
 
     // Transcribed from TC 3.4.3 UpdateFields.cpp CorpseData::WriteUpdate. Note bit 12 gates

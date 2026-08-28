@@ -489,6 +489,73 @@ public partial class WorldClient
         SendPacketToClient(spell);
     }
 
+    private static readonly Microsoft.Extensions.Logging.ILogger _melSpellLog =
+        Log.CreateMelLogger(Log.CategoryServer);
+
+    /// <summary>
+    /// Legacy 3.3.5a never announces item-use cooldowns: on that client the cooldown is
+    /// applied locally from the item_template fields delivered by the item query, so the
+    /// server has nothing to say and sends no SMSG_ITEM_COOLDOWN / SMSG_SPELL_COOLDOWN.
+    /// The modern client applies cooldowns locally too, but from its own SpellCooldowns.db2
+    /// keyed on the spell — so an item whose cooldown lives only on the legacy item row
+    /// (no SpellCooldowns entry for its on-use spell) renders no sweep anywhere: bag icon,
+    /// action bar and Toy Box all read that same store. The backend still enforces the
+    /// timer, so the button looks ready and the recast comes back as SMSG_CAST_FAILED.
+    ///
+    /// Synthesize the cooldown from the legacy template once the cast is confirmed. Only
+    /// send a positive value: 3.3.5a writes -1 for "use the spell's own cooldown" (that is
+    /// what Hearthstone 6948/8690 carries), and forwarding a zero would clear a cooldown
+    /// the client had correctly derived from its own DB2.
+    /// </summary>
+    void SendSynthesizedItemCooldown(ClientCastRequest pendingCast, uint modernSpellId)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+        if (pendingCast.ItemGUID.IsEmpty() || modernSpellId == 0)
+            return;
+
+        uint itemId = GetSession().GameState.GetItemId(pendingCast.ItemGUID);
+        if (itemId == 0)
+            return;
+
+        var template = GameData.GetItemTemplate(itemId);
+        if (template == null)
+            return;
+
+        // SaveItemEffectSlot indexed the slots by the legacy spell id from the item query.
+        uint legacySpellId = pendingCast.LegacySpellId != 0 ? pendingCast.LegacySpellId : pendingCast.SpellId;
+        byte slot = GameData.GetItemEffectSlot(itemId, legacySpellId);
+        if (slot >= template.TriggeredSpellCooldowns.Length)
+            return;
+
+        int cooldownMs = template.TriggeredSpellCooldowns[slot];
+        if (cooldownMs <= 0)
+            cooldownMs = template.TriggeredSpellCategoryCooldowns[slot];
+        if (cooldownMs <= 0)
+            return;
+
+        // Both packets are needed. SMSG_SPELL_COOLDOWN drives the spell-keyed store the
+        // action bar and Toy Box read; the bag icon is keyed on the item itself, which is
+        // what SMSG_ITEM_COOLDOWN addresses. Sending only the spell one leaves the bag
+        // slot with no sweep.
+        var cooldown = new SpellCooldownPkt { Caster = GetSession().GameState.CurrentPlayerGuid };
+        cooldown.SpellCooldowns.Add(new SpellCooldownStruct
+        {
+            SpellID = modernSpellId,
+            ForcedCooldown = (uint)cooldownMs,
+        });
+        SendPacketToClient(cooldown);
+
+        SendPacketToClient(new ItemCooldown
+        {
+            ItemGuid = pendingCast.ItemGUID,
+            SpellID = modernSpellId,
+            Cooldown = (uint)cooldownMs,
+        });
+
+        World.Logging.SpellLogMessages.ItemCooldownSynthesized(_melSpellLog, itemId, modernSpellId, cooldownMs);
+    }
+
     [PacketHandler(Opcode.SMSG_SPELL_GO)]
     void HandleSpellGo(WorldPacket packet)
     {
@@ -517,6 +584,8 @@ public partial class WorldClient
                 });
                 pendingCast.PrepareSent = true;
             }
+
+            SendSynthesizedItemCooldown(pendingCast, (uint)spell.Cast.SpellID);
 
             GetSession().GameState.LastCompletedNormalCast = pendingCast;
         }

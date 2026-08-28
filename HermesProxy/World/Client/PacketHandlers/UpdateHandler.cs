@@ -26,6 +26,12 @@ public partial class WorldClient
             GetSession().GameState.ObjectCacheModern.Remove(guid);
         }
         GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
+        // The client is about to drop this object, so it must stop counting as "known".
+        // ClientKnownGuids gates Values forwarding in FilterV3_4_3Values; leaving a
+        // destroyed guid in the set lets later Values deltas through for an object the
+        // client no longer has, and it answers CMSG_OBJECT_UPDATE_FAILED. If the object
+        // comes back it arrives as a fresh CreateObject, which re-adds it.
+        GetSession().GameState.ClientKnownGuids.Remove(guid);
 
         var companion = GetSession().GameState.SummonedCompanionCreatureGuid;
         if (!companion.IsEmpty() && guid == companion)
@@ -846,6 +852,9 @@ public partial class WorldClient
             if (guid.IsTransport())
                 Log.Print(LogType.Trace, $"[Transport] destroy (out of range) for transport {guid}");
             updateObject.OutOfRangeGuids.Add(guid);
+            // Out-of-range is a destroy as far as the client is concerned — same reasoning
+            // as HandleDestroyObject above.
+            GetSession().GameState.ClientKnownGuids.Remove(guid);
         }
     }
 

@@ -28,6 +28,9 @@ public partial class WorldClient
             && guid.GetHighType() == HighGuidType.Corpse)
         {
             GetSession().GameState.DeferredCorpseDestroys.Add(guid);
+            World.Logging.ObjectLifecycleLogMessages.CorpseDestroyDeferred(
+                _melObjLifeClient, guid.Low, guid.High,
+                GetSession().GameState.DeferredCorpseDestroys.Count);
             return;
         }
 
@@ -45,7 +48,7 @@ public partial class WorldClient
 
         bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
         World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
-            _melLog, guid.Low, guid.High, "destroy-object", wasKnown);
+            _melObjLifeClient, guid.Low, guid.High, "destroy-object", wasKnown);
 
         var companion = GetSession().GameState.SummonedCompanionCreatureGuid;
         if (!companion.IsEmpty() && guid == companion)
@@ -65,8 +68,18 @@ public partial class WorldClient
             || guid.GetHighType() != HighGuidType.Corpse)
             return false;
         if (GetSession().GameState.DeferredCorpseDestroys.Remove(guid))
+        {
+            World.Logging.ObjectLifecycleLogMessages.CorpseRecreateSkipped(
+                _melObjLifeClient, guid.Low, guid.High, "paired-with-deferred-destroy");
             return true;
-        return GetSession().GameState.ClientKnownGuids.Contains(guid);
+        }
+        if (GetSession().GameState.ClientKnownGuids.Contains(guid))
+        {
+            World.Logging.ObjectLifecycleLogMessages.CorpseRecreateSkipped(
+                _melObjLifeClient, guid.Low, guid.High, "already-known");
+            return true;
+        }
+        return false;
     }
 
     void FlushDeferredCorpseDestroys()
@@ -87,7 +100,7 @@ public partial class WorldClient
             GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
             bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
             World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
-                _melLog, guid.Low, guid.High, "deferred-corpse-destroy", wasKnown);
+                _melObjLifeClient, guid.Low, guid.High, "deferred-corpse-destroy", wasKnown);
             UpdateObject destroy = new UpdateObject(GetSession().GameState);
             destroy.DestroyedGuids.Add(guid);
             SendPacketToClient(destroy);
@@ -926,7 +939,7 @@ public partial class WorldClient
             // as HandleDestroyObject above.
             bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
             World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
-                _melLog, guid.Low, guid.High, "out-of-range", wasKnown);
+                _melObjLifeClient, guid.Low, guid.High, "out-of-range", wasKnown);
         }
     }
 

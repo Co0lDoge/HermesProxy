@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 
 namespace HermesProxy.World.Logging;
 
@@ -60,4 +60,18 @@ internal static partial class ObjectLifecycleLogMessages
         Message = "[ObjLife] toys sync flushed guidLow={GuidLow} guidHigh={GuidHigh} after player CreateObject")]
     public static partial void ToysFlushed(
         ILogger logger, ulong guidLow, ulong guidHigh);
+
+    [LoggerMessage(
+        EventId = 906,
+        Level = LogLevel.Trace,
+        Message = "[ObjLife] corpse destroy deferred guidLow={GuidLow} guidHigh={GuidHigh} pending={Pending}")]
+    public static partial void CorpseDestroyDeferred(
+        ILogger logger, ulong guidLow, ulong guidHigh, int pending);
+
+    [LoggerMessage(
+        EventId = 907,
+        Level = LogLevel.Trace,
+        Message = "[ObjLife] corpse recreate skipped guidLow={GuidLow} guidHigh={GuidHigh} reason={Reason}")]
+    public static partial void CorpseRecreateSkipped(
+        ILogger logger, ulong guidLow, ulong guidHigh, string reason);
 }

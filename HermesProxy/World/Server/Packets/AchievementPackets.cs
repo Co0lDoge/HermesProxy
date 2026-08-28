@@ -76,6 +76,18 @@ public class CriteriaUpdatePkt : ServerPacket
     }
 }
 
+public class CriteriaDeletedPkt : ServerPacket
+{
+    public CriteriaDeletedPkt() : base(Opcode.SMSG_CRITERIA_DELETED) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteUInt32(CriteriaID);
+    }
+
+    public uint CriteriaID;
+}
+
 public class AchievementEarnedPkt : ServerPacket
 {
     public WowGuid128 Sender;

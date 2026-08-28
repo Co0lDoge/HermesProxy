@@ -436,3 +436,66 @@ class ThreatClear : ServerPacket, ISpanWritable
 
     public WowGuid128 GUID;
 }
+
+class Dismount : ServerPacket, ISpanWritable
+{
+    public Dismount() : base(Opcode.SMSG_DISMOUNT, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Guid);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Guid.Low, Guid.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 Guid;
+}
+
+class BreakTarget : ServerPacket, ISpanWritable
+{
+    public BreakTarget() : base(Opcode.SMSG_BREAK_TARGET, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(UnitGUID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(UnitGUID.Low, UnitGUID.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 UnitGUID;
+}
+
+class ClearTarget : ServerPacket, ISpanWritable
+{
+    public ClearTarget() : base(Opcode.SMSG_CLEAR_TARGET, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Guid);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Guid.Low, Guid.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 Guid;
+}

@@ -112,14 +112,14 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_LOADING_SCREEN_NOTIFY)]
     void HandleLoadScreen(LoadingScreenNotify loadingScreenNotify)
     {
-        // The V3_4_3 client sends MapID=0xFFFFFFFF as the "exit loading screen"
-        // sentinel. Storing that as CurrentMapId truncates to (ushort)0xFFFF=65535
-        // in SMSG_UPDATE_OBJECT.MapID, which the client reads as an invalid map
-        // and refuses to apply Values updates for — character stays frozen in
-        // loading-screen state post-cinematic. Skip the sentinel; keep the
-        // authoritative map ID set by SMSG_LOGIN_VERIFY_WORLD / SMSG_NEW_WORLD.
-        // (The original `>= 0` check was broken — MapID is uint, always >= 0.)
-        if (loadingScreenNotify.MapID != 0xFFFFFFFFu)
+        // Authoritative map comes from SMSG_LOGIN_VERIFY_WORLD / SMSG_NEW_WORLD.
+        // The 3.4.3 client also sends this CMSG when the loading screen hides:
+        // MapID=0xFFFFFFFF (cinematic) or MapID=0 + Showing=false (mid-BG relog).
+        // Storing either writes UPDATE_OBJECT.MapID=0/65535 and the client
+        // drops Values (frozen HP, broken walk). Only keep a real map while showing.
+        if (loadingScreenNotify.Showing
+            && loadingScreenNotify.MapID != 0
+            && loadingScreenNotify.MapID != 0xFFFFFFFFu)
             GetSession().GameState.CurrentMapId = loadingScreenNotify.MapID;
     }
 

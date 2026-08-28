@@ -71,6 +71,14 @@ public partial class WorldClient
         SendPacketToClient(death);
     }
 
+    [PacketHandler(Opcode.SMSG_PRE_RESSURECT)]
+    void HandlePreRessurect(WorldPacket packet)
+    {
+        PreRessurect pre = new();
+        pre.PlayerGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(pre);
+    }
+
     [PacketHandler(Opcode.SMSG_CORPSE_RECLAIM_DELAY)]
     void HandleCorpseReclaimDelay(WorldPacket packet)
     {

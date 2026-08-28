@@ -24,6 +24,13 @@ public partial class WorldClient
     void HandleDestroyObject(WorldPacket packet)
     {
         WowGuid128 guid = packet.ReadGuid().To128(GetSession().GameState);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && guid.GetHighType() == HighGuidType.Corpse)
+        {
+            GetSession().GameState.DeferredCorpseDestroys.Add(guid);
+            return;
+        }
+
         lock (GetSession().GameState.ObjectCacheLock)
         {
             GetSession().GameState.ObjectCacheLegacy.Remove(guid);
@@ -35,6 +42,7 @@ public partial class WorldClient
         // destroyed guid in the set lets later Values deltas through for an object the
         // client no longer has, and it answers CMSG_OBJECT_UPDATE_FAILED. If the object
         // comes back it arrives as a fresh CreateObject, which re-adds it.
+
         bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
         World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
             _melLog, guid.Low, guid.High, "destroy-object", wasKnown);
@@ -49,6 +57,41 @@ public partial class WorldClient
         UpdateObject updateObject = new UpdateObject(GetSession().GameState);
         updateObject.DestroyedGuids.Add(guid);
         SendPacketToClient(updateObject);
+    }
+
+    bool ShouldSkipV343CorpseRecreate(WowGuid128 guid)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
+            || guid.GetHighType() != HighGuidType.Corpse)
+            return false;
+        if (GetSession().GameState.DeferredCorpseDestroys.Remove(guid))
+            return true;
+        return GetSession().GameState.ClientKnownGuids.Contains(guid);
+    }
+
+    void FlushDeferredCorpseDestroys()
+    {
+        var pending = GetSession().GameState.DeferredCorpseDestroys;
+        if (pending.Count == 0)
+            return;
+
+        var toFlush = pending.ToArray();
+        pending.Clear();
+        foreach (var guid in toFlush)
+        {
+            lock (GetSession().GameState.ObjectCacheLock)
+            {
+                GetSession().GameState.ObjectCacheLegacy.Remove(guid);
+                GetSession().GameState.ObjectCacheModern.Remove(guid);
+            }
+            GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
+            bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
+            World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
+                _melLog, guid.Low, guid.High, "deferred-corpse-destroy", wasKnown);
+            UpdateObject destroy = new UpdateObject(GetSession().GameState);
+            destroy.DestroyedGuids.Add(guid);
+            SendPacketToClient(destroy);
+        }
     }
 
     [PacketHandler(Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)]
@@ -295,7 +338,7 @@ public partial class WorldClient
                         // with CMSG_OBJECT_UPDATE_FAILED, looping forever. Static
                         // GameObjects forward fine. ItemContainer (0x4700) is also
                         // forwarded (HighGuid mapping converts to a normal Item guid).
-                        bool filtered = false;
+                        bool filtered = ShouldSkipV343CorpseRecreate(guid);
                         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
                         {
                             var legacyHigh = oldGuid.GetHighGuidTypeLegacy();
@@ -360,7 +403,7 @@ public partial class WorldClient
                     if (updateData.CreateData.MoveInfo != null || !guid.IsWorldObject())
                     {
                         // Mirror of CreateObject1 — see filter comments there for rationale.
-                        bool filtered = false;
+                        bool filtered = ShouldSkipV343CorpseRecreate(guid);
                         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
                         {
                             var legacyHigh = oldGuid.GetHighGuidTypeLegacy();
@@ -832,6 +875,8 @@ public partial class WorldClient
                 World.Server.CollectionSync.RefreshUsableToys(GetSession());
             }
         }
+
+        FlushDeferredCorpseDestroys();
     }
 
     public void ReadNearObjectsBlock(WorldPacket packet, object index)

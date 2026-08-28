@@ -18,6 +18,14 @@ public partial class WorldClient
         SendPacketToClient(instance);
     }
 
+    [PacketHandler(Opcode.SMSG_UPDATE_LAST_INSTANCE)]
+    void HandleUpdateLastInstance(WorldPacket packet)
+    {
+        UpdateLastInstance last = new();
+        last.MapID = packet.ReadUInt32();
+        SendPacketToClient(last);
+    }
+
     [PacketHandler(Opcode.SMSG_INSTANCE_RESET)]
     void HandleInstanceReset(WorldPacket packet)
     {

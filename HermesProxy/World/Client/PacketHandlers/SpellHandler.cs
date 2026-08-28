@@ -1907,4 +1907,158 @@ public partial class WorldClient
         update.Auras.Add(aura);
         SendPacketToClient(update);
     }
+
+    [PacketHandler(Opcode.SMSG_SPELL_EXECUTE_LOG)]
+    void HandleSpellExecuteLog(WorldPacket packet)
+    {
+        var session = GetSession().GameState;
+        SpellExecuteLog log = new();
+        log.Caster = packet.ReadPackedGuid().To128(session);
+        log.SpellID = (int)packet.ReadUInt32();
+
+        uint effectCount = packet.ReadUInt32();
+        for (uint i = 0; i < effectCount; i++)
+        {
+            int effect = (int)packet.ReadUInt32();
+            uint targetCount = packet.ReadUInt32();
+            var entry = new SpellExecuteLogEffect { Effect = effect };
+
+            switch (effect)
+            {
+                case 8:  // POWER_DRAIN
+                case 62: // POWER_BURN
+                    for (uint t = 0; t < targetCount; t++)
+                    {
+                        entry.PowerDrainTargets.Add(new SpellLogEffectPowerDrain
+                        {
+                            Victim = packet.ReadPackedGuid().To128(session),
+                            Points = packet.ReadUInt32(),
+                            PowerType = packet.ReadUInt32(),
+                            Amplitude = packet.ReadFloat()
+                        });
+                    }
+                    break;
+                case 19: // ADD_EXTRA_ATTACKS
+                    for (uint t = 0; t < targetCount; t++)
+                    {
+                        entry.ExtraAttacksTargets.Add(new SpellLogEffectExtraAttacks
+                        {
+                            Victim = packet.ReadPackedGuid().To128(session),
+                            NumAttacks = packet.ReadUInt32()
+                        });
+                    }
+                    break;
+                case 68: // INTERRUPT_CAST — extra spell id has no 3.4.3 execute-log slot
+                    for (uint t = 0; t < targetCount; t++)
+                    {
+                        entry.GenericVictimTargets.Add(packet.ReadPackedGuid().To128(session));
+                        packet.ReadUInt32();
+                    }
+                    break;
+                case 111: // DURABILITY_DAMAGE
+                case 115: // DURABILITY_DAMAGE_PCT
+                    for (uint t = 0; t < targetCount; t++)
+                    {
+                        entry.DurabilityDamageTargets.Add(new SpellLogEffectDurabilityDamage
+                        {
+                            Victim = packet.ReadPackedGuid().To128(session),
+                            ItemID = packet.ReadInt32(),
+                            Amount = packet.ReadInt32()
+                        });
+                    }
+                    break;
+                case 24:  // CREATE_ITEM
+                case 157: // CREATE_ITEM_2
+                    for (uint t = 0; t < targetCount; t++)
+                        entry.TradeSkillTargets.Add((int)packet.ReadUInt32());
+                    break;
+                case 101: // FEED_PET
+                    for (uint t = 0; t < targetCount; t++)
+                        entry.FeedPetTargets.Add((int)packet.ReadUInt32());
+                    break;
+                case 18:  // RESURRECT
+                case 28:  // SUMMON
+                case 33:  // OPEN_LOCK
+                case 50:  // TRANS_DOOR
+                case 56:  // SUMMON_PET
+                case 59:  // OPEN_LOCK_ITEM
+                case 76:  // SUMMON_OBJECT_WILD
+                case 81:  // CREATE_HOUSE
+                case 83:  // DUEL
+                case 102: // DISMISS_PET
+                case 104: // SUMMON_OBJECT_SLOT1
+                case 105:
+                case 106:
+                case 107: // SUMMON_OBJECT_SLOT4
+                case 113: // RESURRECT_NEW
+                    for (uint t = 0; t < targetCount; t++)
+                        entry.GenericVictimTargets.Add(packet.ReadPackedGuid().To128(session));
+                    break;
+                default:
+                    return;
+            }
+
+            log.Effects.Add(entry);
+        }
+
+        SendPacketToClient(log);
+    }
+
+    [PacketHandler(Opcode.SMSG_SPELL_MISS_LOG)]
+    void HandleSpellMissLog(WorldPacket packet)
+    {
+        var session = GetSession().GameState;
+        SpellMissLog log = new();
+        log.SpellID = (int)packet.ReadUInt32();
+        log.Caster = packet.ReadGuid().To128(session);
+        bool hasDebug = packet.ReadUInt8() != 0;
+        uint count = packet.ReadUInt32();
+        for (uint i = 0; i < count; i++)
+        {
+            var entry = new SpellMissLogEntry
+            {
+                Victim = packet.ReadGuid().To128(session),
+                MissReason = packet.ReadUInt8()
+            };
+            if (hasDebug)
+            {
+                packet.ReadFloat();
+                packet.ReadFloat();
+            }
+            log.Entries.Add(entry);
+        }
+        SendPacketToClient(log);
+    }
+
+    [PacketHandler(Opcode.SMSG_DISPEL_FAILED)]
+    void HandleDispelFailed(WorldPacket packet)
+    {
+        var session = GetSession().GameState;
+        DispelFailed failed = new();
+        failed.CasterGUID = packet.ReadGuid().To128(session);
+        failed.VictimGUID = packet.ReadGuid().To128(session);
+        failed.SpellID = packet.ReadUInt32();
+        while (packet.Remaining() >= 4)
+            failed.FailedSpells.Add((int)packet.ReadUInt32());
+        SendPacketToClient(failed);
+    }
+
+    [PacketHandler(Opcode.SMSG_SPELL_STEAL_LOG)]
+    void HandleSpellStealLog(WorldPacket packet)
+    {
+        var session = GetSession().GameState;
+        SpellDispellLog spell = new();
+        spell.IsSteal = true;
+        spell.TargetGUID = packet.ReadPackedGuid().To128(session);
+        spell.CasterGUID = packet.ReadPackedGuid().To128(session);
+        spell.DispelledBySpellID = packet.ReadUInt32();
+        packet.ReadUInt8();
+        int count = packet.ReadInt32();
+        for (int i = 0; i < count; i++)
+        {
+            spell.DispellData.Add(new SpellDispellData { SpellID = packet.ReadUInt32() });
+            packet.ReadUInt8();
+        }
+        SendPacketToClient(spell);
+    }
 }

@@ -32,10 +32,10 @@ public partial class WorldSocket
 
         // Reconcile post-Cataclysm DB2 ids back to the 3.3.5a-era ids the
         // legacy server's areatrigger_teleport table is keyed on. V3_4_3 only.
-        // See AreaTriggerReconciliation.cs for the table.
+        // Table is data-driven: CSV/AreaTriggerRemap*.csv.
         uint idToForward = at.AreaTriggerID;
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
-            AreaTriggerReconciliation.ModernToLegacy.TryGetValue(at.AreaTriggerID, out var legacyId))
+            GameData.AreaTriggerModernToLegacy.TryGetValue(at.AreaTriggerID, out var legacyId))
         {
             idToForward = legacyId;
         }

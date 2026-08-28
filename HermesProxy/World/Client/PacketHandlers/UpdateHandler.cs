@@ -317,9 +317,6 @@ public partial class WorldClient
                             }
                         }
 
-                        if (!filtered && GetSession().GameState.IsHiddenToyGuid(guid))
-                            filtered = true;
-
                         if (!filtered)
                         {
                             updateObject.ObjectUpdates.Add(updateData);
@@ -384,9 +381,6 @@ public partial class WorldClient
                                     $"[ItemContainerTrace] Forwarding CreateObject2 for 0x4700 ItemContainer guid={guid} entryID={updateData.ObjectData.EntryID?.ToString() ?? "null"}.");
                             }
                         }
-
-                        if (!filtered && GetSession().GameState.IsHiddenToyGuid(guid))
-                            filtered = true;
 
                         if (!filtered)
                         {
@@ -2241,8 +2235,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[CONTAINER_FIELD_SLOT_1 + i * 2])
                     {
-                        updateData.ContainerData.Slots[i] = GetSession().GameState.FilterHiddenToySlot(
-                            GetGuidValue(updates, CONTAINER_FIELD_SLOT_1 + i * 2).To128(GetSession().GameState));
+                        updateData.ContainerData.Slots[i] = GetGuidValue(updates, CONTAINER_FIELD_SLOT_1 + i * 2).To128(GetSession().GameState);
                     }
                 }
             }
@@ -3018,7 +3011,7 @@ public partial class WorldClient
                     if (updateMaskArray[PLAYER_FIELD_INV_SLOT_HEAD + i * 2])
                     {
                         var slotGuid = GetSlotGuidValue(updates, PLAYER_FIELD_INV_SLOT_HEAD + i * 2);
-                        updateData.ActivePlayerData.InvSlots[i] = GetSession().GameState.FilterHiddenToySlot(slotGuid);
+                        updateData.ActivePlayerData.InvSlots[i] = slotGuid;
                         GetSession().GameState.InventoryChangedSinceQuestResync = true;
                         if (tracePlayer)
                             Log.Print(LogType.Debug,
@@ -3033,8 +3026,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_PACK_SLOT_1 + i * 2])
                     {
-                        updateData.ActivePlayerData.PackSlots[i] = GetSession().GameState.FilterHiddenToySlot(
-                            GetSlotGuidValue(updates, PLAYER_FIELD_PACK_SLOT_1 + i * 2));
+                        updateData.ActivePlayerData.PackSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_PACK_SLOT_1 + i * 2);
                         GetSession().GameState.InventoryChangedSinceQuestResync = true;
                     }
                 }
@@ -3046,8 +3038,7 @@ public partial class WorldClient
                 for (int i = 0; i < bankSlots; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_BANK_SLOT_1 + i * 2])
-                        updateData.ActivePlayerData.BankSlots[i] = GetSession().GameState.FilterHiddenToySlot(
-                            GetSlotGuidValue(updates, PLAYER_FIELD_BANK_SLOT_1 + i * 2));
+                        updateData.ActivePlayerData.BankSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_BANK_SLOT_1 + i * 2);
                 }
             }
             int PLAYER_FIELD_BANKBAG_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BANKBAG_SLOT_1);

@@ -24,6 +24,15 @@ public class ToyPacketsTests
     }
 
     [Fact]
+    public void UseToy_CastFailedReasons_MatchV343()
+    {
+        Assert.Equal(33u, (uint)SpellCastResultV343.EquippedItem);
+        Assert.Equal(67u, (uint)SpellCastResultV343.ItemNotFound);
+        Assert.True(EquipmentSlot.End <= HermesProxy.World.Enums.Vanilla.InventorySlots.ItemStart);
+        Assert.Equal(12, EquipmentSlot.Trinket1);
+    }
+
+    [Fact]
     public void AccountToyUpdate_Write_Empty_MatchesInitStub()
     {
         var update = new AccountToyUpdate { IsFullUpdate = true };

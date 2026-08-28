@@ -234,6 +234,16 @@ public partial class WorldClient
         {
             GetSession().GameState.IsWaitingForNewWorld = false;
             GetSession().GameState.IsWaitingForWorldPortAck = true;
+
+            // SMSG_NEW_WORLD tears down the client's entire world model, the player object
+            // included, and the server re-sends a CreateObject for everything on the new map.
+            // ClientKnownGuids has to follow or it stays stale across the transition: the
+            // Values filter would then forward deltas for objects the client no longer has,
+            // which come straight back as CMSG_OBJECT_UPDATE_FAILED. Observed as a player
+            // Values sent in the gap between the teleport and the re-create.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+                GetSession().GameState.ClientKnownGuids.Clear();
+
             SendPacketToClient(teleport);
             if (teleport.MapID > 1)
             {

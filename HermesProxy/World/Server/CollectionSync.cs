@@ -98,11 +98,33 @@ public static class CollectionSync
         session.WorldClient.SendPacketToClient(new SpellGo { Cast = cast });
     }
 
+    private static readonly Microsoft.Extensions.Logging.ILogger _melObjLife =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+
     public static void SendToys(GlobalSessionData session)
     {
         var state = session.GameState;
         if (state.CurrentPlayerGuid.IsEmpty() || session.WorldClient == null)
             return;
+
+        // The Toys list is an ActivePlayerData field, so publishing it means sending a
+        // Values delta on the player guid. This builds its own UpdateObject and hands it
+        // straight to the client, bypassing UpdatePackets.FilterV3_4_3Values — which is
+        // where ClientKnownGuids normally stops pre-create Values from going out. During
+        // login the collection sync runs before the player's CreateObject has been
+        // forwarded, so an account with toys shipped a delta for an object the client did
+        // not have: it answered CMSG_OBJECT_UPDATE_FAILED and then stopped instantiating
+        // newly created objects (pets, spell-spawned GameObjects) until the next zone
+        // change rebuilt the grid. Defer instead, and let UpdateHandler flush once the
+        // player create has actually gone out.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && !state.ClientKnownGuids.Contains(state.CurrentPlayerGuid))
+        {
+            state.PendingToysSync = true;
+            World.Logging.ObjectLifecycleLogMessages.ToysDeferred(
+                _melObjLife, state.CurrentPlayerGuid.Low, state.CurrentPlayerGuid.High);
+            return;
+        }
 
         var usable = state.GetUsableToysOrdered();
         state.LastSentUsableToys = usable;

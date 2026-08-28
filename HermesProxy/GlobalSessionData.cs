@@ -373,6 +373,14 @@ public sealed class GameSessionData
     // client doesn't have in its world model — those would round-trip as
     // CMSG_OBJECT_UPDATE_FAILED rejections (e.g. Transports we filter at create time).
     public HashSet<WowGuid128> ClientKnownGuids = [];
+    // V3_4_3-only: set when CollectionSync.SendToys was asked to publish the Toy Box
+    // while the player's CreateObject had not yet reached the client. The Toys list
+    // lives on ActivePlayerData, so it ships as a Values delta on the player guid —
+    // and the client discards (and CMSG_OBJECT_UPDATE_FAILED's) any Values for an
+    // object it does not know yet, which on login leaves it unable to instantiate
+    // further objects until a zone change rebuilds the grid. UpdateHandler flushes
+    // this once the player CreateObject has actually been forwarded.
+    public bool PendingToysSync;
     public Dictionary<WowGuid128, ArenaTeamInspectData[]> PlayerArenaTeams = [];
     public HashSet<string> AddonPrefixes = [];
     public Dictionary<byte, Dictionary<byte, int>> FlatSpellMods = [];

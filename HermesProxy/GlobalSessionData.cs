@@ -373,9 +373,7 @@ public sealed class GameSessionData
     // client doesn't have in its world model — those would round-trip as
     // CMSG_OBJECT_UPDATE_FAILED rejections (e.g. Transports we filter at create time).
     public HashSet<WowGuid128> ClientKnownGuids = [];
-    // V3_4_3 ConvertCorpseToBones is SMSG_DESTROY_OBJECT then CreateObject2 on the
-    // same Corpse guid. That recreate is the live reason=7 (EotS + WSG). Hold the
-    // destroy until the next UPDATE_OBJECT; a same-guid create cancels both.
+    // Hold corpse DESTROY until the next UPDATE_OBJECT; a same-guid create cancels both.
     public HashSet<WowGuid128> DeferredCorpseDestroys = [];
     // V3_4_3-only: set when CollectionSync.SendToys was asked to publish the Toy Box
     // while the player's CreateObject had not yet reached the client. The Toys list

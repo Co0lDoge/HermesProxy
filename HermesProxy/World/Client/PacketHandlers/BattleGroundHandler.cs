@@ -375,8 +375,6 @@ public partial class WorldClient
         player.Sex = Gender.Male;
         player.PlayerRace = Race.Human;
         player.PlayerClass = Class.Warrior;
-        if (setFactionFromRace)
-            player.Faction = GetSession().GameState.IsAlliancePlayer(player.PlayerGUID);
     }
 
     BattlegroundPlayerPosition ReadBattlegroundPlayerPosition(WorldPacket packet)

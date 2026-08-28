@@ -347,6 +347,9 @@ public class UpdateObject : ServerPacket
     /// PlayerData and ActivePlayerData. Removing the strip restores Coinage,
     /// InvSlots, DisplayPower and the rage bar.
     /// </summary>
+    private static readonly Microsoft.Extensions.Logging.ILogger _melObjLife =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+
     public static int FilterV3_4_3Values(UpdateObject obj, GameSessionData gameState)
     {
         if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
@@ -366,6 +369,8 @@ public class UpdateObject : ServerPacket
             {
                 known.Add(u.Guid);
                 createKept++;
+                World.Logging.ObjectLifecycleLogMessages.CreateRegistered(
+                    _melObjLife, u.Guid.Low, u.Guid.High, u.Type.ToString());
             }
         }
 
@@ -379,14 +384,20 @@ public class UpdateObject : ServerPacket
             if (!known.Contains(u.Guid))
             {
                 valuesUnknownStripped++;
+                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                    _melObjLife, u.Guid.Low, u.Guid.High, "unknown-guid");
                 return true;
             }
             if (IsEmptyValuesDelta(u))
             {
                 valuesEmptyStripped++;
+                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                    _melObjLife, u.Guid.Low, u.Guid.High, "empty-delta");
                 return true;
             }
             valuesKept++;
+            World.Logging.ObjectLifecycleLogMessages.ValuesForwarded(
+                _melObjLife, u.Guid.Low, u.Guid.High, u.CorpseData != null, u.DynamicObjectData != null);
             return false;
         });
 
@@ -605,10 +616,25 @@ public class UpdateObject : ServerPacket
                     if (item.Enchantment[i] != null) return false;
         }
 
-        // CorpseData Values deltas are almost always single-field: a battleground corpse
-        // gains or loses the lootable-insignia bit in DynamicFlags and nothing else. The
-        // Corpse section only grew an Update path once it was wired, so before that this
-        // probe had nothing to guard; without it the delta lands here and is dropped.
+        // CorpseData Values deltas are single-field in practice: a battleground corpse gains
+        // or loses the lootable-insignia bit in DynamicFlags and nothing else. Across the
+        // whole 3.3.5 server only two sites write a corpse field after the object is on the
+        // map — Player.cpp SetFlag(CORPSE_DYNFLAG_LOOTABLE) right after ConvertCorpseToBones,
+        // and LootHandler.cpp RemoveFlag once the looting finishes. Everything else is
+        // written on a fresh object before AddToMap and so ships in the CreateObject.
+        //
+        // That one bit is load-bearing: the bones are created with DynamicFlags = 0 and only
+        // become lootable via the delta below, so dropping it leaves the client with a corpse
+        // it will not offer to loot. Confirmed working in a battleground — insignia looted,
+        // payout equal to character level in copper, matching bones->loot.gold = GetLevel().
+        //
+        // KNOWN, AND NOT A REASON TO REMOVE THIS PROBE: forwarding these deltas also makes
+        // the client emit one CMSG_OBJECT_UPDATE_FAILED per corpse. It was removed once on
+        // that basis and had to be restored. The looting works regardless, so the failure is
+        // cosmetic; the likely cause is that Map::ConvertCorpseToBones gives the new bones
+        // the *same guid counter* as the corpse it replaces, so the client sees destroy and
+        // create on one guid with the delta arriving in that window. Fix the ordering, do not
+        // disable the forwarding.
         var corpse = u.CorpseData;
         if (corpse != null)
         {

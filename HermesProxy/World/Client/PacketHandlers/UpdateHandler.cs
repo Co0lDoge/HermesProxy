@@ -31,7 +31,9 @@ public partial class WorldClient
         // destroyed guid in the set lets later Values deltas through for an object the
         // client no longer has, and it answers CMSG_OBJECT_UPDATE_FAILED. If the object
         // comes back it arrives as a fresh CreateObject, which re-adds it.
-        GetSession().GameState.ClientKnownGuids.Remove(guid);
+        bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
+        World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
+            _melLog, guid.Low, guid.High, "destroy-object", wasKnown);
 
         var companion = GetSession().GameState.SummonedCompanionCreatureGuid;
         if (!companion.IsEmpty() && guid == companion)
@@ -854,7 +856,9 @@ public partial class WorldClient
             updateObject.OutOfRangeGuids.Add(guid);
             // Out-of-range is a destroy as far as the client is concerned — same reasoning
             // as HandleDestroyObject above.
-            GetSession().GameState.ClientKnownGuids.Remove(guid);
+            bool wasKnown = GetSession().GameState.ClientKnownGuids.Remove(guid);
+            World.Logging.ObjectLifecycleLogMessages.KnownGuidRemoved(
+                _melLog, guid.Low, guid.High, "out-of-range", wasKnown);
         }
     }
 

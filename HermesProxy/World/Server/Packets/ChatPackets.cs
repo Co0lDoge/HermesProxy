@@ -270,6 +270,25 @@ public class ChatMessageChannel : ClientPacket
     {
         Language = _worldPacket.ReadUInt32();
         ChannelGUID = _worldPacket.ReadPackedGuid128();
+
+        // V3_4_3 writes the text length as 11 bits, not 9, and follows the two lengths
+        // with a conditional secure-flag bit pair (TC 3.4.3 ChatMessageChannel::Read).
+        // Bit reads are MSB-first, so reading 9 bits of an 11-bit length yields len >> 2 —
+        // "gooday" (6) came through as 1 and the client posted "g". Messages of 1-3
+        // characters read as length 0 and post nothing at all. Same hazard as the one
+        // already handled in ChatMessage and ChatMessageWhisper above; this packet was
+        // missed when those were fixed. Issue #177.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            uint targetLen343 = _worldPacket.ReadBits<uint>(9);
+            uint textLen343 = _worldPacket.ReadBits<uint>(11);
+            if (_worldPacket.HasBit())
+                IsSecure = _worldPacket.HasBit();
+            Target = _worldPacket.ReadString(targetLen343);
+            Text = _worldPacket.ReadString(textLen343);
+            return;
+        }
+
         uint targetLen = _worldPacket.ReadBits<uint>(9);
         uint textLen = _worldPacket.ReadBits<uint>(9);
         Target = _worldPacket.ReadString(targetLen);
@@ -280,6 +299,7 @@ public class ChatMessageChannel : ClientPacket
     public WowGuid128 ChannelGUID;
     public string Text = string.Empty;
     public string Target = string.Empty;
+    public bool IsSecure;
 }
 
 public class ChatMessageWhisper : ClientPacket

@@ -46,4 +46,18 @@ internal static partial class ObjectLifecycleLogMessages
         Message = "[ObjLife] guid no longer known guidLow={GuidLow} guidHigh={GuidHigh} cause={Cause} wasKnown={WasKnown}")]
     public static partial void KnownGuidRemoved(
         ILogger logger, ulong guidLow, ulong guidHigh, string cause, bool wasKnown);
+
+    [LoggerMessage(
+        EventId = 904,
+        Level = LogLevel.Trace,
+        Message = "[ObjLife] toys sync deferred guidLow={GuidLow} guidHigh={GuidHigh} (player CreateObject not yet delivered)")]
+    public static partial void ToysDeferred(
+        ILogger logger, ulong guidLow, ulong guidHigh);
+
+    [LoggerMessage(
+        EventId = 905,
+        Level = LogLevel.Trace,
+        Message = "[ObjLife] toys sync flushed guidLow={GuidLow} guidHigh={GuidHigh} after player CreateObject")]
+    public static partial void ToysFlushed(
+        ILogger logger, ulong guidLow, ulong guidHigh);
 }

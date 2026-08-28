@@ -16,6 +16,9 @@ namespace HermesProxy.World.Client;
 
 public partial class WorldClient
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melObjLifeClient =
+        Log.CreateMelLogger(Log.CategoryServer);
+
     // Handlers for SMSG opcodes coming the legacy world server
     [PacketHandler(Opcode.SMSG_DESTROY_OBJECT)]
     void HandleDestroyObject(WorldPacket packet)
@@ -809,6 +812,24 @@ public partial class WorldClient
                 SendPacketToClient(playerAuraSync);
                 Log.Print(LogType.Trace,
                     $"[PlayerEnterTrace] post-CreateObject AURA_UPDATE_ALL sent for player guid={currentPlayerGuid} populatedAuras={playerAuraSync.Auras.Count}");
+            }
+
+            // The Toy Box lives on ActivePlayerData, so CollectionSync publishes it as a
+            // Values delta on the player guid. Anything the collection sync tried to send
+            // before the player create was deferred (see CollectionSync.SendToys); replay it
+            // once the client has the player object. This deliberately does not hang off
+            // playerCreateInBatch: the player's CreateObject is usually split out into its own
+            // per-create packet above, so by the time we get here it is no longer in
+            // updateObject.ObjectUpdates and that flag reads false on most logins.
+            // ClientKnownGuids is the durable signal — FilterV3_4_3Values registers the guid
+            // whichever packet carried the create.
+            if (GetSession().GameState.PendingToysSync &&
+                GetSession().GameState.ClientKnownGuids.Contains(currentPlayerGuid))
+            {
+                GetSession().GameState.PendingToysSync = false;
+                World.Logging.ObjectLifecycleLogMessages.ToysFlushed(
+                    _melObjLifeClient, currentPlayerGuid.Low, currentPlayerGuid.High);
+                World.Server.CollectionSync.RefreshUsableToys(GetSession());
             }
         }
     }

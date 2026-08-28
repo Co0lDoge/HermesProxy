@@ -131,7 +131,7 @@ public class AccountToyUpdate : ServerPacket
         if (favorites == null)
             return packet;
 
-        foreach (uint itemId in favorites.LearnedToys.OrderBy(id => id))
+        foreach (uint itemId in state.GetUsableToysOrdered())
         {
             bool isFavorite = favorites.FavoriteToys.Contains(itemId);
             packet.Toys.Add((itemId, isFavorite, false));

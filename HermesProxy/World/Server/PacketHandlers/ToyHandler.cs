@@ -41,10 +41,6 @@ public partial class WorldSocket
         if (itemId == 0)
             return;
 
-        var favorites = EnsureCollectionFavorites();
-        if (!favorites.LearnedToys.Contains(itemId))
-            return;
-
         var found = GetSession().GameState.FindItemInInventoryById(itemId);
         if (found == null)
         {

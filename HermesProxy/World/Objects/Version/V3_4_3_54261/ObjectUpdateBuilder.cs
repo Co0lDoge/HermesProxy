@@ -962,24 +962,16 @@ public partial class ObjectUpdateBuilder
             data.WriteInt32(itemId);
         for (int i = 0; i < GameData.Heirlooms.Count; i++)
             data.WriteUInt32(0u);
-        var learnedToys = _gameState.CollectionFavorites?.LearnedToys;
-        if (learnedToys == null || learnedToys.Count == 0)
-            return;
-        var ordered = new int[learnedToys.Count];
-        int n = 0;
-        foreach (uint id in learnedToys)
-            ordered[n++] = (int)id;
-        Array.Sort(ordered);
-        for (int i = 0; i < ordered.Length; i++)
-            data.WriteInt32(ordered[i]);
+        var usableToys = _gameState.GetUsableToysOrdered();
+        for (int i = 0; i < usableToys.Length; i++)
+            data.WriteInt32((int)usableToys[i]);
     }
 
     // Toys.Resize + the seven empty prefixes after it (Transmog through TaskQuests).
     // Missing LearnedToys still writes Resize 0 so the later payload length stays valid.
     internal void WriteCreateActivePlayerToyResizePrefixes(WorldPacket data, ActivePlayerData src)
     {
-        var learnedToys = _gameState.CollectionFavorites?.LearnedToys;
-        data.WriteUInt32(learnedToys != null ? (uint)learnedToys.Count : 0u);
+        data.WriteUInt32((uint)_gameState.GetUsableToysOrdered().Length);
         for (int i = 0; i < 7; i++)
             data.WriteUInt32(0u);
     }

@@ -1,9 +1,10 @@
 using HermesProxy;
+using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
-using System.Linq;
+using System.Collections.Generic;
 
 namespace HermesProxy.World.Server;
 
@@ -103,13 +104,42 @@ public static class CollectionSync
         if (state.CurrentPlayerGuid.IsEmpty() || session.WorldClient == null)
             return;
 
-        var learned = state.CollectionFavorites?.LearnedToys;
+        var usable = state.GetUsableToysOrdered();
+        state.LastSentUsableToys = usable;
         var updateData = new ObjectUpdate(state.CurrentPlayerGuid, UpdateTypeModern.Values, session);
-        updateData.ActivePlayerData.Toys = learned == null
-            ? []
-            : learned.OrderBy(id => id).Select(id => (int)id).ToList();
+        updateData.ActivePlayerData.Toys = new List<int>(usable.Length);
+        for (int i = 0; i < usable.Length; i++)
+            updateData.ActivePlayerData.Toys.Add((int)usable[i]);
         var updatePacket = new UpdateObject(state);
         updatePacket.ObjectUpdates.Add(updateData);
         session.WorldClient.SendPacketToClient(updatePacket);
+    }
+
+    public static void RefreshUsableToys(GlobalSessionData session)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+        var state = session.GameState;
+        if (state.CurrentPlayerGuid.IsEmpty() || session.WorldClient == null)
+            return;
+
+        var usable = state.GetUsableToysOrdered();
+        if (ToysMatch(state.LastSentUsableToys, usable))
+            return;
+
+        SendToys(session);
+        session.WorldClient.SendPacketToClient(AccountToyUpdate.FromSession(state));
+    }
+
+    static bool ToysMatch(uint[] left, uint[] right)
+    {
+        if (left.Length != right.Length)
+            return false;
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (left[i] != right[i])
+                return false;
+        }
+        return true;
     }
 }

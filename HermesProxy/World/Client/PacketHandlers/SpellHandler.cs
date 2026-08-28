@@ -167,6 +167,7 @@ public partial class WorldClient
                 SendPacketToClient(BattlePetJournal.FromSession(GetSession().GameState));
             else if (GameData.MountSpells.Contains(spellId))
                 SendPacketToClient(AccountMountUpdate.FromSession(GetSession().GameState));
+            CollectionSync.RefreshUsableToys(GetSession());
         }
     }
 

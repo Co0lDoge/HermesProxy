@@ -16,6 +16,27 @@ public class ObjectUpdateConstructorTests
     }
 
     [Fact]
+    public void NeedsWmoMapObjectFlag_Type15MoTransport_True()
+    {
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_Type11Transport_True()
+    {
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_DoorOrGeneric_False()
+    {
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(0));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(5));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(33));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(null));
+    }
+
+    [Fact]
     public void Constructor_ItemGuid_InitializesItemAndContainerData()
     {
         var guid = WowGuid128.Create(HighGuidType703.Item, 1);

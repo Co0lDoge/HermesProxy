@@ -104,6 +104,10 @@ public class ObjectUpdate
     // hardcoded for CSV-listed entries.
     private const uint ModernTransportFlag = 0x100000u;
 
+    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId) =>
+        typeId is (sbyte)GameObjectTypeModern.MOTransport
+            or (sbyte)GameObjectTypeModern.Transport;
+
     public void InitializePlaceholders()
     {
         if (CreateData == null)
@@ -196,12 +200,12 @@ public class ObjectUpdate
                         : ((transportTimer % System.UInt16.MaxValue) << 16);
                 }
 
-                // MO_TRANSPORT only. GO_FLAG_MAP_OBJECT tells the client the object is a
-                // WMO map object; setting it on a type 11 elevator, which is an M2 doodad,
-                // makes the client load it as a WMO and render an untextured placeholder.
-                // The old code reached the same conclusion by accident, gating on presence
-                // in CSV/Transports*.csv — which only ever lists type 15 entries.
-                if (GameObjectData.TypeID == (sbyte)GameObjectTypeModern.MOTransport)
+                // GO_FLAG_MAP_OBJECT tells the client the display is a WMO, not an M2.
+                // Type 15 world zeppelins always need it. Type 11 with HighGuid.Transport
+                // is a WMO elevator (SotA / IoC boats, display 8409/8410); without the
+                // flag the 3.4.3 client AVs on create. Type 11 with a GameObject guid
+                // (M2 elevators, ICC sleds) never enters this HighGuid.Transport block.
+                if (NeedsWmoMapObjectFlag(GameObjectData.TypeID))
                     GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
 
                 Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,

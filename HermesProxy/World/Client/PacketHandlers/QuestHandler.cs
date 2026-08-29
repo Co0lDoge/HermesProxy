@@ -565,6 +565,7 @@ public partial class WorldClient
         if (sentCredits.TryGetValue(key, out ushort last) && last == count)
             return;
         sentCredits[key] = count;
+        GetSession().GameState.RememberObjectiveCount(questId, QuestObjectiveType.Item, (int)itemId, (short)count);
 
         Framework.Logging.Log.Print(Framework.Logging.LogType.Server,
             $"[QuestItemCredit] quest={questId} item={itemId} have={have}/{required}");
@@ -637,6 +638,8 @@ public partial class WorldClient
         credit.Count = (ushort)packet.ReadUInt32();
         credit.Required = (ushort)packet.ReadUInt32();
         credit.VictimGUID = packet.ReadGuid().To128(GetSession().GameState);
+        GetSession().GameState.RememberObjectiveCount(
+            credit.QuestID, credit.ObjectiveType, credit.ObjectID, (short)credit.Count);
         SendPacketToClient(credit);
     }
 

@@ -426,6 +426,11 @@ public static class LegacyVersion
         return ((InventoryResultWotLK)result).CastEnum<InventoryResult>();
     }
 
+    public static QuestPushReason ConvertQuestPushReason(uint result)
+    {
+        return ((QuestPushReasonWotLK)result).CastEnum<QuestPushReason>();
+    }
+
     public static int GetQuestLogSize()
     {
         return AddedInVersion(ClientVersionBuild.V2_0_1_6180) ? 25 : 20;  // 2.0.0.5849 Alpha

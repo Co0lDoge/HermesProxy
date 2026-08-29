@@ -202,6 +202,23 @@ public enum QuestFailedReasons
     HasInProgress = 30        // "Progress Bar Objective Not Completed"
 }
 
+// AC 3.3.5 QuestShareMessages. 3.4.3 inserted Dead=5, so AC LogFull=5
+// is the client's "%s is dead" if we pass the byte through.
+public enum QuestPushReasonWotLK
+{
+    Success = 0,
+    Invalid = 1,
+    Accepted = 2,
+    Declined = 3,
+    Busy = 4,
+    LogFull = 5,
+    OnQuest = 6,
+    AlreadyDone = 7,
+    NotDaily = 8,
+    TimerExpired = 9,
+    NotInParty = 10,
+}
+
 public enum QuestPushReason
 {
     Success = 0,

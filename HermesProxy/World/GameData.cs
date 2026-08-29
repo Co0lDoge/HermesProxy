@@ -669,6 +669,15 @@ public static partial class GameData
     {
         var path = Path.Combine("CSV", $"BuildAuthSeeds.csv");
 
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
         foreach (var row in reader)
@@ -689,6 +698,15 @@ public static partial class GameData
     public static void LoadBroadcastTexts()
     {
         var path = Path.Combine("CSV", $"BroadcastTexts{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         foreach (var row in reader)
@@ -711,6 +729,15 @@ public static partial class GameData
     public static void LoadItemDisplayIds()
     {
         var path = Path.Combine("CSV", $"ItemIdToDisplayId{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
         foreach (var row in reader)
@@ -726,6 +753,15 @@ public static partial class GameData
     public static void LoadItemRecords()
     {
         var path = Path.Combine("CSV", $"Item{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, ItemRecord>(EstimateRowCount<ItemRecord>(path));
 
@@ -778,6 +814,15 @@ public static partial class GameData
     public static void LoadItemSparseRecords()
     {
         var path = Path.Combine("CSV", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         foreach (var row in reader)
         {
@@ -917,6 +962,15 @@ public static partial class GameData
     public static void LoadItemAppearance()
     {
         var path = Path.Combine("CSV", $"ItemAppearance{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         ItemAppearanceStore = new Dictionary<uint, ItemAppearance>(EstimateRowCount<ItemAppearance>(path));
         foreach (var row in reader)
@@ -934,6 +988,15 @@ public static partial class GameData
     public static void LoadItemModifiedAppearance()
     {
         var path = Path.Combine("CSV", $"ItemModifiedAppearance{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         ItemModifiedAppearanceStore = new Dictionary<uint, ItemModifiedAppearance>(EstimateRowCount<ItemModifiedAppearance>(path));
         foreach (var row in reader)
@@ -952,6 +1015,15 @@ public static partial class GameData
     public static void LoadItemEffect()
     {
         var path = Path.Combine("CSV", $"ItemEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         foreach (var row in reader)
         {
@@ -973,6 +1045,15 @@ public static partial class GameData
     public static void LoadItemSpellsData()
     {
         var path = Path.Combine("CSV", $"ItemSpellsData{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, ItemSpellsData>(EstimateRowCount<ItemSpellsData>(path));
         foreach (var row in reader)
@@ -990,6 +1071,15 @@ public static partial class GameData
     public static void LoadItemDisplayIdToFileDataId()
     {
         var path = Path.Combine("CSV", $"ItemDisplayIdToFileDataId{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
         foreach (var row in reader)
@@ -1063,6 +1153,15 @@ public static partial class GameData
     public static void LoadBattlegrounds()
     {
         var path = Path.Combine("CSV", "Battlegrounds.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, Battleground>(EstimateRowCount<Battleground>(path));
 
@@ -1093,6 +1192,15 @@ public static partial class GameData
     public static void LoadChatChannels()
     {
         var path = Path.Combine("CSV", "ChatChannels.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, ChatChannel>(EstimateRowCount<ChatChannel>(path));
 
@@ -1110,6 +1218,15 @@ public static partial class GameData
     public static void LoadItemEnchantVisuals()
     {
         var path = Path.Combine("CSV", $"ItemEnchantVisuals{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1125,6 +1242,15 @@ public static partial class GameData
     public static void LoadSpellVisuals()
     {
         var path = Path.Combine("CSV", $"SpellVisuals{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1140,6 +1266,15 @@ public static partial class GameData
     public static void LoadLearnSpells()
     {
         var path = Path.Combine("CSV", "LearnSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1159,6 +1294,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"TotemSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1177,6 +1321,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"Gems{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1332,6 +1485,15 @@ public static partial class GameData
     public static void LoadCreatureDisplayInfo()
     {
         var path = Path.Combine("CSV", "CreatureDisplayInfo.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, CreatureDisplayInfo>(EstimateRowCount<CreatureDisplayInfo>(path));
 
@@ -1348,6 +1510,15 @@ public static partial class GameData
     public static void LoadCreatureModelCollisionHeights()
     {
         var path = Path.Combine("CSV", $"CreatureModelCollisionHeightsModern{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, CreatureModelCollisionHeight>(EstimateRowCount<CreatureModelCollisionHeight>(path));
 
@@ -1365,6 +1536,15 @@ public static partial class GameData
     public static void LoadTransports()
     {
         var path = Path.Combine("CSV", $"Transports{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1380,6 +1560,15 @@ public static partial class GameData
     public static void LoadAreaNames()
     {
         var path = Path.Combine("CSV", $"AreaNames.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, string>(EstimateRowCount(path, 40));
 
@@ -1395,6 +1584,15 @@ public static partial class GameData
     public static void LoadRaceFaction()
     {
         var path = Path.Combine("CSV", $"RaceFaction.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1413,6 +1611,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", "DispellSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1426,6 +1633,15 @@ public static partial class GameData
     public static void LoadSpellEffectPoints()
     {
         var path = Path.Combine("CSV", $"SpellEffectPoints{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
@@ -1456,6 +1672,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"StackableAuras{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1472,6 +1697,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"MountAuras.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1485,6 +1719,15 @@ public static partial class GameData
     public static void LoadMeleeSpells()
     {
         var path = Path.Combine("CSV", $"MeleeSpells{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1498,6 +1741,15 @@ public static partial class GameData
     public static void LoadAutoRepeatSpells()
     {
         var path = Path.Combine("CSV", $"AutoRepeatSpells{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1510,6 +1762,15 @@ public static partial class GameData
     public static void LoadAuraSpells()
     {
         var path = Path.Combine("CSV", $"AuraSpells{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1553,6 +1814,15 @@ public static partial class GameData
     public static void LoadTaxiPaths()
     {
         var path = Path.Combine("CSV", $"TaxiPath{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, TaxiPath>(EstimateRowCount<TaxiPath>(path));
 
@@ -1692,6 +1962,15 @@ public static partial class GameData
     public static void LoadQuestBits()
     {
         var path = Path.Combine("CSV", $"QuestV2_{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
         Dictionary<uint, uint> dict = [];
@@ -1819,6 +2098,15 @@ public static partial class GameData
     {
         var path = Path.Combine("CSV", "Hotfix", $"AreaTrigger{ModernVersion.ExpansionVersion}.csv");
 
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -1889,6 +2177,14 @@ public static partial class GameData
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillLine{ModernVersion.ExpansionVersion}.csv");
 
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -1938,6 +2234,14 @@ public static partial class GameData
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillRaceClassInfo{ModernVersion.ExpansionVersion}.csv");
 
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -1973,6 +2277,14 @@ public static partial class GameData
     public static void LoadSkillLineAbilityHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillLineAbility{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
@@ -2029,6 +2341,14 @@ public static partial class GameData
     public static void LoadSpellHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"Spell{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -2056,6 +2376,14 @@ public static partial class GameData
     public static void LoadSpellNameHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellName{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -2079,6 +2407,14 @@ public static partial class GameData
     public static void LoadSpellLevelsHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellLevels{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -2112,6 +2448,14 @@ public static partial class GameData
     public static void LoadSpellAuraOptionsHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellAuraOptions{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -2151,6 +2495,14 @@ public static partial class GameData
     public static void LoadSpellMiscHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellMisc{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -2222,6 +2574,14 @@ public static partial class GameData
     public static void LoadSpellEffectHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -2313,6 +2673,15 @@ public static partial class GameData
     public static void LoadSpellXSpellVisualHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellXSpellVisual{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
         var dict = new Dictionary<uint, uint>(SpellVisuals);
         var sxsvToVisual = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
@@ -2387,6 +2756,14 @@ public static partial class GameData
     public static void LoadItemSparseHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
@@ -3146,6 +3523,14 @@ public static partial class GameData
     public static void LoadItemHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"Item{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4371,6 +4756,14 @@ public static partial class GameData
     public static void LoadCreatureDisplayInfoHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfo{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4445,6 +4838,14 @@ public static partial class GameData
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfoExtra{ModernVersion.ExpansionVersion}.csv");
 
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4494,6 +4895,14 @@ public static partial class GameData
     public static void LoadCreatureDisplayInfoOptionHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfoOption{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4520,6 +4929,15 @@ public static partial class GameData
     public static void LoadItemEffectHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4559,6 +4977,14 @@ public static partial class GameData
     public static void LoadItemDisplayInfoHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemDisplayInfo{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4643,6 +5069,14 @@ public static partial class GameData
     public static void LoadChrCustomizationChoiceHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ChrCustomizationChoice{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -4690,6 +5124,14 @@ public static partial class GameData
     public static void LoadChrCustomizationOptionHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ChrCustomizationOption{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)

@@ -105,6 +105,19 @@ public partial class WorldSocket
             return;
         }
 
+        if (state.AwaitingQuestRewardId == close.QuestID)
+        {
+            if (state.JustSentRequestItems)
+            {
+                state.JustSentRequestItems = false;
+                WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, close.QuestID, "swallow-request-items");
+                return;
+            }
+
+            ReturnQuestFrameToGossip((uint)close.QuestID, state.AwaitingQuestGiver, "close-request-items");
+            return;
+        }
+
         state.CloseQuestDetails();
     }
 
@@ -113,7 +126,20 @@ public partial class WorldSocket
     {
         var state = GetSession().GameState;
         if (state.AwaitingQuestRewardId != 0)
+        {
+            if (ModernVersion.Build != HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
+                return;
+
+            if (state.JustSentRequestItems)
+            {
+                state.JustSentRequestItems = false;
+                WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, (int)state.AwaitingQuestRewardId, "swallow-request-items");
+                return;
+            }
+
+            ReturnQuestFrameToGossip(state.AwaitingQuestRewardId, state.AwaitingQuestGiver, "cancel-request-items");
             return;
+        }
 
         if (!state.QuestDetailsOpen)
             return;
@@ -140,9 +166,16 @@ public partial class WorldSocket
         var state = GetSession().GameState;
         int questId = (int)(state.LastQuestDetails?.QuestID ?? 0);
         WowGuid128 npc = state.LastQuestDetails?.QuestGiverGUID ?? default;
+        ReturnQuestFrameToGossip((uint)questId, npc, action);
+    }
+
+    void ReturnQuestFrameToGossip(uint questId, WowGuid128 npc, string action)
+    {
+        var state = GetSession().GameState;
         var gossip = state.LastGossip;
         var list = state.LastQuestList;
         state.CloseQuestDetails();
+        state.ClearQuestRewardWait();
 
         SendPacket(new QuestGiverInvalidQuest
         {
@@ -155,7 +188,7 @@ public partial class WorldSocket
         else if (list != null && npc != default && list.QuestGiverGUID == npc)
             SendPacket(list);
 
-        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, action);
+        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, (int)questId, action);
     }
 
 
@@ -187,6 +220,20 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD)]
     void HandleQuestGiverRequestReward(QuestGiverRequestReward quest)
     {
+        var state = GetSession().GameState;
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
+        {
+            var last = state.LastRequestItems;
+            if (last != null && last.QuestID == quest.QuestID && last.StatusFlags != QuestGiverRequestItems.StatusComplete)
+            {
+                SendPacket(last);
+                return;
+            }
+
+            if (state.AwaitingQuestRewardId == quest.QuestID)
+                state.AwaitingQuestRewardId = 0;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);

@@ -36,20 +36,27 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_TALK_TO_GOSSIP)]
     void HandleTalkToGossip(InteractWithNPC interact)
     {
-        // V3_4_3 re-talks to the same NPC right after RequestItems. Replaying the
-        // item list keeps that frame bound; opening a fresh gossip list kills it.
-        // Any other NPC means the turn-in was abandoned, so drop the wait first.
+        // V3_4_3 re-talks to the same NPC right after RequestItems. Replay once
+        // so the frame stays bound. A later talk is Cancel / the multi-quest list.
         if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261
             && GetSession().GameState.AwaitingQuestRewardId != 0)
         {
-            var last = GetSession().GameState.LastRequestItems;
-            if (last != null && interact.CreatureGUID == GetSession().GameState.AwaitingQuestGiver)
+            var state = GetSession().GameState;
+            var last = state.LastRequestItems;
+            if (last != null && interact.CreatureGUID == state.AwaitingQuestGiver)
             {
-                SendPacket(last);
+                if (state.JustSentRequestItems)
+                {
+                    state.JustSentRequestItems = false;
+                    SendPacket(last);
+                    return;
+                }
+
+                ReturnQuestFrameToGossip(state.AwaitingQuestRewardId, state.AwaitingQuestGiver, "decline-request-items");
                 return;
             }
 
-            GetSession().GameState.ClearQuestRewardWait();
+            state.ClearQuestRewardWait();
         }
 
         if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261

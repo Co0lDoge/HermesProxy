@@ -805,6 +805,18 @@ public class QuestGiverRequestItems : ServerPacket
     public uint[] QuestFlags = new uint[2];
     public string QuestTitle = "";
     public string CompletionText = "";
+
+    // 3.4.3.54261 Continue is IsQuestCompletable(). 0xFF sets NoRequestOnComplete
+    // and leaves the button dead. 0xDF / 0xDB are the pair that actually work.
+    public const uint StatusComplete = 0xDF;
+    public const uint StatusIncomplete = 0xDB;
+
+    // AC writes completable 0x00 / 0x03. Gossip icon 4 only means "turn-in row".
+    public static uint StatusForClient(uint acStatusFlags, bool requiredItemsMet)
+    {
+        bool acComplete = (acStatusFlags & 3) != 0;
+        return (requiredItemsMet && acComplete) ? StatusComplete : StatusIncomplete;
+    }
 }
 
 public struct QuestObjectiveCollect

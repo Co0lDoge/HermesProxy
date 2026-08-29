@@ -168,6 +168,7 @@ public sealed class GameSessionData
     public uint AwaitingQuestRewardId;
     public WowGuid128 AwaitingQuestGiver = WowGuid128.Empty;
     public bool JustSentOfferReward;
+    public bool JustSentRequestItems;
     public HermesProxy.World.Server.Packets.QuestGiverRequestItems? LastRequestItems;
     public GossipMessagePkt? LastGossip;
     public QuestGiverQuestListMessage? LastQuestList;
@@ -211,6 +212,7 @@ public sealed class GameSessionData
         AwaitingQuestGiver = WowGuid128.Empty;
         LastRequestItems = null;
         JustSentOfferReward = false;
+        JustSentRequestItems = false;
     }
 
     public void CloseQuestDetails()

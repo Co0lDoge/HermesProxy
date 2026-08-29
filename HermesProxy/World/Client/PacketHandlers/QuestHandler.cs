@@ -1,6 +1,7 @@
 ﻿using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -313,18 +314,34 @@ public partial class WorldClient
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             packet.ReadUInt32(); // Unk flags 4
 
-        // 3.4.3.54261: 223 makes Continue send CMSG (0xFF leaves the button dead).
-        bool canComplete = (statusFlags & 3) != 0
-            || (GetSession().GameState.GossipQuestTypesById.TryGetValue(quest.QuestID, out int gtype) && gtype == 4);
-        quest.StatusFlags = canComplete ? 223u : 219u;
+        bool itemsMet = RequestItemsObjectivesMet(quest);
+        quest.StatusFlags = QuestGiverRequestItems.StatusForClient(statusFlags, itemsMet);
 
-        GetSession().GameState.AwaitingQuestRewardId = quest.QuestID;
-        GetSession().GameState.AwaitingQuestGiver = quest.QuestGiverGUID;
-        GetSession().GameState.LastRequestItems = quest;
-        GetSession().GameState.CloseQuestDetails();
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Server,
-            $"[RequestItems] quest={quest.QuestID} status=0x{quest.StatusFlags:X} flags=0x{quest.QuestFlags[0]:X} collect={quest.Collect.Count} auto={quest.AutoLaunched}");
+        var state = GetSession().GameState;
+        state.AwaitingQuestRewardId = quest.QuestID;
+        state.AwaitingQuestGiver = quest.QuestGiverGUID;
+        state.LastRequestItems = quest;
+        state.JustSentRequestItems = true;
+        state.CloseQuestDetails();
+        WorldClientLogMessages.RequestItems(
+            _melLog, _sourceFile, _netDirRecv,
+            quest.QuestID, statusFlags, quest.StatusFlags, itemsMet, quest.Collect.Count, quest.AutoLaunched);
         SendPacketToClient(quest);
+    }
+
+    bool RequestItemsObjectivesMet(QuestGiverRequestItems quest)
+    {
+        Dictionary<uint, uint>? counts = null;
+        foreach (QuestObjectiveCollect item in quest.Collect)
+        {
+            if (item.ObjectID == 0 || item.Amount == 0)
+                continue;
+            counts ??= GetSession().GameState.GetInventoryItemCounts();
+            counts.TryGetValue(item.ObjectID, out uint have);
+            if (have < item.Amount)
+                return false;
+        }
+        return true;
     }
 
     [PacketHandler(Opcode.SMSG_QUEST_GIVER_OFFER_REWARD_MESSAGE)]
@@ -422,9 +439,9 @@ public partial class WorldClient
         QuestTemplate? questTemplate = GameData.GetQuestTemplate((uint)quest.QuestID);
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
         {
-            // 3.4.3 keeps the completion window up when LaunchQuest is set with no
-            // follow-up quest. Other builds relied on the default-true field.
-            quest.LaunchQuest = questTemplate != null && questTemplate.RewardNextQuest != 0;
+            // AC already pushes the next QUEST_DETAILS on the same NPC.
+            // LaunchQuest makes 3.4.3 HELLO again and the details window opens twice.
+            quest.LaunchQuest = false;
         }
         else if (questTemplate != null && questTemplate.RewardNextQuest == 0)
         {

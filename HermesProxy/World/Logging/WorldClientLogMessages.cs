@@ -168,4 +168,19 @@ internal static partial class WorldClientLogMessages
         string NetDir,
         uint Size,
         ushort OpcodeId);
+
+    [LoggerMessage(
+        EventId = 215,
+        Level = LogLevel.Debug,
+        Message = "RequestItems quest={QuestId} ac=0x{AcFlags:X} status=0x{Status:X} itemsMet={ItemsMet} collect={Collect} auto={Auto}")]
+    public static partial void RequestItems(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint QuestId,
+        uint AcFlags,
+        uint Status,
+        bool ItemsMet,
+        int Collect,
+        bool Auto);
 }

@@ -1762,7 +1762,10 @@ public partial class WorldClient
             int previousId = GetSession().GameState.QuestLogQuestIDs[i];
             GetSession().GameState.QuestLogQuestIDs[i] = questLog.QuestID.Value;
             if (previousId != questLog.QuestID.Value)
+            {
                 GetSession().GameState.ForgetQuestState((uint)previousId);
+                GetSession().GameState.ClearQuestLogProgress(i);
+            }
         }
         if ((updateMaskArray != null && updateMaskArray[index + stateOffset]) ||
             (updateMaskArray == null && updates.ContainsKey(index + stateOffset)))
@@ -1855,6 +1858,13 @@ public partial class WorldClient
             updates.ContainsKey(index + timerOffset);
         if (questLog?.QuestID != null && questLog.QuestID.Value != 0)
         {
+            var state = GetSession().GameState;
+            bool sawProgress =
+                (progressOffset != -1 && updates.ContainsKey(index + progressOffset)) ||
+                (progressOffsetHi != -1 && updates.ContainsKey(index + progressOffsetHi));
+            if (!sawProgress)
+                state.RestoreQuestLogProgress(i, questLog);
+
             QuestTemplate? template = GameData.GetQuestTemplate((uint)questLog.QuestID.Value);
             if (template != null)
             {
@@ -1871,6 +1881,7 @@ public partial class WorldClient
                     questLog.ObjectiveProgress[objective.StorageIndex] = (short)Math.Min(have, (uint)Math.Max(objective.Amount, 1));
                 }
             }
+            state.RememberQuestLogProgress(i, questLog);
         }
 
         if (anyFieldPresent || (questLog != null && questLog.QuestID.HasValue && questLog.QuestID.Value != 0))

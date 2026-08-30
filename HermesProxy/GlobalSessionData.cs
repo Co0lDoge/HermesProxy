@@ -168,6 +168,7 @@ public sealed class GameSessionData
     public uint AwaitingQuestRewardId;
     public WowGuid128 AwaitingQuestGiver = WowGuid128.Empty;
     public bool JustSentOfferReward;
+    public bool JustSentRequestItems;
     public HermesProxy.World.Server.Packets.QuestGiverRequestItems? LastRequestItems;
     public GossipMessagePkt? LastGossip;
     public QuestGiverQuestListMessage? LastQuestList;
@@ -186,6 +187,68 @@ public sealed class GameSessionData
     // produce QuestLog entries with QuestID=null which our writer treats as
     // empty slots — making active quests "disappear" from the V3_4_3 client log.
     public readonly int[] QuestLogQuestIDs = new int[QuestConst.MaxQuestLogSize];
+    // Last known 3.4.3 objective counters per log slot. AC often sends a
+    // StateFlags-only Values update (item turn-in flips complete). The writer
+    // emits all 24 counters, so missing inbound progress would wipe ADD_CREDIT.
+    public readonly short[] QuestLogProgress = new short[QuestConst.MaxQuestLogSize * QuestConst.MaxQuestCounts];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    Span<short> QuestLogProgressSlot(int slot) =>
+        QuestLogProgress.AsSpan(slot * QuestConst.MaxQuestCounts, QuestConst.MaxQuestCounts);
+
+    public void ClearQuestLogProgress(int slot)
+    {
+        if ((uint)slot < (uint)QuestConst.MaxQuestLogSize)
+            QuestLogProgressSlot(slot).Clear();
+    }
+
+    public void RememberQuestLogProgress(int slot, QuestLog log)
+    {
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
+            return;
+        Span<short> dest = QuestLogProgressSlot(slot);
+        for (int i = 0; i < dest.Length; i++)
+        {
+            if (log.ObjectiveProgress[i].HasValue)
+                dest[i] = log.ObjectiveProgress[i]!.Value;
+        }
+    }
+
+    public void RestoreQuestLogProgress(int slot, QuestLog log)
+    {
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
+            return;
+        Span<short> src = QuestLogProgressSlot(slot);
+        for (int i = 0; i < src.Length; i++)
+        {
+            if (!log.ObjectiveProgress[i].HasValue)
+                log.ObjectiveProgress[i] = src[i];
+        }
+    }
+
+    public void RememberObjectiveCount(uint questId, QuestObjectiveType type, int objectId, short count)
+    {
+        for (int slot = 0; slot < QuestLogQuestIDs.Length; slot++)
+        {
+            if (QuestLogQuestIDs[slot] != (int)questId)
+                continue;
+            QuestTemplate? template = GameData.GetQuestTemplate(questId);
+            if (template == null)
+            {
+                if (type != QuestObjectiveType.Item)
+                    QuestLogProgressSlot(slot)[0] = count;
+                return;
+            }
+            foreach (QuestObjective obj in template.Objectives)
+            {
+                if (obj.Type != type || obj.ObjectID != objectId)
+                    continue;
+                if ((uint)obj.StorageIndex < (uint)QuestConst.MaxQuestCounts)
+                    QuestLogProgressSlot(slot)[obj.StorageIndex] = count;
+                return;
+            }
+        }
+    }
 
     // Drops every per-quest cache keyed on a quest that just left the log, so
     // re-accepting it later starts from a clean slate instead of a stale count.
@@ -196,6 +259,11 @@ public sealed class GameSessionData
 
         RequestedQuestTemplateIds.Remove(questId);
         GossipQuestTypesById.Remove(questId);
+        for (int slot = 0; slot < QuestLogQuestIDs.Length; slot++)
+        {
+            if (QuestLogQuestIDs[slot] == (int)questId)
+                ClearQuestLogProgress(slot);
+        }
         if (SentItemQuestCredits.Count == 0)
             return;
         foreach (var key in SentItemQuestCredits.Keys.ToList())
@@ -211,6 +279,7 @@ public sealed class GameSessionData
         AwaitingQuestGiver = WowGuid128.Empty;
         LastRequestItems = null;
         JustSentOfferReward = false;
+        JustSentRequestItems = false;
     }
 
     public void CloseQuestDetails()

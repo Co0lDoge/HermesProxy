@@ -190,27 +190,23 @@ public sealed class GameSessionData
     // Last known 3.4.3 objective counters per log slot. AC often sends a
     // StateFlags-only Values update (item turn-in flips complete). The writer
     // emits all 24 counters, so missing inbound progress would wipe ADD_CREDIT.
-    public readonly short[][] QuestLogProgress = CreateQuestLogProgressCache();
+    public readonly short[] QuestLogProgress = new short[QuestConst.MaxQuestLogSize * QuestConst.MaxQuestCounts];
 
-    static short[][] CreateQuestLogProgressCache()
-    {
-        var cache = new short[QuestConst.MaxQuestLogSize][];
-        for (int i = 0; i < cache.Length; i++)
-            cache[i] = new short[24];
-        return cache;
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    Span<short> QuestLogProgressSlot(int slot) =>
+        QuestLogProgress.AsSpan(slot * QuestConst.MaxQuestCounts, QuestConst.MaxQuestCounts);
 
     public void ClearQuestLogProgress(int slot)
     {
-        if ((uint)slot < (uint)QuestLogProgress.Length)
-            Array.Clear(QuestLogProgress[slot]);
+        if ((uint)slot < (uint)QuestConst.MaxQuestLogSize)
+            QuestLogProgressSlot(slot).Clear();
     }
 
     public void RememberQuestLogProgress(int slot, QuestLog log)
     {
-        if ((uint)slot >= (uint)QuestLogProgress.Length)
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
             return;
-        short[] dest = QuestLogProgress[slot];
+        Span<short> dest = QuestLogProgressSlot(slot);
         for (int i = 0; i < dest.Length; i++)
         {
             if (log.ObjectiveProgress[i].HasValue)
@@ -220,9 +216,9 @@ public sealed class GameSessionData
 
     public void RestoreQuestLogProgress(int slot, QuestLog log)
     {
-        if ((uint)slot >= (uint)QuestLogProgress.Length)
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
             return;
-        short[] src = QuestLogProgress[slot];
+        Span<short> src = QuestLogProgressSlot(slot);
         for (int i = 0; i < src.Length; i++)
         {
             if (!log.ObjectiveProgress[i].HasValue)
@@ -240,15 +236,15 @@ public sealed class GameSessionData
             if (template == null)
             {
                 if (type != QuestObjectiveType.Item)
-                    QuestLogProgress[slot][0] = count;
+                    QuestLogProgressSlot(slot)[0] = count;
                 return;
             }
             foreach (QuestObjective obj in template.Objectives)
             {
                 if (obj.Type != type || obj.ObjectID != objectId)
                     continue;
-                if ((uint)obj.StorageIndex < 24u)
-                    QuestLogProgress[slot][obj.StorageIndex] = count;
+                if ((uint)obj.StorageIndex < (uint)QuestConst.MaxQuestCounts)
+                    QuestLogProgressSlot(slot)[obj.StorageIndex] = count;
                 return;
             }
         }

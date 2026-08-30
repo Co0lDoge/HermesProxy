@@ -309,8 +309,27 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_PUSH_RESULT)]
     void HandleQuestPushResult(QuestPushResultResponse quest)
     {
+        // MSG_QUEST_PUSH_RESULT is one of the few opcodes where the 3.3.5a cores disagree
+        // on the layout, so this is deliberately shaped to satisfy all of them at once
+        // rather than branching on the backend:
+        //
+        //   TrinityCore  Handlers/QuestHandler.cpp     guid >> questId >> msg   (13 bytes)
+        //   AzerothCore  Packets/QuestPackets.cpp:98   guid >> QuestId >> msg   (13 bytes)
+        //   cMaNGOS      Quests/QuestHandler.cpp:651   guid >> msg              ( 9 bytes)
+        //
+        // Sending only guid + msg makes TrinityCore and AzerothCore underflow on questId and
+        // abandon the handler before ClearQuestSharingInfo() / SetDivider(), so the recipient
+        // stays flagged as sharing a quest and every later share comes back "is busy" until
+        // they relog. Sending the real questId instead breaks cMaNGOS, which would read msg
+        // from that field's low byte.
+        //
+        // Both TrinityCore and AzerothCore parse questId and then never use it -- their
+        // handlers only touch the guid and the message -- so putting the result in the
+        // questId slot is harmless there, and little-endian puts it exactly where cMaNGOS
+        // looks for msg. One packet, all three cores.
         WorldPacket packet = new WorldPacket(Opcode.MSG_QUEST_PUSH_RESULT);
         packet.WriteGuid(quest.SenderGUID.To64());
+        packet.WriteUInt32((byte)quest.Result);
         packet.WriteUInt8((byte)quest.Result);
         SendPacketToServer(packet);
     }

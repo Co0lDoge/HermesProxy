@@ -423,7 +423,12 @@ public static class LegacyVersion
         else if (RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
             return ((InventoryResultTBC)result).CastEnum<InventoryResult>();
 
-        return (InventoryResult)result;
+        return ((InventoryResultWotLK)result).CastEnum<InventoryResult>();
+    }
+
+    public static QuestPushReason ConvertQuestPushReason(uint result)
+    {
+        return ((QuestPushReasonWotLK)result).CastEnum<QuestPushReason>();
     }
 
     public static int GetQuestLogSize()

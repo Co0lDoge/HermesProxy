@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
@@ -40,6 +40,17 @@ public class WotlkWorldCrypt : LegacyWorldCrypt
             return;
 
         RC4Process(_recvState, data[..CRYPTED_RECV_LEN]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void DecryptLargeHeaderByte(Span<byte> data)
+    {
+        if (!_isInitialized || data.IsEmpty)
+            return;
+
+        // Deliberately not length-clamped: the caller passes exactly the bytes the server
+        // encrypted beyond the standard header, and the RC4 stream has to consume all of them.
+        RC4Process(_recvState, data);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -1,4 +1,4 @@
-using HermesProxy.World.Enums;
+﻿using HermesProxy.World.Enums;
 using Microsoft.Extensions.Logging;
 
 namespace HermesProxy.World.Logging;
@@ -146,6 +146,28 @@ internal static partial class WorldClientLogMessages
         string NetDir,
         int Count,
         uint FirstEntry);
+
+    [LoggerMessage(
+        EventId = 214,
+        Level = LogLevel.Debug,
+        Message = "Large legacy packet: 5-byte header, size={Size} opcode={OpcodeId}")]
+    public static partial void LargeHeaderReceived(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint Size,
+        ushort OpcodeId);
+
+    [LoggerMessage(
+        EventId = 213,
+        Level = LogLevel.Error,
+        Message = "Malformed legacy header: size={Size} counts fewer bytes than the opcode it must contain (opcode={OpcodeId}). Dropping the connection rather than reading a desynced stream.")]
+    public static partial void MalformedHeaderSize(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint Size,
+        ushort OpcodeId);
 
     [LoggerMessage(
         EventId = 215,

@@ -4055,8 +4055,15 @@ public partial class WorldClient
                 // AnimProgress and have no V3_4_3 equivalent in this field. Strip them
                 // so the client sees a valid bitmask (otherwise it disconnects with
                 // reason=7 right after consuming the SMSG_UPDATE_OBJECT).
+                // Type 11 transports from TrinityCore / AzerothCore are intentionally not
+                // treated as transports here: their high 16 bits carry a path-progress
+                // fraction that free-runs while the server never actually relocates the
+                // object (GameObject::Update advances Transport.PathProgress with the
+                // GameObjectRelocation call commented out), so forwarding it renders the
+                // boat away from where the server places players on it.
+                bool isTransport = guid.IsTransport();
                 bool stripHighBits = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
-                                     && !guid.IsTransport();
+                                     && !isTransport;
                 uint effectiveLegacyRaw = stripHighBits ? (legacyRaw & 0x0000FFFFu) : legacyRaw;
 
                 uint oldValue = 0;
@@ -4066,7 +4073,7 @@ public partial class WorldClient
                     oldValue = (uint)updateData.ObjectData.DynamicFlags;
                     oldDynSource = "cache";
                 }
-                else if (!guid.IsTransport() && ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+                else if (!isTransport && ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
                 {
                     // Pre-V3_4_3 clients still expect AnimProgress in the high 16 bits.
                     oldValue = 4294901760;
@@ -4084,7 +4091,7 @@ public partial class WorldClient
                 // so carry them across verbatim instead of losing them to the remap.
                 GameObjectDynamicFlagsLegacy flags = (GameObjectDynamicFlagsLegacy)(effectiveLegacyRaw & 0x0000FFFFu);
                 uint newLow = (uint)flags.CastFlags<GameObjectDynamicFlagsModern>();
-                uint preservedHigh = guid.IsTransport() ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
+                uint preservedHigh = isTransport ? (effectiveLegacyRaw & 0xFFFF0000u) : 0u;
                 updateData.ObjectData.DynamicFlags = (oldValue | preservedHigh | newLow);
                 Log.Print(LogType.Trace,
                     $"[Trace][GO DYN_FLAGS] guid={guid} entry={updateData.ObjectData.EntryID} " +

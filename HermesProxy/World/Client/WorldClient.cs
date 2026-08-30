@@ -248,7 +248,7 @@ public partial class WorldClient
         return true;
     }
 
-    private readonly byte[] _headerBuffer = new byte[LegacyServerPacketHeader.StructSize];
+    private readonly byte[] _headerBuffer = new byte[LegacyServerPacketHeader.LargeStructSize];
 
     private void HandleDisconnect(string reason)
     {
@@ -272,7 +272,9 @@ public partial class WorldClient
         {
             while (true)
             {
-                if (!await ReceiveBufferFully(_headerBuffer.AsMemory()))
+                // Explicit length: _headerBuffer is sized for the 5-byte large form, so an
+                // unbounded AsMemory() would read one byte too many on every ordinary packet.
+                if (!await ReceiveBufferFully(_headerBuffer.AsMemory(0, LegacyServerPacketHeader.StructSize)))
                 {
                     HandleDisconnect("header");
                     return;
@@ -281,32 +283,68 @@ public partial class WorldClient
                 if (_worldCrypt != null)
                     _worldCrypt.Decrypt(_headerBuffer.AsSpan(0, LegacyServerPacketHeader.StructSize));
 
+                // WotLK cores stretch the size field to 3 bytes for payloads over 0x7FFF and
+                // mark it with 0x80 on the first byte, so the header is 5 bytes rather than 4.
+                // The extra byte has to be pulled and decrypted in stream order: the crypt is
+                // an RC4 keystream, and skipping a byte desyncs every packet that follows, not
+                // just this one. Vanilla and TBC never set the marker (see LegacyServerPacketHeader),
+                // so leave their framing alone rather than trusting a stray high bit.
+                bool largeHeader = LegacyVersion.ExpansionVersion >= 3
+                                   && LegacyServerPacketHeader.IsLargePacket(_headerBuffer[0]);
+
+                if (largeHeader)
+                {
+                    if (!await ReceiveBufferFully(_headerBuffer.AsMemory(LegacyServerPacketHeader.StructSize, 1)))
+                    {
+                        HandleDisconnect("header");
+                        return;
+                    }
+
+                    if (_worldCrypt != null)
+                        _worldCrypt.DecryptLargeHeaderByte(_headerBuffer.AsSpan(LegacyServerPacketHeader.StructSize, 1));
+                }
+
                 LegacyServerPacketHeader header = new();
-                header.Read(_headerBuffer);
-                ushort packetSize = header.Size;
+                header.Read(_headerBuffer, largeHeader);
+                uint packetSize = header.Size;
+
+                if (largeHeader)
+                    WorldClientLogMessages.LargeHeaderReceived(_melLog, _sourceFile, _netDirRecv, packetSize, header.Opcode);
 
                 if (packetSize == 0)
                 {
                     continue;
                 }
 
+                // Size counts the 2-byte opcode. Anything smaller is a malformed frame, and
+                // feeding it to the copy below would rent a buffer and then read a negative
+                // length, so bail out instead of throwing deep inside the socket read.
+                if (packetSize < sizeof(ushort))
+                {
+                    WorldClientLogMessages.MalformedHeaderSize(_melLog, _sourceFile, _netDirRecv, packetSize, header.Opcode);
+                    HandleDisconnect("header");
+                    return;
+                }
+
                 // Rent a possibly-oversized buffer; WorldPacket(byte[], int length, isPooled:true)
                 // tracks the actual payload length and returns it to the pool on Dispose.
-                byte[] buffer = ArrayPool<byte>.Shared.Rent(packetSize);
+                byte[] buffer = ArrayPool<byte>.Shared.Rent((int)packetSize);
                 bool packetOwnsBuffer = false;
                 try
                 {
-                    // copy the opcode into the new buffer
-                    buffer[0] = _headerBuffer[2];
-                    buffer[1] = _headerBuffer[3];
+                    // copy the opcode into the new buffer. The wide header spends an extra
+                    // byte on the size, so the opcode sits one position further along.
+                    int opcodeOffset = largeHeader ? 3 : 2;
+                    buffer[0] = _headerBuffer[opcodeOffset];
+                    buffer[1] = _headerBuffer[opcodeOffset + 1];
 
-                    if (!await ReceiveBufferFully(buffer.AsMemory(2, packetSize - 2)))
+                    if (!await ReceiveBufferFully(buffer.AsMemory(2, (int)packetSize - 2)))
                     {
                         HandleDisconnect("payload");
                         return;
                     }
 
-                    using WorldPacket packet = new WorldPacket(buffer, packetSize, isPooled: true);
+                    using WorldPacket packet = new WorldPacket(buffer, (int)packetSize, isPooled: true);
                     packetOwnsBuffer = true;
                     packet.SetReceiveTime(Environment.TickCount);
                     HandlePacket(packet);

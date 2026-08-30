@@ -658,7 +658,7 @@ public partial class WorldClient
     {
         QuestPushResult quest = new QuestPushResult();
         quest.SenderGUID = packet.ReadGuid().To128(GetSession().GameState);
-        quest.Result = (QuestPushReason)packet.ReadUInt8();
+        quest.Result = LegacyVersion.ConvertQuestPushReason(packet.ReadUInt8());
         SendPacketToClient(quest);
     }
 

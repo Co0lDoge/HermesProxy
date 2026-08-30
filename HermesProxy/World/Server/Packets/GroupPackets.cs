@@ -136,7 +136,18 @@ class PartyInvite : ServerPacket
         _worldPacket.WritePackedGuid128(InviterGUID);
         _worldPacket.WritePackedGuid128(InviterBNetAccountId);
         _worldPacket.WriteUInt16(Unk1);
-        _worldPacket.WriteUInt32(ProposedRoles);
+
+        // WotLK Classic narrowed ProposedRoles to a single byte. V1_14 and V2_5 still read the
+        // full uint32 -- WowPacketParser reads it as a byte in its V3_4_0/V4_4_0 modules and as
+        // an int32 in every earlier one, and CypherCore ClassicWOTLK writes a byte. Sending four
+        // bytes to a 3.4.3 client shifts everything after it, and since InviterName is declared
+        // by the 6-bit length prefix above but written last, the client reads the name from the
+        // wrong offset and renders it empty. Issue #199.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            _worldPacket.WriteUInt8((byte)ProposedRoles);
+        else
+            _worldPacket.WriteUInt32(ProposedRoles);
+
         _worldPacket.WriteInt32(LfgSlots.Count);
         _worldPacket.WriteInt32(LfgCompletedMask);
 

@@ -148,7 +148,7 @@ internal static partial class WorldClientLogMessages
         uint FirstEntry);
 
     [LoggerMessage(
-        EventId = 213,
+        EventId = 215,
         Level = LogLevel.Debug,
         Message = "RequestItems quest={QuestId} ac=0x{AcFlags:X} status=0x{Status:X} itemsMet={ItemsMet} collect={Collect} auto={Auto}")]
     public static partial void RequestItems(

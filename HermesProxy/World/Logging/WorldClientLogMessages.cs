@@ -183,4 +183,15 @@ internal static partial class WorldClientLogMessages
         bool ItemsMet,
         int Collect,
         bool Auto);
+
+    [LoggerMessage(
+        EventId = 216,
+        Level = LogLevel.Debug,
+        Message = "QuestLog progress restored from cache: quest={QuestId} slot={Slot}")]
+    public static partial void QuestProgressRestored(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        uint QuestId,
+        int Slot);
 }

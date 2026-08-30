@@ -4,6 +4,7 @@ using Framework.GameMath;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
@@ -1759,12 +1760,21 @@ public partial class WorldClient
             questLog.QuestID = updates[index].Int32Value;
             // Cache the QuestID for this slot so partial state-only updates can
             // recover it. Mirrors the fork's behavior at WorldClient.cs:10857.
+            //
+            // A partial update can carry this field as 0 for a slot that still holds a
+            // quest — seen one second before a turn-in flips StateFlags. Treat 0 as "no
+            // information": overwriting the slot id with it, or reading it as "a different
+            // quest moved in", drops the cached counters the very next update needs and
+            // the client is told every objective is 0.
             int previousId = GetSession().GameState.QuestLogQuestIDs[i];
-            GetSession().GameState.QuestLogQuestIDs[i] = questLog.QuestID.Value;
-            if (previousId != questLog.QuestID.Value)
+            if (questLog.QuestID.Value != 0)
             {
-                GetSession().GameState.ForgetQuestState((uint)previousId);
-                GetSession().GameState.ClearQuestLogProgress(i);
+                GetSession().GameState.QuestLogQuestIDs[i] = questLog.QuestID.Value;
+                if (previousId != questLog.QuestID.Value)
+                {
+                    GetSession().GameState.ForgetQuestState((uint)previousId);
+                    GetSession().GameState.ClearQuestLogProgress(i);
+                }
             }
         }
         if ((updateMaskArray != null && updateMaskArray[index + stateOffset]) ||
@@ -1859,11 +1869,22 @@ public partial class WorldClient
         if (questLog?.QuestID != null && questLog.QuestID.Value != 0)
         {
             var state = GetSession().GameState;
-            bool sawProgress =
-                (progressOffset != -1 && updates.ContainsKey(index + progressOffset)) ||
-                (progressOffsetHi != -1 && updates.ContainsKey(index + progressOffsetHi));
-            if (!sawProgress)
-                state.RestoreQuestLogProgress(i, questLog);
+            // Unconditional: the restore only fills counters this update left null, i.e. ones
+            // the server did not send. Gating it on "did the update carry the progress field"
+            // was wrong twice over — the presence test did not match the decode's own guard
+            // (which honours updateMaskArray), so at login and at the turn-in flip it reported
+            // progress present while nothing had been decoded, and every counter went out as 0.
+            // V3_4_3 only: its writer emits all 24 counters with `?? 0`, so a counter this
+            // update did not carry would go out as 0. V1_14 / V2_5 write the quest log
+            // sparsely (SetUpdateField per index), where a null is skipped and the client
+            // keeps its own value — restoring there would write over it for no reason.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                int recovered = state.RestoreQuestLogProgress(i, questLog);
+                if (recovered > 0)
+                    WorldClientLogMessages.QuestProgressRestored(
+                        _melLog, _sourceFile, _netDirRecv, (uint)questLog.QuestID.Value, i);
+            }
 
             QuestTemplate? template = GameData.GetQuestTemplate((uint)questLog.QuestID.Value);
             if (template != null)

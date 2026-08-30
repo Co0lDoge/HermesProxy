@@ -214,16 +214,26 @@ public sealed class GameSessionData
         }
     }
 
-    public void RestoreQuestLogProgress(int slot, QuestLog log)
+    /// <summary>
+    /// Fills counters the inbound update did not carry. A null counter means "not in this
+    /// update", so the cached value stands; a counter the server really cleared arrives as 0,
+    /// not null. Returns how many non-zero counters were recovered.
+    /// </summary>
+    public int RestoreQuestLogProgress(int slot, QuestLog log)
     {
         if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
-            return;
+            return 0;
         Span<short> src = QuestLogProgressSlot(slot);
+        int recovered = 0;
         for (int i = 0; i < src.Length; i++)
         {
-            if (!log.ObjectiveProgress[i].HasValue)
-                log.ObjectiveProgress[i] = src[i];
+            if (log.ObjectiveProgress[i].HasValue)
+                continue;
+            log.ObjectiveProgress[i] = src[i];
+            if (src[i] != 0)
+                recovered++;
         }
+        return recovered;
     }
 
     public void RememberObjectiveCount(uint questId, QuestObjectiveType type, int objectId, short count)

@@ -163,6 +163,30 @@ public class ObjectUpdate
             || GameObjectData.TypeID != (sbyte)GameObjectTypeModern.Transport)
             return;
 
+        // Everything below is for backends that do NOT move the transport themselves, and
+        // only the WMO flag above is common to both.
+        //
+        // AzerothCore routes type 11 through StaticTransport -- Battleground::AddObject picks
+        // it via ObjectMgr::IsGameObjectStaticTransport -- which takes HIGHGUID_TRANSPORT and
+        // genuinely relocates the boat and its passengers each tick, with path progress
+        // climbing in GAMEOBJECT_DYNAMIC. The HighGuidType.Transport block below already
+        // forwards that faithfully. TrinityCore instead hands type 11 a plain
+        // HighGuid::GameObject and leaves GameObjectRelocation commented out, so its boat
+        // never moves and needs the parking synthesized below.
+        //
+        // The stop frame and the state translation are a pair and must not be split: the
+        // client indexes _stopFrames[state - GO_STATE_TRANSPORT_STOPPED], so a non-empty
+        // stop-frame array alongside a raw 3.3.5a door state reads index -24 and dies with
+        // ERROR 132. With no stop frame it takes the _stopFrames.empty() path and is safe.
+        // AzerothCore therefore gets neither, which leaves its boat looping its path instead
+        // of docking -- tracked separately, and closing it means translating its state while
+        // keeping its moving boat and riding passengers correct.
+        if (Guid.GetHighType() == HighGuidType.Transport)
+            return;
+
+        if (GameObjectData.Level is > 0)
+            TransportStopFrame = (uint)GameObjectData.Level.Value;
+
         // GO_STATE_TRANSPORT_ACTIVE parks the transport at path position 0 -- its spawn --
         // and GO_STATE_TRANSPORT_STOPPED + n parks it at _stopFrames[n], which for the SotA
         // gunships is the landing beach. That maps cleanly onto the two phases a 3.3.5a core
@@ -189,18 +213,14 @@ public class ObjectUpdate
         // GameObjects and reads as a damaged transport.
         GameObjectData.PercentHealth = 255;
 
-        // GAMEOBJECT_LEVEL on a 3.3.5a core is gameobject_template.data[0], which native
-        // emits as the single stop frame. Native's own Level is a deadline in the game clock
-        // -- it interpolates the transport only while `now < Level` -- and synthesizing that
-        // deadline does make the boat sail, but a sailing boat leaves the player behind:
-        // TrinityCore never relocates it server-side, so nothing attaches the player to the
-        // deck and they drop into the water partway across. Playtested 2026-08-30; the boat
-        // also wandered somewhere invalid and vanished. Leaving Level expired keeps the
-        // transition instantaneous, which is the only variant where players actually arrive.
-        // Reinstating the sail needs the passenger link, and that needs the proxy to
-        // simulate the TransportAnimation path itself, since the server's copy never moves.
-        if (GameObjectData.Level is > 0)
-            TransportStopFrame = (uint)GameObjectData.Level.Value;
+        // Native's Level is a deadline in the game clock -- it interpolates the transport
+        // only while `now < Level` -- and synthesizing that deadline does make the boat sail,
+        // but a sailing boat leaves the player behind on a backend that never relocates it:
+        // nothing attaches the player to the deck and they drop into the water partway
+        // across. Playtested 2026-08-30; the boat also wandered somewhere invalid and
+        // vanished. Leaving Level expired keeps the transition instantaneous, which is the
+        // only variant where players actually arrive. Reinstating the sail needs the
+        // passenger link, which needs the proxy to simulate the path itself.
         GameObjectData.Level = CreateData?.MoveInfo != null
             ? (int)CreateData.MoveInfo.TransportPathTimer
             : null;

@@ -73,6 +73,7 @@ public static partial class GameData
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenSet<uint> WmoGameObjectDisplays = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, string> AreaNames = FrozenDictionary<uint, string>.Empty;
     public static FrozenDictionary<uint, uint> RaceFaction = FrozenDictionary<uint, uint>.Empty;
     public static FrozenSet<uint> DispellSpells = FrozenSet<uint>.Empty;
@@ -440,6 +441,14 @@ public static partial class GameData
         return 0;
     }
 
+    /// <summary>
+    /// True when the GameObject display is a WMO map object rather than an M2 doodad.
+    /// Derived from GameObjectDisplayInfo.ModelName's file extension; see
+    /// CSV/WmoGameObjectDisplays.csv.
+    /// </summary>
+    public static bool IsWmoGameObjectDisplay(int displayId)
+        => displayId > 0 && WmoGameObjectDisplays.Contains((uint)displayId);
+
     public static string GetAreaName(uint id)
     {
         string? name;
@@ -644,6 +653,7 @@ public static partial class GameData
             LoadCreatureDisplayInfo,
             LoadCreatureModelCollisionHeights,
             LoadTransports,
+            LoadWmoGameObjectDisplays,
             LoadAreaNames,
             LoadRaceFaction,
             LoadDispellSpells,
@@ -1555,6 +1565,27 @@ public static partial class GameData
             dict.Add(entry, period);
         }
         TransportPeriods = dict.ToFrozenDictionary();
+    }
+
+    public static void LoadWmoGameObjectDisplays()
+    {
+        var path = Path.Combine("CSV", "WmoGameObjectDisplays.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 6));
+
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+
+        WmoGameObjectDisplays = set.ToFrozenSet();
     }
 
     public static void LoadAreaNames()

@@ -141,7 +141,16 @@ public partial class ObjectUpdateBuilder
             _createBits |= CreateObjectBits.MovementTransport;
         if (hasMoveInfo && !_objectTypeMask.HasAnyFlag(ObjectTypeMask.Unit))
             _createBits |= CreateObjectBits.Stationary;
-        if (hasMoveInfo && (_updateData.Guid.GetHighType() == HighGuidType.Transport || _updateData.Guid.GetHighType() == HighGuidType.MOTransport))
+        // Native 3.4.3 sets ServerTime for both transport types (golden capture: SotA
+        // gunship 193182 has HasServerTime true). Guid high type alone misses type 11 from
+        // a 3.3.5a core, which creates it with HighGuid::GameObject. ServerTime must only
+        // ever travel together with a stop frame -- on its own it hands the client a time
+        // base for a boat TrinityCore never actually relocates (GameObject::Update advances
+        // Transport.PathProgress with the matching GameObjectRelocation commented out), and
+        // the client animates it far from where the server places players.
+        if (hasMoveInfo && (_updateData.Guid.GetHighType() == HighGuidType.Transport
+                            || _updateData.Guid.GetHighType() == HighGuidType.MOTransport
+                            || _updateData.TransportStopFrame is > 0))
             _createBits |= CreateObjectBits.ServerTime;
         if (create != null && create.AutoAttackVictim != null)
             _createBits |= CreateObjectBits.CombatVictim;
@@ -166,7 +175,12 @@ public partial class ObjectUpdateBuilder
 
     private void BuildMovementUpdate(WorldPacket data)
     {
-        const int PauseTimesCount = 0;
+        // Native 3.4.3 ships exactly one stop frame for a type 11 transport (golden capture:
+        // PauseTimesCount 1, PauseTimes [60133]). The stop frame is what makes the client
+        // hold the boat still; with a count of 0 it free-runs the TransportAnimation path.
+        // Type 15 MO_TRANSPORTs loop continuously and carry none.
+        uint stopFrame = _updateData.TransportStopFrame ?? 0u;
+        int PauseTimesCount = stopFrame > 0 ? 1 : 0;
 
         _createBits.WriteCreateBits(data);
 
@@ -253,7 +267,7 @@ public partial class ObjectUpdateBuilder
             data.WriteInt64(_updateData.CreateData.MoveInfo.Rotation.GetPackedRotation());
 
         for (int i = 0; i < PauseTimesCount; i++)
-            data.WriteUInt32(0u);
+            data.WriteUInt32(stopFrame);
 
         if (Has(CreateObjectBits.MovementTransport))
             _updateData.CreateData.MoveInfo.WriteTransportInfoModern(data);

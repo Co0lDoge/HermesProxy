@@ -95,6 +95,12 @@ public class ObjectUpdate
     public PlayerData PlayerData = null!;
     public ActivePlayerData ActivePlayerData = null!;
     public GameObjectData GameObjectData = null!;
+    /// <summary>
+    /// Stop frame for a type 11 transport, emitted as the single PauseTimes entry. Taken
+    /// from the legacy GAMEOBJECT_LEVEL, which on a 3.3.5a core carries
+    /// gameobject_template.data[0] -- the same value native 3.4.3 sends as PauseTimes[0].
+    /// </summary>
+    public uint? TransportStopFrame;
     public DynamicObjectData DynamicObjectData = null!;
     public CorpseData CorpseData = null!;
 
@@ -104,12 +110,109 @@ public class ObjectUpdate
     // hardcoded for CSV-listed entries.
     private const uint ModernTransportFlag = 0x100000u;
 
-    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId) =>
+    // GOState (SharedDefines.h). A 3.3.5a core only ever sends the first two; a modern
+    // client additionally uses GO_STATE_TRANSPORT_ACTIVE = 24 to run a transport along
+    // its path and GO_STATE_TRANSPORT_STOPPED = 25, where 25 + n parks it at stop frame n.
+    private const sbyte LegacyGameObjectStateActive = 0;   // door open / transport moving
+    private const sbyte LegacyGameObjectStateReady = 1;    // door closed / transport parked
+    private const sbyte ModernTransportStateActive = 24;
+    private const sbyte ModernTransportStateStopped = 25;
+
+    /// <summary>
+    /// GO_FLAG_MAP_OBJECT tells the client to load the display as a WMO map object
+    /// instead of an M2 doodad. Type 15 MO_TRANSPORT always is one. Type 11 TRANSPORT
+    /// is mixed, so it has to be split on the display: the Strand of the Ancients and
+    /// Isle of Conquest gunships are WMOs (displays 8409/8410/8587) and AV the V3_4_3
+    /// client without the flag, while Undercity elevators and Deeprun tram cars are
+    /// M2s that render as untextured placeholders *with* it.
+    /// </summary>
+    /// <summary>
+    /// True for the two GameObject types the client drives as transports: type 11
+    /// TRANSPORT and type 15 MO_TRANSPORT. A native 3.4.3 server gives both a
+    /// HighGuid::Transport and sets the ServerTime create bit
+    /// (GameObject.cpp `m_updateFlag.ServerTime = true`); 3.3.5a cores give type 11 a
+    /// plain HighGuid::GameObject instead, so guid high type cannot be used to spot one.
+    /// </summary>
+    internal static bool IsTransportGameObjectType(sbyte? typeId) =>
         typeId is (sbyte)GameObjectTypeModern.MOTransport
             or (sbyte)GameObjectTypeModern.Transport;
 
+    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId, int? displayId) => typeId switch
+    {
+        (sbyte)GameObjectTypeModern.MOTransport => true,
+        (sbyte)GameObjectTypeModern.Transport => displayId is int id && GameData.IsWmoGameObjectDisplay(id),
+        _ => false,
+    };
+
+    /// <summary>
+    /// Reshapes a type 11 GAMEOBJECT_TYPE_TRANSPORT from its 3.3.5a form into what a native
+    /// V3_4_3 server sends. Verified field-by-field against the golden capture
+    /// refs/native-captures/wrathion_343_sota_attacker_boat_20260830.pkt.
+    /// </summary>
+    private void ApplyTransportGameObjectFixups()
+    {
+        if (GameObjectData == null)
+            return;
+
+        // GO_FLAG_MAP_OBJECT has to survive a Values update that rewrites GAMEOBJECT_FLAGS,
+        // not just the create, or the client loses the WMO loader mid-battleground.
+        if (NeedsWmoMapObjectFlag(GameObjectData.TypeID, GameObjectData.DisplayID))
+            GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
+
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
+            || GameObjectData.TypeID != (sbyte)GameObjectTypeModern.Transport)
+            return;
+
+        // GO_STATE_TRANSPORT_ACTIVE parks the transport at path position 0 -- its spawn --
+        // and GO_STATE_TRANSPORT_STOPPED + n parks it at _stopFrames[n], which for the SotA
+        // gunships is the landing beach. That maps cleanly onto the two phases a 3.3.5a core
+        // expresses with the only states it has: GO_STATE_READY during the warm-up, and
+        // GO_STATE_ACTIVE once TrinityCore's StartShips() calls DoorOpen() on the boats.
+        //
+        // The boat jumps between the two rather than sailing. Interpolating requires Level to
+        // be a deadline in the future -- the client animates only while `now < Level`
+        // (GameObject.cpp) -- and the ServerTime we forward is the legacy path-progress
+        // counter rather than the game clock the client compares against, so there is no
+        // shared time base to build that deadline on yet. Players are carried to the beach
+        // and can disembark, which is the gameplay outcome; the sail is cosmetic.
+        //
+        // Forwarding the raw door state is not an option: the client evaluates
+        // `state - GO_STATE_TRANSPORT_ACTIVE`, so a raw 0 is stop-frame index -24 and an
+        // instant ERROR 132 when StartShips() flips the gunships. State and TypeID both come
+        // out of GAMEOBJECT_BYTES_1, so whenever a state change reaches us the type does too.
+        if (GameObjectData.State == LegacyGameObjectStateReady)
+            GameObjectData.State = ModernTransportStateActive;
+        else if (GameObjectData.State == LegacyGameObjectStateActive)
+            GameObjectData.State = ModernTransportStateStopped;
+
+        // Native sends 255; the V3_4_3 PercentHealth default is meant for destructible
+        // GameObjects and reads as a damaged transport.
+        GameObjectData.PercentHealth = 255;
+
+        // GAMEOBJECT_LEVEL on a 3.3.5a core is gameobject_template.data[0], which native
+        // emits as the single stop frame. Native's own Level is a deadline in the game clock
+        // -- it interpolates the transport only while `now < Level` -- and synthesizing that
+        // deadline does make the boat sail, but a sailing boat leaves the player behind:
+        // TrinityCore never relocates it server-side, so nothing attaches the player to the
+        // deck and they drop into the water partway across. Playtested 2026-08-30; the boat
+        // also wandered somewhere invalid and vanished. Leaving Level expired keeps the
+        // transition instantaneous, which is the only variant where players actually arrive.
+        // Reinstating the sail needs the passenger link, and that needs the proxy to
+        // simulate the TransportAnimation path itself, since the server's copy never moves.
+        if (GameObjectData.Level is > 0)
+            TransportStopFrame = (uint)GameObjectData.Level.Value;
+        GameObjectData.Level = CreateData?.MoveInfo != null
+            ? (int)CreateData.MoveInfo.TransportPathTimer
+            : null;
+    }
+
     public void InitializePlaceholders()
     {
+        // Values updates need the transport reshaping too, so this sits above the
+        // CreateData early-out: TrinityCore flips the gunships to GO_STATE_ACTIVE when
+        // StartShips() fires and that arrives as a Values update, with no create alongside.
+        ApplyTransportGameObjectFixups();
+
         if (CreateData == null)
             return;
 
@@ -179,6 +282,7 @@ public class ObjectUpdate
                 GameObjectData.ParentRotation[3] = 1;
             if (GameObjectData.StateAnimID == null)
                 GameObjectData.StateAnimID = ModernVersion.GetGameObjectStateAnimId();
+
             if (Guid.GetHighType() == HighGuidType.Transport)
             {
                 var transportTimer = CreateData.MoveInfo!.TransportPathTimer;
@@ -199,14 +303,6 @@ public class ObjectUpdate
                         ? (((uint)(((float)(transportTimer % period) / (float)period) * System.UInt16.MaxValue)) << 16)
                         : ((transportTimer % System.UInt16.MaxValue) << 16);
                 }
-
-                // GO_FLAG_MAP_OBJECT tells the client the display is a WMO, not an M2.
-                // Type 15 world zeppelins always need it. Type 11 with HighGuid.Transport
-                // is a WMO elevator (SotA / IoC boats, display 8409/8410); without the
-                // flag the 3.4.3 client AVs on create. Type 11 with a GameObject guid
-                // (M2 elevators, ICC sleds) never enters this HighGuid.Transport block.
-                if (NeedsWmoMapObjectFlag(GameObjectData.TypeID))
-                    GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
 
                 Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
                     $"[Transport] guid={Guid} entry={ObjectData.EntryID} typeID={GameObjectData.TypeID} " +

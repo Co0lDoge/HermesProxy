@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <IsTestProject>true</IsTestProject>
@@ -17,6 +17,11 @@
 
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- GameData table the WMO map-object tests assert against; copied so the tests
+         exercise the shipped rows rather than a hand-written stand-in. -->
+    <Content Include="..\HermesProxy\CSV\WmoGameObjectDisplays.csv"
+             Link="CSV\WmoGameObjectDisplays.csv"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

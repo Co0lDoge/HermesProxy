@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
@@ -16,24 +16,39 @@ public class ObjectUpdateConstructorTests
     }
 
     [Fact]
-    public void NeedsWmoMapObjectFlag_Type15MoTransport_True()
+    public void NeedsWmoMapObjectFlag_Type15MoTransport_TrueForAnyDisplay()
     {
-        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, 8409));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, 455));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, null));
     }
 
     [Fact]
-    public void NeedsWmoMapObjectFlag_Type11Transport_True()
+    public void NeedsWmoMapObjectFlag_Type11_SplitsOnDisplay()
     {
-        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport));
+        GameData.LoadWmoGameObjectDisplays();
+        Assert.NotEmpty(GameData.WmoGameObjectDisplays);
+
+        // Strand of the Ancients / Isle of Conquest gunships -- WMO displays.
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8409));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8410));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8587));
+
+        // Undercity elevator / Deeprun tram car -- M2 doodads, must stay unflagged.
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 455));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 3831));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, null));
     }
 
     [Fact]
     public void NeedsWmoMapObjectFlag_DoorOrGeneric_False()
     {
-        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(0));
-        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(5));
-        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(33));
-        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(null));
+        GameData.LoadWmoGameObjectDisplays();
+
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(0, 8409));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(5, 8409));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(33, 8409));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(null, 8409));
     }
 
     [Fact]

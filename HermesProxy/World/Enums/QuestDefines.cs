@@ -202,20 +202,44 @@ public enum QuestFailedReasons
     HasInProgress = 30        // "Progress Bar Objective Not Completed"
 }
 
-public enum QuestPushReason
+// AC 3.3.5 QuestShareMessages. 3.4.3 inserted Dead=5, so AC LogFull=5
+// is the client's "%s is dead" if we pass the byte through.
+public enum QuestPushReasonWotLK
 {
     Success = 0,
     Invalid = 1,
     Accepted = 2,
     Declined = 3,
     Busy = 4,
-    Dead = 5,
-    LogFull = 6,
-    OnQuest = 7,
-    AlreadyDone = 8,
-    NotDaily = 9,
-    TimerExpired = 10,
-    NotInParty = 11,
-    DifferentServerDaily = 12,
-    NotAllowed = 13
+    LogFull = 5,
+    OnQuest = 6,
+    AlreadyDone = 7,
+    NotDaily = 8,
+    TimerExpired = 9,
+    NotInParty = 10,
+}
+
+// V3_4_3.54261 client layout. TooFar = 4 was missing, which shifted every value from
+// Busy onward one too low -- a quest shared with a party member standing next to you
+// reported "is too far away", and a full quest log reported "is busy".
+// Confirmed on the wire against a live 3.4.3 client: 4 -> "is too far away to receive
+// your quest", 5 -> "is busy", 6 -> "is dead". Matches TrinityCore wotlk_classic
+// QuestDef.h; CypherCore's ClassicWOTLK layout (Declined = 4, LogFull = 8) does not fit.
+public enum QuestPushReason
+{
+    Success = 0,
+    Invalid = 1,
+    Accepted = 2,
+    Declined = 3,
+    TooFar = 4,
+    Busy = 5,
+    Dead = 6,
+    LogFull = 7,
+    OnQuest = 8,
+    AlreadyDone = 9,
+    NotDaily = 10,
+    TimerExpired = 11,
+    NotInParty = 12,
+    DifferentServerDaily = 13,
+    NotAllowed = 14
 }

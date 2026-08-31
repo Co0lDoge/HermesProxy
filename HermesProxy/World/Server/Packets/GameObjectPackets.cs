@@ -142,3 +142,33 @@ class FishEscaped : ServerPacket, ISpanWritable
 
     public int WriteToSpan(Span<byte> buffer) => 0;
 }
+
+/// <summary>
+/// SMSG_DESTRUCTIBLE_BUILDING_DAMAGE — the per-hit damage event for a
+/// GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING. It is what drives the floating damage number on a
+/// gate or wall; the health bar itself comes from the separate GameObjectData.PercentHealth
+/// Values update, so without this the building silently loses health.
+///
+/// The legacy 3.3.5a packet carries the same five fields in the same order, so this is a
+/// straight guid-widening translation. Verified against a native 3.4.3 capture
+/// (Target/Caster/Owner/Damage/SpellID).
+/// </summary>
+public class DestructibleBuildingDamage : ServerPacket
+{
+    public DestructibleBuildingDamage() : base(Opcode.SMSG_DESTRUCTIBLE_BUILDING_DAMAGE, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Target);
+        _worldPacket.WritePackedGuid128(Caster);
+        _worldPacket.WritePackedGuid128(Owner);
+        _worldPacket.WriteUInt32(Damage);
+        _worldPacket.WriteInt32(SpellID);
+    }
+
+    public WowGuid128 Target;
+    public WowGuid128 Caster;
+    public WowGuid128 Owner;
+    public uint Damage;
+    public int SpellID;
+}

@@ -426,6 +426,18 @@ public sealed class GameSessionData
     public Dictionary<uint, uint> DailyQuestsDone = [];
     public HashSet<WowGuid128> FlagCarrierGuids = [];
     public Dictionary<WowGuid64, ushort> ObjectSpawnCount = [];
+
+    // GameObjects already established as WMO map objects, i.e. that need GO_FLAG_MAP_OBJECT.
+    // A Values update only carries the type and display when its mask happened to include
+    // GAMEOBJECT_BYTES_1 / GAMEOBJECT_DISPLAYID, so the flag cannot be re-derived from a
+    // delta alone. Only transports and destructible buildings ever land here.
+    public HashSet<WowGuid128> WmoMapObjectGuids = [];
+
+    // gameobject_template.data[18] (destructibleData -> DestructibleModelData.db2 id) keyed by
+    // GameObject entry, harvested from SMSG_QUERY_GAME_OBJECT_RESPONSE as it passes through.
+    // A V3_4_3 client resolves a type-33 object's model through this id and will draw nothing
+    // without a valid one. See the ParentRotation handling in UpdateHandler. Issue #184.
+    public Dictionary<uint, int> DestructibleModelIdByEntry = [];
     public HashSet<WowGuid64> DespawnedGameObjects = [];
     public HashSet<WowGuid128> HunterPetGuids = [];
 

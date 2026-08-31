@@ -702,6 +702,20 @@ public class GameObjectStats
     public uint Type;
     public uint DisplayID;
     public int[] Data = new int[35];
+
+    /// <summary>
+    /// gameobject_template.data index of destructibleBuilding.DestructibleModelRec. Same slot
+    /// on 3.3.5a and 3.4.3.
+    /// </summary>
+    private const int DestructibleModelRecIndex = 18;
+
+    /// <summary>
+    /// DestructibleModelData.db2 id for a GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING. The V3_4_3
+    /// client resolves the object's model through this record rather than through DisplayID,
+    /// and draws nothing without it — see UpdateHandler.SetDestructibleParentRotation and
+    /// issue #184. Meaningless for any other GameObject type.
+    /// </summary>
+    public int DestructibleModelRec => Data[DestructibleModelRecIndex];
     public float Size = 1;
     public List<uint> QuestItems = new();
     public uint ContentTuningId;

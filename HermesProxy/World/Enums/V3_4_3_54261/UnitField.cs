@@ -438,6 +438,12 @@ public enum UnitField
     UNIT_PAD_15,
     [DescriptorCreatePlaceholder(DescriptorType.Float)]
     UNIT_PAD_FLOAT_ZERO,
+    // UnitData::CurrentAreaID (TC 3.4.3 UpdateFields.h:311, bit 111 — WriteCreate puts it
+    // between GlideEventSpeedDivisor and the owner-only ComboTarget). We write 0; a native
+    // server sends the real area id (368 in Echo Isles). Tested against issue #184 by
+    // hardcoding the native value: it made no difference to destructible-building
+    // rendering, so it is a parity gap rather than a bug. Wiring it properly means storing
+    // InitWorldStates.AreaID, which we already receive and discard.
     [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
     UNIT_PAD_16,
 

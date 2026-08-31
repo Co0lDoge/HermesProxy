@@ -428,6 +428,20 @@ public partial class WorldClient
         for (int i = 0; i < 24; i++)
             gameObject.Data[i] = packet.ReadInt32();
 
+        // A V3_4_3 client takes a destructible building's model from DestructibleModelData
+        // rather than from DisplayID, and draws nothing at all without a resolvable record id.
+        // This response is the only place that id crosses the wire, so remember it for the
+        // create path. See UpdateHandler.SetDestructibleParentRotation. Issue #184.
+        //
+        // This handler is shared by every client version; only V3_4_3 consumes the cache, and
+        // type 33 does not exist before WotLK, so gate the bookkeeping to match its one reader.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && gameObject.Type == (uint)GameObjectTypeModern.DestructibleBuilding)
+        {
+            GetSession().GameState.DestructibleModelIdByEntry[response.GameObjectID] =
+                gameObject.DestructibleModelRec;
+        }
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             gameObject.Size = packet.ReadFloat();
 

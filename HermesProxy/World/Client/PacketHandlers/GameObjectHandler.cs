@@ -20,6 +20,26 @@ public partial class WorldClient
         GetSession().GameState.DespawnedGameObjects.Add(guid);
     }
 
+    // The per-hit damage event for a destructible building. Without it the client shows no
+    // floating damage number on a gate or wall — the health bar still moves, because that is
+    // carried separately by the GameObjectData.PercentHealth Values update, so the building
+    // just loses health silently.
+    //
+    // Legacy 3.3.5a and modern carry the same five fields in the same order, so this is a
+    // straight guid widening. Verified against a native 3.4.3 capture of a siege vehicle
+    // hitting a Strand of the Ancients gate.
+    [PacketHandler(Opcode.SMSG_DESTRUCTIBLE_BUILDING_DAMAGE)]
+    void HandleDestructibleBuildingDamage(WorldPacket packet)
+    {
+        DestructibleBuildingDamage damage = new DestructibleBuildingDamage();
+        damage.Target = packet.ReadPackedGuid().To128(GetSession().GameState);
+        damage.Caster = packet.ReadPackedGuid().To128(GetSession().GameState);
+        damage.Owner = packet.ReadPackedGuid().To128(GetSession().GameState);
+        damage.Damage = packet.ReadUInt32();
+        damage.SpellID = packet.ReadInt32();
+        SendPacketToClient(damage);
+    }
+
     [PacketHandler(Opcode.SMSG_GAME_OBJECT_RESET_STATE)]
     void HandleGameObjectResetState(WorldPacket packet)
     {

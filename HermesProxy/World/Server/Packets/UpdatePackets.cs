@@ -137,10 +137,21 @@ public class ObjectUpdate
         typeId is (sbyte)GameObjectTypeModern.MOTransport
             or (sbyte)GameObjectTypeModern.Transport;
 
-    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId, int? displayId) => typeId switch
+    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId, int? displayId, ClientVersionBuild build) => typeId switch
     {
         (sbyte)GameObjectTypeModern.MOTransport => true,
         (sbyte)GameObjectTypeModern.Transport => displayId is int id && GameData.IsWmoGameObjectDisplay(id),
+        // Destructible buildings are WMOs by construction — gates, walls and towers. A
+        // native 3.4.3 server sets the flag on every one of them (verified against a
+        // Strand of the Ancients capture: 8 of 8 carry Flags 0x100020, where we sent
+        // 0x20). Unconditional rather than display-gated like type 11, because the
+        // displays are not in WmoGameObjectDisplays.csv and native does not discriminate.
+        //
+        // Restricted to V3_4_3: type 33 does not exist before 3.0, so a vanilla or TBC
+        // backend can never produce one, and the gate keeps the V1_14 / V2_5 wire
+        // byte-identical even if a client is pointed at a WotLK core by mistake.
+        (sbyte)GameObjectTypeModern.DestructibleBuilding =>
+            build == ClientVersionBuild.V3_4_3_54261,
         _ => false,
     };
 
@@ -156,7 +167,23 @@ public class ObjectUpdate
 
         // GO_FLAG_MAP_OBJECT has to survive a Values update that rewrites GAMEOBJECT_FLAGS,
         // not just the create, or the client loses the WMO loader mid-battleground.
-        if (NeedsWmoMapObjectFlag(GameObjectData.TypeID, GameObjectData.DisplayID))
+        //
+        // Both inputs come out of the update mask, so a Values delta usually carries neither:
+        // TypeID needs GAMEOBJECT_BYTES_1 and DisplayID needs GAMEOBJECT_DISPLAYID. Asking the
+        // test again on such a delta answers "not a WMO" and drops the flag — precisely the
+        // case the guard exists for, since a destructible building's damage transitions
+        // rewrite GAMEOBJECT_FLAGS. So remember the guids that did resolve as map objects on
+        // an update that carried the fields, and re-apply from that. The set only ever takes
+        // transports and destructible buildings, not every gameobject seen.
+        var wmoMapObjects = GlobalSession.GameState.WmoMapObjectGuids;
+        bool needsWmoFlag = NeedsWmoMapObjectFlag(
+            GameObjectData.TypeID, GameObjectData.DisplayID, ModernVersion.Build);
+        if (needsWmoFlag)
+            wmoMapObjects.Add(Guid);
+        else
+            needsWmoFlag = wmoMapObjects.Contains(Guid);
+
+        if (needsWmoFlag)
             GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
 
         if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261

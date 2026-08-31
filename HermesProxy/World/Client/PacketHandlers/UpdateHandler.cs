@@ -20,6 +20,78 @@ public partial class WorldClient
     private static readonly Microsoft.Extensions.Logging.ILogger _melObjLifeClient =
         Log.CreateMelLogger(Log.CategoryServer);
 
+    private static readonly Microsoft.Extensions.Logging.ILogger _melGoFields =
+        Log.CreateMelLogger(Log.CategoryServer);
+
+    /// <summary>
+    /// Writes a quaternion into GameObjectData's pre-allocated ParentRotation buffer. This runs
+    /// once per GameObject create, so it must not allocate.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static void SetParentRotation(float?[] target, float x, float y, float z, float w)
+    {
+        target[0] = x;
+        target[1] = y;
+        target[2] = z;
+        target[3] = w;
+    }
+
+    /// <summary>
+    /// ParentRotation for a destructible building (GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING).
+    ///
+    /// The client does not read this slot's first component as a rotation. It reinterprets the
+    /// float's raw bits as a <c>DestructibleModelData.db2</c> id and draws that record's
+    /// <c>State0WMO</c>. Given an id it cannot resolve it still creates the object — targetable,
+    /// hit-tested, health tooltip — but attaches no geometry and no collision, which is exactly
+    /// how issue #184 presented. We wrote 0 here, which is not a valid id.
+    ///
+    /// This is upstream behaviour, not a guess. TrinityCore 3.4.3 does the same memcpy for the
+    /// same reason (GameObject.cpp, GameObject::Create, GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING):
+    ///
+    ///     // yes, even after the updatefield rewrite this garbage hack is still in client
+    ///     QuaternionData reinterpretId;
+    ///     memcpy(&amp;reinterpretId.x, &amp;m_goInfo->destructibleBuilding.DestructibleModelRec, sizeof(float));
+    ///     SetUpdateFieldValue(... GameObjectData::ParentRotation), reinterpretId);
+    ///
+    /// Independently reproduced on a GM-spawned gate (entry 190722, DisplayID 7906) in Durotar
+    /// with every other field byte-identical to a native capture: bits 0 and 100 drew nothing,
+    /// bits 42 and 43 (both State0WMO 7906) drew the gate, and bits 44 (State0WMO 8208) drew a
+    /// visibly different building — which is what proves it is an id lookup rather than any
+    /// "non-zero" quirk.
+    ///
+    /// A real rotation cannot be expressed here at all; the object's facing travels in the
+    /// create's own rotation block, which we already forward.
+    ///
+    /// The id is gameobject_template.data[18] (destructibleBuilding.DestructibleModelRec),
+    /// learned from SMSG_QUERY_GAME_OBJECT_RESPONSE and cached per entry.
+    /// </summary>
+    private void SetDestructibleParentRotation(float?[] target, uint entry, int? displayId)
+    {
+        // gameobject_template.data[18] is authoritative when we have already seen the entry's
+        // template go past.
+        int modelId;
+        if (entry == 0
+            || !GetSession().GameState.DestructibleModelIdByEntry.TryGetValue(entry, out modelId)
+            || modelId == 0)
+        {
+            // First sight of this entry: the query response has not arrived yet and would land
+            // after this create, leaving the building invisible for the rest of the
+            // battleground. Recover the id from the DisplayID instead — every
+            // DestructibleModelData record names its intact model in State0WMO — and ask for
+            // the template so later creates use the server's own value.
+            RequestTransportTemplate(entry);
+            modelId = displayId is int display
+                ? DestructibleModelLookup.GetModelIdForDisplay(display)
+                : 0;
+        }
+
+        target[0] = modelId != 0 ? BitConverter.Int32BitsToSingle(modelId) : 0f;
+        target[1] = 0f;
+        target[2] = 0f;
+        target[3] = 1f;
+    }
+
     // Handlers for SMSG opcodes coming the legacy world server
     [PacketHandler(Opcode.SMSG_DESTROY_OBJECT)]
     void HandleDestroyObject(WorldPacket packet)
@@ -3915,8 +3987,16 @@ public partial class WorldClient
             // from the legacy 3.3.5 representation. Transports preserve the full 32 bits
             // on every build (TC v3.4.3 keeps the legacy semantics for transport GOs).
             const uint pathProgressMaxHi = 0xFFFF0000u;
+            // V3_4_3 was excluded here after high bits were seen to disconnect the client
+            // with reason=7. A native 3.4.3 Strand of the Ancients capture contradicts that
+            // as a blanket rule: it seeds 0xFFFF0000 on every non-transport GameObject type
+            // present — 1, 3, 5, 6, 7, 8, 10, 19, 22, 30, 31, 32, 33 and 35 — and reserves
+            // real path-progress values for types 11 and 15 alone. Without the seed the
+            // client treats a static GO as a path object stuck at 0% and refuses to draw it,
+            // which is why Strand of the Ancients gates render as nothing (issue #184).
+            // The create-only and non-transport guards below are what keep this off the
+            // packets that caused the original disconnect.
             bool seedHighBits = ModernVersion.ExpansionVersion >= 3
-                                && ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
                                 && updateData.CreateData != null
                                 && !guid.IsTransport();
             if (seedHighBits)
@@ -3952,6 +4032,25 @@ public partial class WorldClient
             // SMSG_UPDATE_OBJECT (collateral Player rejection from byte misalignment).
             if (GAMEOBJECT_ROTATION < 0)
                 GAMEOBJECT_ROTATION = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_PARENTROTATION);
+            // GameObjectData.TypeID is not populated until the GAMEOBJECT_BYTES_1 unpack
+            // much further down, so anything above that point reads null off it and any
+            // type test silently takes the wrong branch. Resolve the type straight out of
+            // the update fields instead, mirroring the two sources that unpack uses and
+            // the precedence it applies: the standalone field wins where a build has one,
+            // otherwise byte 1 of the packed field cMaNGOS / TC335 / AzerothCore send.
+            sbyte? ResolveLegacyGameObjectTypeId()
+            {
+                int typeField = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_TYPE_ID);
+                if (typeField >= 0 && updateMaskArray[typeField])
+                    return (sbyte)updates[typeField].Int32Value;
+
+                int bytes1Field = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_BYTES_1);
+                if (bytes1Field >= 0 && updateMaskArray[bytes1Field])
+                    return (sbyte)((updates[bytes1Field].UInt32Value >> 8) & 0xFF);
+
+                return null;
+            }
+
             if (GAMEOBJECT_ROTATION >= 0 && updateData.CreateData != null && updateData.CreateData.MoveInfo != null)
             {
                 for (int i = 0; i < 4; i++)
@@ -3978,7 +4077,27 @@ public partial class WorldClient
                 if (ModernVersion.ExpansionVersion >= 3)
                 {
                     var rot = updateData.CreateData.MoveInfo.Rotation;
-                    updateData.GameObjectData.ParentRotation = new float?[] { rot.X, rot.Y, rot.Z, rot.W };
+                    // Destructible buildings do not carry a rotation here at all — the client
+                    // reinterprets this field as a DestructibleModelData id. Their facing rides
+                    // in the live rotation block instead. See SetDestructibleParentRotation and
+                    // issue #184. Reached only on V3_4_3 (ExpansionVersion >= 3); type 33 does
+                    // not exist before WotLK, and V1_14 / V2_5 never enter this block.
+                    //
+                    // ParentRotation is a pre-allocated float?[4] on GameObjectData — write
+                    // through it rather than handing it a fresh array per create.
+                    var parentRotation = updateData.GameObjectData.ParentRotation;
+                    if (ResolveLegacyGameObjectTypeId() == (sbyte)GameObjectTypeModern.DestructibleBuilding)
+                    {
+                        SetDestructibleParentRotation(parentRotation,
+                            (uint)(updateData.ObjectData.EntryID ?? 0), updateData.GameObjectData.DisplayID);
+                    }
+                    else
+                    {
+                        parentRotation[0] = rot.X;
+                        parentRotation[1] = rot.Y;
+                        parentRotation[2] = rot.Z;
+                        parentRotation[3] = rot.W;
+                    }
 
                     float ori = updateData.CreateData.MoveInfo.Orientation;
                     updateData.CreateData.MoveInfo.Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, ori);
@@ -4015,13 +4134,13 @@ public partial class WorldClient
                     case tramNorthEastmost:
                     {
                         // Quaternion to rotate the pivot point of the transport movement by 180°
-                        updateData.GameObjectData.ParentRotation = new float?[] { -4.371139E-08f, 0, 1, 0 };
+                        SetParentRotation(updateData.GameObjectData.ParentRotation, -4.371139E-08f, 0f, 1f, 0f);
                         break;
                     }
                     case zangarmarshElevator:
                     {
                         // Super weird angle -88°
-                        updateData.GameObjectData.ParentRotation = new float?[] { 0, 0, -0.69465846f, 0.7193397f };
+                        SetParentRotation(updateData.GameObjectData.ParentRotation, 0f, 0f, -0.69465846f, 0.7193397f);
                         break;
                     }
                 }
@@ -4050,7 +4169,19 @@ public partial class WorldClient
                 // refuse interaction. For 3.4.3 we drop the byte entirely and let the
                 // writer's `?? 0` fallback emit 0. V1_14 / V2_5 still use the legacy
                 // AnimProgress semantics, so propagate byte 3 unchanged for those builds.
-                if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+                //
+                // Destructible buildings (type 33) are the exception: there the legacy byte
+                // genuinely is health — TrinityCore writes Health * 255 / MaxHealth, 255 when
+                // intact, 0 when destroyed. Dropping it told the client every gate, wall and
+                // rack was destroyed, and their destroyed variant draws nothing.
+                //
+                // Pass the byte through unchanged. The field is 0..255 on this build, not the
+                // 0..100 the comment above once assumed: a native 3.4.3 server sends 255 for
+                // every intact type-33 object (verified against a Strand of the Ancients
+                // capture, 8 of 8). Rescaling to 0..100 would leave an intact gate at 100/255.
+                // See issue #184.
+                if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
+                    || updateData.GameObjectData.TypeID == (sbyte)GameObjectTypeModern.DestructibleBuilding)
                     updateData.GameObjectData.PercentHealth = (byte)((packed >> 24) & 0xFF);
             }
             int GAMEOBJECT_STATE = LegacyVersion.GetUpdateField(GameObjectField.GAMEOBJECT_STATE);
@@ -4094,15 +4225,35 @@ public partial class WorldClient
                     oldValue = (uint)updateData.ObjectData.DynamicFlags;
                     oldDynSource = "cache";
                 }
-                else if (!isTransport && ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+                else if (!isTransport)
                 {
-                    // Pre-V3_4_3 clients still expect AnimProgress in the high 16 bits.
-                    oldValue = 4294901760;
+                    // Every non-transport GameObject carries all-ones in the high 16 bits:
+                    // pre-V3_4_3 clients read them as the legacy AnimProgress, and a native
+                    // 3.4.3 server sends the same 0xFFFF0000 on every non-transport type it
+                    // spawns, reserving real path-progress values for types 11 and 15.
+                    //
+                    // V3_4_3 used to be excluded here, which only mattered on a Values
+                    // update: the create-time seed above is guarded on CreateData, so a
+                    // Values update carrying GAMEOBJECT_DYNAMIC took this path with no seed
+                    // and published DynamicFlags=0, overwriting the 0xFFFF0000 the create
+                    // had established one packet earlier. The client then reads the object
+                    // as a path object stuck at 0% and stops drawing it.
+                    //
+                    // That is what kept Strand of the Ancients and Wintergrasp destructible
+                    // buildings invisible (issue #184) long after every field in the create
+                    // block had been matched to native byte for byte — the create was
+                    // always right and was being undone immediately afterwards. Native
+                    // sends no DynamicFlags at all in that Values update.
+                    //
+                    // The legacy high bits are still stripped above via stripHighBits, so
+                    // this restores the constant seed only and never forwards the arbitrary
+                    // AnimProgress values behind the original reason=7 disconnect.
+                    oldValue = pathProgressMaxHi;
                     oldDynSource = "fallback";
                 }
                 else
                 {
-                    oldDynSource = stripHighBits ? "v343NoSeed" : "transport0";
+                    oldDynSource = "transport0";
                 }
 
                 // CastFlags remaps by enum name, so anything outside the named low-16
@@ -4138,6 +4289,31 @@ public partial class WorldClient
             if (GAMEOBJECT_ARTKIT >= 0 && updateMaskArray[GAMEOBJECT_ARTKIT])
             {
                 updateData.GameObjectData.ArtKit = (byte)updates[GAMEOBJECT_ARTKIT].UInt32Value;
+            }
+
+            // Every GameObject update, create and Values alike, in one line and one shape so
+            // the two can be diffed against each other and against a native capture. The
+            // create path already had traces; the Values path did not, which is how a Values
+            // delta republishing DynamicFlags=0 one packet after a byte-correct create stayed
+            // invisible for the whole of issue #184.
+            if (_melGoFields.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            {
+                var go = updateData.GameObjectData;
+                var rot = go.ParentRotation;
+                GameObjectFieldLogMessages.GameObjectFieldsPublished(
+                    _melGoFields,
+                    updateData.CreateData != null ? "Create" : "Values",
+                    guid.Low,
+                    guid.GetEntry(),
+                    go.TypeID ?? -1,
+                    updateData.ObjectData.DynamicFlags ?? 0u,
+                    go.Flags ?? 0u,
+                    go.DisplayID ?? -1,
+                    go.State ?? -1,
+                    go.PercentHealth ?? -1,
+                    rot?[0] ?? 0f, rot?[1] ?? 0f, rot?[2] ?? 0f, rot?[3] ?? 0f,
+                    go.FactionTemplate ?? -1,
+                    go.Level ?? -1);
             }
         }
 

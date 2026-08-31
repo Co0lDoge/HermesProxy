@@ -369,10 +369,10 @@ public class UnitSectionEquivalenceTests
         data.WriteUInt32(0u);
         bool hasChannelObject = unit.ChannelObject.HasValue && !unit.ChannelObject.Value.IsEmpty();
         data.WriteUInt32(hasChannelObject ? 1u : 0u);
-        data.WritePackedGuid128(WowGuid128.Empty);
-        data.WriteInt32(0);
-        data.WriteFloat(0f);
-        data.WriteUInt32(0u);
+        data.WritePackedGuid128(WowGuid128.Empty);  // SkinningOwnerGUID
+        data.WriteInt32(0);                         // FlightCapabilityID
+        data.WriteFloat(0f);                        // GlideEventSpeedDivisor
+        data.WriteUInt32(0u);                       // CurrentAreaID — we do not populate it
         if (isOwner)
             data.WritePackedGuid128(WowGuid128.Empty);
         if (hasChannelObject)

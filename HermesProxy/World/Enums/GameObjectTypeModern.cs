@@ -8,4 +8,5 @@ public enum GameObjectTypeModern : sbyte
 {
     Transport = 11,
     MOTransport = 15,
+    DestructibleBuilding = 33,
 }

@@ -8,16 +8,33 @@ A **native V3_4_3.23121 server** (Wrathion, TrinityCore-derived) is also availab
 
 ## Backend strategy
 
-Both backends are supported. `test-loop2.ps1` (the primary in-game smoke harness) defaults to cMangos and accepts a `-LocalTc` switch:
+**TrinityCore 3.3.5a is the primary backend and AzerothCore is the secondary.** Both are exercised routinely; a V3_4_3 fix is not considered done until it behaves on at least one of them, and a difference between the two is usually the fastest way to tell a proxy bug from a server-policy difference.
 
-| Backend | Address | `test-loop2.ps1` |
-|---|---|---|
-| TrinityCore 3.3.5a (local repack) | `127.0.0.1:3724` | `-LocalTc` |
-| CMaNGOS 3.3.5a | `192.168.88.55:3726` | (default) |
+Note that `test-loop2.ps1` invoked bare still selects cMangos — the parameter default is `-Scenario wrath`, which maps to `192.168.88.55:3726`. That default is a historical leftover, not a statement of priority; in practice the switch is always given.
 
-**TC is the primary dev oracle**: the third-party fork at `X:\Programming\HermesProxy-WOTLK` (origin `github.com/advocaite/HermesProxy-WOTLK`) is built and tested against TrinityCore. Cherry-picking V3_4_3-specific fixes from that fork is a known-good baseline for wire-format work.
+| Backend | Address | `test-loop2.ps1` | `/hermes-run` profile |
+|---|---|---|---|
+| **TrinityCore 3.3.5a** (local repack) — primary | `127.0.0.1:3724` | `-LocalTc` | `wotlk-tc-local` |
+| **AzerothCore 3.3.5a** (Mac mini Docker, upstream, no modules) — secondary | `192.168.88.44:3724` | `-Acore` | `wotlk-acore` |
+| AzerothCore + `mod-playerbots` | `192.168.88.44:3725` | `-AcoreBots` | `wotlk-acore-bots` |
+| TrinityCore + NPCBots (patched build) | `127.0.0.1:3724` | `-LocalTcBots` | `wotlk-tc-npcbots` |
+| CMaNGOS 3.3.5a | `192.168.88.55:3726` | (bare default) | `wotlk-cmangos` |
+| ChromieCraft (public, AC-derived, read-only) | `logon.chromiecraft.com:3724` | `-ChromieCraft` | — |
+| tavernwlk.top (public, AC-derived, read-only) | `login.tavernwlk.top:3724` | `-Tavern` | `wotlk-tavernwlk` |
+| Warmane (public, custom core + Warden) | `logon.warmane.com:3724` | — | `wotlk-warmane` |
+| Wrathion native V3_4_3.23121 — **not a backend** | `127.0.0.1` | `-LocalTc343` | `wotlk-tc-local-343` |
 
-**cMangos** also works for world-enter and most gameplay as of 2026-05-03. It has a small set of opcode-level translation gaps that TC doesn't exhibit (vendor sell, item use, special-ability targeting, quest-log refresh, raid kick) — see "Open issues". These are isolated translation bugs, not a fundamental backend block.
+**Which one to reach for.** TrinityCore is local, fast to restart, and has a GM account, so it is the default for anything needing repeated iteration or `.additem` / `.gm` setup. AzerothCore is the tie-breaker: its playerbots are real `Player` objects, so unlike TC's NPCBots they appear as scoreboard rows, fill a Dungeon Finder queue, and can be partied, duelled and traded with — most of the group, battleground, arena and loot work landed there for exactly that reason. A behaviour present on one core and absent on the other is server policy far more often than it is a translation bug, so check both before opening an issue.
+
+**cMangos** works for world-enter and most gameplay but is no longer routinely tested; its column in the matrix below is mostly `❓` for that reason. It has a set of opcode-level gaps TC does not exhibit (vendor sell, item use, special-ability targeting, quest-log refresh, raid kick, MO_TRANSPORT) — see "Open issues". Those are isolated translation bugs, not a fundamental backend block. Treat a cMangos-only symptom as low priority unless someone reports it.
+
+**Source access for both primaries** — read the core rather than guessing what it sends:
+
+| Core | Local clone |
+|---|---|
+| TrinityCore 3.3.5a / wotlk_classic | `X:\Programming\refs\TrinityCore-wotlk_classic` |
+| AzerothCore | `X:\Programming\refs\azerothcore-wotlk` (origin `github.com/azerothcore/azerothcore-wotlk`) |
+| CMaNGOS WotLK | `X:\Programming\refs\mangos-wotlk` |
 
 ### Native V3_4_3 reference server (Wrathion, build 23121)
 
@@ -39,9 +56,25 @@ Wrathion's listen ports (from its `*.conf` files): BNet `1119`, REST `8081`, Wor
 
 **Test-loop entry point**: `./test-loop2.ps1 -LocalTc343` (skips proxy lifecycle, launches client via `Wrath - 343.lnk` direct to Wrathion). Wrathion's `bnetserver.exe` + `worldserver.exe` must already be running.
 
-### NPCBot-augmented backends
+### Bot-augmented backends
 
-TrinityCore 3.3.5a builds running the [`trickerer/Trinity-Bots`](https://github.com/trickerer/Trinity-Bots) NPCBot patch are supported as of 2026-05-17. Hired companions render textured (player-race model), accept group membership, follow + mount alongside the player, and show HP / mana / level / zone / position deltas in the modern raid frames. Two compatibility patches sit in the V3_4_3 emit path (CLONED flag + Race/Class/Sex stripped for bot creatures — `3d93478`) and one in the legacy reader (bounds-checked `SMSG_PARTY_MEMBER_STATS` parser tolerates NPCBot's mask-truncation wire bug — `5f789d3`). Verified against TC + `trickerer/Trinity-Bots@9a7d2921`. AzerothCore + `mod-playerbots` likely benefits from the same patches (same enum and similar wire layout) but is unverified.
+Both primaries can be populated with bots, and **the two bot projects are not interchangeable**. This is the single most important thing in this section, because picking the wrong one wastes a session chasing a proxy bug that does not exist.
+
+| | TrinityCore + [`trickerer/Trinity-Bots`](https://github.com/trickerer/Trinity-Bots) | AzerothCore + `mod-playerbots` |
+|---|---|---|
+| What a bot **is** | a `Creature` — an NPC wearing a player-race model | a real `Player` session |
+| Switch | `-LocalTcBots` (`127.0.0.1:3724`) | `-AcoreBots` (`192.168.88.44:3725`) |
+| Build / stack | `X:\Programming\TrinityCore_build`, patch at `X:\Programming\refs\Trinity-Bots` | second Docker stack on the Mac mini |
+| Good for | world population, rendering, combat, group frames, movement | anything needing a second **player** |
+| Cannot test | party LFG, duel, arena, party roles, scoreboards — anything server-side that iterates `Player*` | — |
+
+**Trinity-Bots simulates NPCs.** Its bots are `Creature`s, so any server code path that iterates `Player*` or checks `TYPEID_PLAYER` skips them entirely, and the feature silently does nothing — no error, no reply packet, which looks exactly like the proxy dropping a packet. Confirmed cases, each of which cost a rediscovery: `HandleLfgPartyLockInfoRequestOpcode` iterates `GetSource()` and skips self, so a bot-only group leaves the lock map empty and `SMSG_LFG_PARTY_INFO` is never sent; `Spell::EffectDuel` bails on `GetTypeId() != TYPEID_PLAYER` *before* the duel-area check, so `SPELL_FAILED_NO_DUELING` never goes out and the duel no-ops; party role assignment has no real player role to store.
+
+**How to tell in advance:** read the backend handler for the feature before testing it. If it walks a `GroupReference` / `GetSource()` or checks `TYPEID_PLAYER`, Trinity-Bots will not exercise it — go straight to `-AcoreBots`. Proxy-local paths (client↔proxy only) test fine on a solo TC session with no bots at all.
+
+**AzerothCore + `mod-playerbots` is the answer for player-shaped features**, and is where most of the group, battleground, arena, Dungeon Finder and loot work was verified. Because its bots are real `Player` objects they appear as battleground scoreboard rows, fill a Dungeon Finder queue, and can be partied, duelled, traded and master-looted to. The stack is also configured so battlegrounds pop at one player per team in any bracket (`MinPlayersPerTeam = 1` for AV / WSG / AB / EotS / SotA / IC), so BG testing never stalls waiting for population. Module config lives in `playerbots.conf` **inside the container**; the `AC_*` compose env vars are inert for module settings, and battleground templates load at startup so a worldserver restart is required.
+
+**Proxy-side compatibility patches** (added 2026-05-17 for Trinity-Bots, verified against `trickerer/Trinity-Bots@9a7d2921`): two in the V3_4_3 emit path — strip the CLONED flag and the Race/Class/Sex fields for bot creatures so they render textured instead of invisible (`3d93478`) — and one in the legacy reader, a bounds-checked `SMSG_PARTY_MEMBER_STATS` parser that tolerates NPCBot's mask-truncation wire bug (`5f789d3`). Hired companions render with a player-race model, accept group membership, follow and mount alongside the player, and show HP / mana / level / zone / position deltas in the modern raid frames.
 
 ### Fork copy-cat policy
 
@@ -79,57 +112,62 @@ These shipped before any WotLK-specific work; every entry below assumes them.
 
 ---
 
-## What's working / what's not (as of 2026-08-28)
+## What's working / what's not (as of 2026-09-01)
 
 AzerothCore column added 2026-08-24. It is marked ❓ rather than assumed-equal-to-TC: only the rows actually exercised there are ticked. AzerothCore + mod-playerbots runs at 192.168.88.44 (`wotlk-acore.json` / `wotlk-acore-bots.json`), and its playerbots are real `Player` objects, so unlike TC's NPCBots they appear as scoreboard rows and can fill a Dungeon Finder queue.
+
+**2026-09-01 — 15 never-tested subsystems added at the bottom of the table.** These were found by auditing the `V3_4_3_54261` opcode enum and the `[PacketHandler]` registrations against this document: every row below *Transports — zeppelins, boats* had **zero** mentions anywhere in this file and, in most cases, zero commits on the branch. They are `❓` on all three backends because nobody has ever driven them, not because they are known broken — most are already wired end-to-end and simply need a playtest. Three (barber shop, GM ticket, calendar) are genuinely unbridged and marked `❌`.
+
+One audit caveat worth writing down: **a `0u` entry in the modern opcode enum is not by itself evidence of a gap.** The enum carries dead legacy-named aliases next to the live modern names — `CMSG_RAID_READY_CHECK` is `0u` while `CMSG_DO_READY_CHECK` (13877) is mapped and handled; `CMSG_SOCKETSPELLS` is `0u` while `CMSG_SOCKET_GEMS` (13547) is mapped and handled. Always confirm against the `[PacketHandler]` registration before filing a gap.
 
 | Subsystem | TC 3.3.5a | cMangos 3.3.5a | AzerothCore 3.3.5a | Notes |
 |---|---|---|---|---|
 | Auth + char-select | ✅ | ✅ | ✅ | |
 | World-enter + walk + camera | ✅ | ✅ | ✅ | cMangos blocker resolved by recent fixes |
-| New-char first login (post-cinematic movement) | ✅ | ❓ | ✅ | TC: fixed (`21d0e1a` — `CMSG_LOADING_SCREEN_NOTIFY` `0xFFFFFFFF` sentinel was poisoning `CurrentMapId`). Caveat: skipping the cinematic too early can still disconnect (timing-related). cMangos: untested with the TC fix. |
+| New-char first login (post-cinematic movement) | ✅ | ❓ | ✅ | TC: fixed ([`21d0e1a`](https://github.com/Xian55/HermesProxy/commit/21d0e1a) — `CMSG_LOADING_SCREEN_NOTIFY` `0xFFFFFFFF` sentinel was poisoning `CurrentMapId`). Caveat: skipping the cinematic too early can still disconnect (timing-related). cMangos: untested with the TC fix. |
 | Player render (incl. equipped items) | ✅ | ✅ | ✅ | |
 | Combat — auto-attack | ✅ | ✅ | ✅ | packet-split fix (player Values → separate `SMSG_UPDATE_OBJECT`) |
-| Player Armor + magical resistances | ✅ | ❓ | ✅ | `e084fb4` — V3_3_5a `UNIT_FIELD_RESISTANCES` rename fallback; was reading 0 |
+| Player Armor + magical resistances | ✅ | ❓ | ✅ | [`e084fb4`](https://github.com/Xian55/HermesProxy/commit/e084fb4) — V3_3_5a `UNIT_FIELD_RESISTANCES` rename fallback; was reading 0 |
 | Combat — special abilities | ✅ | ❌ | ✅ | cMangos: "invalid target" on e.g. Heroic Strike |
-| Channel spells (cast bar / kneel anim / ESC unblock) | ✅ | ❓ | ✅ | `fc238f9` — wire-format only; cMangos untested |
+| Channel spells (cast bar / kneel anim / ESC unblock) | ✅ | ❓ | ✅ | [`fc238f9`](https://github.com/Xian55/HermesProxy/commit/fc238f9) — wire-format only; cMangos untested |
 | Channel spells (loop animation) | ✅ | ❓ | ✅ | fixed by writing `ChannelObjects` DynamicUpdateField (bit 4) in V3_4_3 ObjectUpdateBuilder; cMangos retest pending |
-| Spell-failure error text (e.g. NotShapeshift) | ✅ | ❓ | ✅ | `ed5e470` — per-build `SpellCastResult` dispatch; was reading wrong text like "in flight" |
-| Flying projectiles (arrows / fireball / missiles) | ✅ | ✅ | ✅ | `49ace55` |
-| Death Knight character create | ✅ | ❓ | ✅ | `43957ff` + `39cf991` — DK class offered in create UI on TC; cMangos untested |
-| Death Knight runes + runic power | ✅ | ❓ | ✅ | rune cooldown swirl, RunicPower in power slot 0 (`d2bb304` + `2664a0e` + `cd93bf6` + `c9223a2`) |
+| Spell-failure error text (e.g. NotShapeshift) | ✅ | ❓ | ✅ | [`ed5e470`](https://github.com/Xian55/HermesProxy/commit/ed5e470) — per-build `SpellCastResult` dispatch; was reading wrong text like "in flight" |
+| Flying projectiles (arrows / fireball / missiles) | ✅ | ✅ | ✅ | [`49ace55`](https://github.com/Xian55/HermesProxy/commit/49ace55) |
+| Death Knight character create | ✅ | ❓ | ✅ | [`43957ff`](https://github.com/Xian55/HermesProxy/commit/43957ff) + [`39cf991`](https://github.com/Xian55/HermesProxy/commit/39cf991) — DK class offered in create UI on TC; cMangos untested |
+| Death Knight runes + runic power | ✅ | ❓ | ✅ | rune cooldown swirl, RunicPower in power slot 0 ([`d2bb304`](https://github.com/Xian55/HermesProxy/commit/d2bb304) + [`2664a0e`](https://github.com/Xian55/HermesProxy/commit/2664a0e) + [`cd93bf6`](https://github.com/Xian55/HermesProxy/commit/cd93bf6) + [`c9223a2`](https://github.com/Xian55/HermesProxy/commit/c9223a2)) |
 | **Death Knight starter quest chain (full)** | ✅ | ❓ | ✅ | 2026-05-10 — entire Acherus → Scarlet Enclave chain completed end-to-end on TC (incl. quest 12779 Frostbrood Vanquisher / *An End to All Things* and quest 12800 *The Lich King's Command* / Light's Hope battle, the two scripted-event quests that needed the bulk of the May session's fixes). cMangos retest pending. **AzerothCore 2026-08-24:** 12779 dragon vehicle and 12801 Light of Dawn both complete (middle of the chain GM-skipped). No hang / OOM / `reason=7` during the mass-spawn. Darion's "I'm ready" gossip renders as a quest parchment (`<Highlord Mograine nods.>` / Continue) — same 3.4.3 gossip-as-quest-frame wrapping, not a script fail. Koltira and Thassarian spawned mid-air and stayed there; likely an AC script placement issue (unconfirmed on native 3.3.5). |
 | Battle Shout / self-aura | ✅ | ✅ | ✅ | |
-| Shapeshift / form cancel (Bear Form verified) | ✅ | ❓ | ✅ | `7cbc550` — re-emit player auras after CreateObject. **AzerothCore 2026-08-24: Druid forms, Warlock Metamorphosis, Shaman Ghost Wolf, Rogue Stealth, and Priest Shadowform all enter and cancel.** |
+| Shapeshift / form cancel (Bear Form verified) | ✅ | ❓ | ✅ | [`7cbc550`](https://github.com/Xian55/HermesProxy/commit/7cbc550) — re-emit player auras after CreateObject. **AzerothCore 2026-08-24: Druid forms, Warlock Metamorphosis, Shaman Ghost Wolf, Rogue Stealth, and Priest Shadowform all enter and cancel.** |
 | Action bar — main bar populated on login | ✅ | ✅ | ✅ | embedded `ActivePlayer.ActionButtons` descriptor populated |
 | Action bar — drag spell / macro / item to any bar (incl. Bar 4) | ✅ | ❓ | ✅ | 2026-05-10 — V3_4_3 wire is `int32 packed (low24=action, high8=type) + uint8 idx`, mis-decoded as `Int16 Action + Int16 Type`. Macros / items / mounts / equipment-sets / companions all collapsed to "spell with truncated id" and crashed the V3_4_3 client (`reason=7`) when rendered on a side bar. Fix is version-gated to V3_4_3 only — V1_14/V2_5 keep the old direct-pack path. cMangos retest pending |
-| Action bar — Always Show Action Bars checkbox persistence | ✅ | ✅ | ✅ | Natural account-data round-trip; the `alwaysShowActionBars` CVar lives in GlobalConfigCache (type 0), which the V3_4_3 client uploads and reads back. **Fixed 2026-08-24 (#121) — verified on AzerothCore and TrinityCore.** Root cause was proxy-side, not the Edit Mode theory: `SendAccountDataTimes` bumped the type-0 timestamp to `now` on every login. Advertising a timestamp *newer* than the client's cache makes the client discard that cache and defer to the server copy, so the config blob applied **after** the action bars were built — checkbox ticked, empty bars unshown until re-toggled. A merely mismatched timestamp is harmless; only server-newer breaks it. The bump existed to deliver synthesised `bottomLeftActionBar` / `rightActionBar` CVars that this client discards every time — its own type-0 upload carries only `alwaysShowActionBars` and `lockActionBars`. Bump and augmenter both removed. Also disproved: the client only ever uploads account-data types 0, 1, 4, 7 and 9 — 13/14 are advertised (count 15) and never touched. |
-| Action bar — Bar 2 / 3 / 4 / 5 visibility checkbox persistence | ✅ | ❓ | ✅ | **Fixed 2026-08-24 (#121) — verified on AzerothCore and TrinityCore.** Same root cause as the row above: the type-0 timestamp bump made the client apply its config after the bars were built, so an *empty* bar never came back until re-toggled — a bar holding an ability always returned, which is what made this look like a contents-vs-visibility split. Visibility now survives a logout/login cycle untouched. The login `CreateObject` carries `MultiActionBars` bits 0-3 and the client adopts them, overriding only bit 4 from its own `alwaysShowActionBars` CVar (observed live: server sent `0x1E`, client corrected to `0x0E` and pushed it back). The old Edit Mode 13/14 theory is disproved, and the Phase 7 augmenter / Phase 8 timestamp bump it motivated are gone. |
+| Action bar — Always Show Action Bars checkbox persistence | ✅ | ✅ | ✅ | Natural account-data round-trip; the `alwaysShowActionBars` CVar lives in GlobalConfigCache (type 0), which the V3_4_3 client uploads and reads back. **Fixed 2026-08-24 ([#121](https://github.com/Xian55/HermesProxy/pull/121)) — verified on AzerothCore and TrinityCore.** Root cause was proxy-side, not the Edit Mode theory: `SendAccountDataTimes` bumped the type-0 timestamp to `now` on every login. Advertising a timestamp *newer* than the client's cache makes the client discard that cache and defer to the server copy, so the config blob applied **after** the action bars were built — checkbox ticked, empty bars unshown until re-toggled. A merely mismatched timestamp is harmless; only server-newer breaks it. The bump existed to deliver synthesised `bottomLeftActionBar` / `rightActionBar` CVars that this client discards every time — its own type-0 upload carries only `alwaysShowActionBars` and `lockActionBars`. Bump and augmenter both removed. Also disproved: the client only ever uploads account-data types 0, 1, 4, 7 and 9 — 13/14 are advertised (count 15) and never touched. |
+| Action bar — Bar 2 / 3 / 4 / 5 visibility checkbox persistence | ✅ | ❓ | ✅ | **Fixed 2026-08-24 ([#121](https://github.com/Xian55/HermesProxy/pull/121)) — verified on AzerothCore and TrinityCore.** Same root cause as the row above: the type-0 timestamp bump made the client apply its config after the bars were built, so an *empty* bar never came back until re-toggled — a bar holding an ability always returned, which is what made this look like a contents-vs-visibility split. Visibility now survives a logout/login cycle untouched. The login `CreateObject` carries `MultiActionBars` bits 0-3 and the client adopts them, overriding only bit 4 from its own `alwaysShowActionBars` CVar (observed live: server sent `0x1E`, client corrected to `0x0E` and pushed it back). The old Edit Mode 13/14 theory is disproved, and the Phase 7 augmenter / Phase 8 timestamp bump it motivated are gone `MultiActionBars` comes from `PLAYER_FIELD_BYTES` byte 2 and is written to the V3_4_3 descriptor at **bit 72 in block 70**, matching the `trinitywotlk` reference — **not** the newer `wotlk_classic` repo's bit 78, which is V3_4_4+. Reading the wrong reference here silently moves the field. The client reads bits 0-3 (the four extra bars) and adopts them at login; bit 4 (`alwaysShowActionBars`) is the one it overrides from its own cached CVar, observed live as the client answering a server `0x1E` with `CMSG_SET_ACTION_BAR_TOGGLES 0x0E`. The client only ever uploads account-data types 0, 1, 4, 7 and 9 — types 13/14 are advertised (count 15, correct for 3.4.3) and never touched, so the Edit Mode enum gap was never the cause. |
 | Sporadic V3_4_3 client `CMSG_LOG_DISCONNECT(reason=7)` under load | ❌ | ❓ | ❓ | Not introduced by anything proxy-side — ring buffer dump in `WorldSocket` (search log for `[ActionBarTrace] reason=7`) shows only routine combat / hotfix-burst traffic before each crash. Client × HermesProxy stability issue, needs client-side telemetry to pin down. **AzerothCore 2026-08-24:** not reproduced in ~20h of play, including Light of Dawn (12801). Not treated as fixed. |
 | Inventory equip / unequip / drag-drop | ✅ | ✅ | ✅ | |
+| Gem socketing — apply gem, socket bonus, prismatic slot | ❓ | ❓ | ✅ | **AzerothCore 2026-08-26**, two fixes. [#146](https://github.com/Xian55/HermesProxy/issues/146) → [`34faac61`](https://github.com/Xian55/HermesProxy/commit/34faac61): the `ItemData.Gems` dynamic field (bit 2, 37 B/element) was never written on V3_4_3, so a socketed gem applied its stats but the socket stayed visually empty even after a relog; the legacy `SMSG_SOCKET_GEMS` (0x50B) reply was also falling through to "no handler". [`7f448b8f`](https://github.com/Xian55/HermesProxy/commit/7f448b8f): `WriteEnchantmentUpdate` wrote the nested `ItemEnchantment` changesMask as **4 bits when `UF::ItemEnchantment` is `HasChangesMask<6>`** — the client read the group gate as clear and silently discarded every live enchantment, which is why weapon enchant text and the Eternal Belt Buckle socket only ever appeared after a relog. Same commit resolves `SMSG_ENCHANTMENTLOG`, which carries no item guid and no slot on the legacy side; the log is now parked and completed from the item update in the same tick instead of guessing the guid by scanning equipped slots for a matching entry. Verified live: socketing, multi-gem growth, relog, `EnchantSlot 6` for the buckle and `4` for a Sock3 gem. **Not retested on TC or cMangos.** ⚠️ **The native oracle is broken here** — see [`3.4.3_Source#1`](https://github.com/Xian55/3.4.3_Source/issues/1): Wrathion's `HandleSocketGems` rejects any gem aimed at a prismatic socket, because the colour check tests `SocketColorToGemTypeMask[GetSocketColor(i)]` and a prismatic socket's colour is `0`, so the "unless it's prismatic" escape hatch can never fire. It drops the request with a bare `return` and no reply packet. AzerothCore accepts it, which is how the difference surfaced. Do **not** use a Wrathion capture as ground truth for prismatic socketing. |
 | Inventory — "on use" items | ✅ | ❌ | ✅ | cMangos: food / consumables don't trigger |
 | Vendor — buy | ✅ | ✅ | ✅ | |
-| Vendor — sell | ✅ | ❌ | ✅ | 2026-05-10 — TC sell-response wire layout fix (`0f92e44`); coppers awarded + slot freed end-to-end on TC. cMangos still goes permanent grey (separate bug, untested today) |
+| Vendor — sell | ✅ | ❌ | ✅ | 2026-05-10 — TC sell-response wire layout fix ([`0f92e44`](https://github.com/Xian55/HermesProxy/commit/0f92e44)); coppers awarded + slot freed end-to-end on TC. cMangos still goes permanent grey (separate bug, untested today) |
 | Professions — secondary train + skinning use | ✅ | ❓ | ✅ | 2026-05-09 — trained Fishing / Skinning / Leatherworking; bought Skinning Knife from vendor; skinned beasts and looted hides on TC. cMangos retest pending |
 | Looting (items + money) | ✅ | ❓ | ✅ | 2026-05-13 — five-part V3_4_3 loot translation: (1) suppress per-item `SMSG_LOOT_RELEASE` that TC 3.3.5 emits during auto-loot and synthesize a single closing one on drain; (2) stamp `Owner = looting player GUID` on outbound `SMSG_LOOT_RELEASE` (modern client validates); (3) per-corpse `RemainingLootSlots` list with legacy-slot translation (TC echoes the clicked slot byte for every drained item instead of the real one); (4) defer the coin-path close synth from `SMSG_LOOT_CLEAR_MONEY` to `SMSG_LOOT_MONEY_NOTIFY` so the modern client gets `COIN_REMOVED → MONEY_NOTIFY → RELEASE` in order; (5) pre-claim gold via injected `CMSG_LOOT_MONEY` before forwarding `CMSG_AUTOSTORE_LOOT_ITEM` and suppress the now-redundant client `CMSG_LOOT_MONEY` to dodge TC's session-close-on-item race that orphaned coins. cMangos retest pending |
 | Group loot — Need / Greed / Pass + roll numbers | ❓ | ❓ | ✅ | **AzerothCore 2026-08-28** ([#155](https://github.com/Xian55/HermesProxy/issues/155) → [#161](https://github.com/Xian55/HermesProxy/pull/161), [#162](https://github.com/Xian55/HermesProxy/issues/162) → [#163](https://github.com/Xian55/HermesProxy/pull/163)). `SMSG_LOOT_START_ROLL` was a `0u` placeholder so the dialog never opened (rolls still resolved in chat). Result packets also lacked `LootObj`, so roll numbers never painted. Play-tested Azjol-Nerub + playerbots, Group Loot / Uncommon: *Stone-Worn Footwraps* (blue) and a green both opened Need / Greed / Pass. Master loot assignment is the next row |
 | Quest log + tracker | ✅ | ⚠️ | ✅ | cMangos: log desyncs on pickup; relog refreshes |
-| Quest pickup + completion | ✅ | ✅ | ✅ | gossip dialogs render fully **AzerothCore 2026-08-24:** title click on an auto-accept quest takes it immediately — that is server policy, not a translation bug (a native 3.3.5a client does the same). Set `Quests.IgnoreAutoAccept = 1` in `worldserver.conf` for manual accept; both TrinityCore and AzerothCore ship it, defaulting to 0. Full turn-in verified on *A Refugee's Quandary* (3361): gossip `?` → RequestItems → Continue → OfferReward → Complete Quest. Window closes; NPC gossip does not reopen. **Decline** on the Accept/Decline details frame works (PR #169, 2026-08-27): 3.4.3 sends `TALK_TO_GOSSIP`, the proxy dismisses the parchment and replays this NPC's cached gossip. Verified gossip givers, HELLO-only (Baros 1646), and daily (blue !) givers. **Cancel** on RequestItems / OfferReward also works (Suzetta Gallina 1431, Wine Shop Advert 332, 2026-08-27). |
+| Quest pickup + completion | ✅ | ✅ | ✅ | gossip dialogs render fully **AzerothCore 2026-08-24:** title click on an auto-accept quest takes it immediately — that is server policy, not a translation bug (a native 3.3.5a client does the same). Set `Quests.IgnoreAutoAccept = 1` in `worldserver.conf` for manual accept; both TrinityCore and AzerothCore ship it, defaulting to 0. Full turn-in verified on *A Refugee's Quandary* (3361): gossip `?` → RequestItems → Continue → OfferReward → Complete Quest. Window closes; NPC gossip does not reopen. **Decline** on the Accept/Decline details frame works (PR [#169](https://github.com/Xian55/HermesProxy/pull/169), 2026-08-27): 3.4.3 sends `TALK_TO_GOSSIP`, the proxy dismisses the parchment and replays this NPC's cached gossip. Verified gossip givers, HELLO-only (Baros 1646), and daily (blue !) givers. **Cancel** on RequestItems / OfferReward also works (Suzetta Gallina 1431, Wine Shop Advert 332, 2026-08-27). |
 | Quest map markers (mini-map + world-map dots) | ✅ | ✅ | ✅ | **AzerothCore 2026-08-24: world-map overlay works (Coldridge / Dwarven Outfitters).** No blue blob on the mini-map — that matches original 3.3.5. |
 | Quest area highlight on world map (POI blob mesh) | ✅ | ❓ | ✅ | 2026-05-17 — blue polygon overlay renders. **AzerothCore 2026-08-24: Coldridge Valley blob renders.** Item POI slots (legacy index 4+) now bind to the modern objective id. Fix at `HermesProxy/World/Client/PacketHandlers/QuestHandler.cs:510`: pass raw legacy WorldMapAreaID through as `UiMapID` (NO `GameData.GetUiMapId` translation — V3_4_3 Classic client keeps legacy WMA semantics in the wire field despite the modern name), map legacy `FloorID` slot to modern `Flags` (not `Unk3`/`Unk4`), discard `Unk3`+`Unk4`, synthesize `QuestObjectiveID` from cached `QuestTemplate.Objectives[StorageIndex==ObjectiveIndex].Id`. Diff-verified against HermesProxy-WOTLK fork (which renders): fork-with-raw-WMA emits `UiMapID=41` for Teldrassil → polygon renders; ours-with-`GetUiMapId` emitted `UiMapID=57` → polygon dropped. Click-to-navigate from quest tracker remains broken on both proxies (legacy quest_template POIContinent/POIx/POIy=0 — see Open issues). cMangos untested |
 | Gossip POI direction marker (guard "where is the trainer") | ✅ | ❓ | ✅ | 2026-05-24 — `SMSG_GOSSIP_POI` V3_4_3 wire-format fix. Talking to a guard NPC and selecting a "point me to NPC X" gossip option now drops the red-flag map marker. Pre-fix the marker never appeared: `GossipPOI.Write`/`WriteToSpan` emitted the retail/Shadowlands layout (`Flags` as a 14-bit field at the end), but the 3.4.3 client expects a flat layout with `Flags` as a full `uint32` in field position 2 — the misplaced field shifted the whole packet and the client silently dropped it. Matches Wrathion 3.4.3 `GossipPOI::Write` (`refs/3.4.3_Source/.../NPCPackets.cpp:219`): `int32 ID, int32 Flags, Pos(XYZ), int32 Icon, int32 Importance, int32 WMOGroupID, WriteBits(Name.len,6), FlushBits, WriteString(Name)`. Version-gated on `ModernVersion.Build == V3_4_3_54261`; V1_14/V2_5 keep the 14-bit-Flags path. Legacy reader unchanged (3.3.5a wire has no ID/Z/WMOGroupID → stay 0; client only needs X/Y/Icon/Name). cMangos untested |
 | Hotfix data | ✅ | ✅ | ✅ | wago.tools build 3.4.3.54261, ~700K records. **AzerothCore 2026-08-24:** warm-cache login sends `SMSG_AVAILABLE_HOTFIXES`; client sends 0 `CMSG_HOTFIX_REQUEST` and the proxy emits 0 `SMSG_HOTFIX_CONNECT`. Handshake is proxy-local (same CSVs as TC). The only bulk queries were TactKey (`NotPublic`). |
 | Static GameObjects | ✅ | ✅ | ✅ | mailboxes / doodads / chests |
-| Quest-objective GameObject interaction | ✅ | ❓ | ✅ | `39cf991` — DK runeblade rack (object 190584, quest 12619) interacts and advances quest state on TC. **AzerothCore 2026-08-24:** Felix's Box / Chest / Bucket (quest 3361) loot and advance. Tracker uses `SMSG_QUEST_UPDATE_ADD_CREDIT` (AC `ADD_ITEM` is empty). cMangos untested |
-| Spell-click NPCs ("right-click to ride") | ✅ | ❓ | ✅ | 2026-05-10 — `52f07c9` wires `CMSG_SPELL_CLICK` into the existing HandleInteractWithNPC stack; Acherus Scourge Gryphon (DK starter chain) and similar click-to-mount NPCs respond on TC. Was being silently dropped. cMangos untested |
-| Vehicles — mount + dismount + seat-change + action button | ✅ | ❓ | ✅ | 2026-05-10 — three-part fix for *Grand Theft Palomino* (quest 12680) on TC: Leave Vehicle button (`d0dd989` rewrites `CMSG_MOVE_DISMISS_VEHICLE` → `CMSG_REQUEST_VEHICLE_EXIT`), missing PREV/NEXT/EXIT seat opcodes (`d0dd989`), and vehicle action-button slot translation (`02e9e51` — TC packs `slot_index_in_UI` in the high byte, not a CharmInfo state). cMangos untested |
-| Trajectory casts (cannons / arc projectiles) | ✅ | ❓ | ✅ | 2026-05-10 — `3931123` writes the 9-byte trailer (elevation + speed + has-movement-data) when `cast_flags & 0x02` set; verified on TC with Scarlet Cannon (spell 52435). Without it the legacy 3.3.5 `HandleClientCastFlags` silently dropped the cast. cMangos untested |
-| Active-mover handover (vehicle / charm / Eye of Acherus) | ✅ | ❓ | ✅ | 2026-05-10 — `95aacb6` synthesises `SMSG_MOVE_SET_ACTIVE_MOVER` alongside `SMSG_CONTROL_UPDATE`; without it, mid-session control transfers (Eye of Acherus possess, vehicles, charm) left WASD swallowed on TC. cMangos untested AzerothCore 2026-08-24: verified on two of the three cases — driving a Salvaged Demolisher (vehicle) and Mind Control via `.cast 605` on a low-level humanoid (charm). Control transfers and returns cleanly in both. Eye of Acherus not retested. |
+| Quest-objective GameObject interaction | ✅ | ❓ | ✅ | [`39cf991`](https://github.com/Xian55/HermesProxy/commit/39cf991) — DK runeblade rack (object 190584, quest 12619) interacts and advances quest state on TC. **AzerothCore 2026-08-24:** Felix's Box / Chest / Bucket (quest 3361) loot and advance. Tracker uses `SMSG_QUEST_UPDATE_ADD_CREDIT` (AC `ADD_ITEM` is empty). cMangos untested |
+| Spell-click NPCs ("right-click to ride") | ✅ | ❓ | ✅ | 2026-05-10 — [`52f07c9`](https://github.com/Xian55/HermesProxy/commit/52f07c9) wires `CMSG_SPELL_CLICK` into the existing HandleInteractWithNPC stack; Acherus Scourge Gryphon (DK starter chain) and similar click-to-mount NPCs respond on TC. Was being silently dropped. cMangos untested |
+| Vehicles — mount + dismount + seat-change + action button | ✅ | ❓ | ✅ | 2026-05-10 — three-part fix for *Grand Theft Palomino* (quest 12680) on TC: Leave Vehicle button ([`d0dd989`](https://github.com/Xian55/HermesProxy/commit/d0dd989) rewrites `CMSG_MOVE_DISMISS_VEHICLE` → `CMSG_REQUEST_VEHICLE_EXIT`), missing PREV/NEXT/EXIT seat opcodes ([`d0dd989`](https://github.com/Xian55/HermesProxy/commit/d0dd989)), and vehicle action-button slot translation ([`02e9e51`](https://github.com/Xian55/HermesProxy/commit/02e9e51) — TC packs `slot_index_in_UI` in the high byte, not a CharmInfo state). cMangos untested |
+| Trajectory casts (cannons / arc projectiles) | ✅ | ❓ | ✅ | 2026-05-10 — [`3931123`](https://github.com/Xian55/HermesProxy/commit/3931123) writes the 9-byte trailer (elevation + speed + has-movement-data) when `cast_flags & 0x02` set; verified on TC with Scarlet Cannon (spell 52435). Without it the legacy 3.3.5 `HandleClientCastFlags` silently dropped the cast. cMangos untested |
+| Active-mover handover (vehicle / charm / Eye of Acherus) | ✅ | ❓ | ✅ | 2026-05-10 — [`95aacb6`](https://github.com/Xian55/HermesProxy/commit/95aacb6) synthesises `SMSG_MOVE_SET_ACTIVE_MOVER` alongside `SMSG_CONTROL_UPDATE`; without it, mid-session control transfers (Eye of Acherus possess, vehicles, charm) left WASD swallowed on TC. cMangos untested AzerothCore 2026-08-24: verified on two of the three cases — driving a Salvaged Demolisher (vehicle) and Mind Control via `.cast 605` on a low-level humanoid (charm). Control transfers and returns cleanly in both. Eye of Acherus not retested. |
 | Flightmaster — discover node + open Taxi window + fly route | ✅ | ❓ | ✅ | 2026-05-16 — `SMSG_SHOW_TAXI_NODES` V3_4_3 wire-format fix. Talking to a flightmaster (via gossip or NPCs that only offer taxi) opens the Taxi window with all previously discovered nodes; clicking a node activates the flight on TC end-to-end. Pre-fix the window was blank — proxy was writing `count = byte_length` after `CleanupNodes` trim, but the V3_4_3 client expects `count = byte_length / 8` (uint64 blocks) followed by a fixed multiple-of-8 byte payload (56 bytes for V3_4_3's baked TaxiNodes.db2). Trimmed payload caused the client to read garbage from the next packet as taxi-mask bits. Version-gated on `ModernVersion.Build == V3_4_3_54261`; V1_14/V2_5 keep prior behaviour. cMangos retest pending |
 | Auras / aura ticks | ✅ | ✅ | ✅ | live ticks animate |
 | Spellbook (incl. trainer learning) | ✅ | ✅ | ✅ | |
-| Pet — summon, portrait, attack/follow/stay | ✅ | ❓ | ✅ | `f8f784e` Pet GUID translation; `913818c` ActionButton/Action wire encoding; `de77eee` UI binding (race + ordering). cMangos retest pending — full pet stack not re-verified after `de77eee` |
-| Pet — spellbook + action bar | ⚠️ | ❓ | ✅ | `fdb9cff` forwards `SMSG_PET_LEARNED_SPELLS` / `SMSG_PET_UNLEARNED_SPELLS`; pet ActionButtons synthesized from PetSpells body. **Known gap (TC):** Cat pet's *Prowl* doesn't appear on the action bar. cMangos retest pending |
+| Pet — summon, portrait, attack/follow/stay | ✅ | ❓ | ✅ | [`f8f784e`](https://github.com/Xian55/HermesProxy/commit/f8f784e) Pet GUID translation; [`913818c`](https://github.com/Xian55/HermesProxy/commit/913818c) ActionButton/Action wire encoding; [`de77eee`](https://github.com/Xian55/HermesProxy/commit/de77eee) UI binding (race + ordering). cMangos retest pending — full pet stack not re-verified after [`de77eee`](https://github.com/Xian55/HermesProxy/commit/de77eee) |
+| Pet — spellbook + action bar | ⚠️ | ❓ | ✅ | [`fdb9cff`](https://github.com/Xian55/HermesProxy/commit/fdb9cff) forwards `SMSG_PET_LEARNED_SPELLS` / `SMSG_PET_UNLEARNED_SPELLS`; pet ActionButtons synthesized from PetSpells body. **Known gap (TC):** Cat pet's *Prowl* doesn't appear on the action bar. cMangos retest pending |
 | Pet — character-sheet stats | ✅ | ❓ | ✅ | follow-up Values UpdateObject (PetStatsValuesSynth) re-emits IsOwner-gated stats (Stats[5] / AP / MinDamage / Resistances). cMangos retest pending |
 | Pet — spellbook "Pet" tab in player UI | ❌ | ❓ | ✅ | 6 iterations of capture-diff against CypherCore native didn't crack it (count, Specialization, slot encoding, ordering all matched native). Parked — see "Open issues" |
 | Talent panel — unspent talent point counter + tree population | ✅ | ✅ | ✅ | translates legacy SMSG_UPDATE_TALENT_DATA → modern (V3_4_3 Rank=u8, no PrimarySpecialization) with cache for relog re-emit |
@@ -137,37 +175,52 @@ AzerothCore column added 2026-08-24. It is marked ❓ rather than assumed-equal-
 | Pet talents | ✅ | ❓ | ✅ | CMSG_PET_LEARN_TALENT (modern 0x3554 → legacy 0x47A) translates with PetGUID modern→legacy; learn UI works on TC |
 | Glyphs — display + slot unlock | ✅ | ❓ | ✅ | reads PLAYER_GLYPHS_ENABLED bitmask + PLAYER_FIELD_GLYPHS_1..6 from legacy update fields; emits SMSG_ACTIVE_GLYPHS with (SpellID, GlyphID) pairs via GlyphProperties3.csv lookup |
 | Glyphs — slot unlock at L15/30/50/70/80 mid-session | ✅ | ❓ | ✅ | 2026-05-23 — `GlyphsEnabledDirty` flag + `ApplyActivePlayerGlyphsEnabledMaskMutator` setting bits 102 + 120 (bit 120 is nested under parent 102 in V3_4_3 changesMask); without parent bit, client + WPP silently skip the sub-tree and slots stayed locked until relog |
-| Glyphs — apply (CMSG_USE_ITEM) | ✅ | ❓ | ✅ | forwards SpellCastRequest.Misc[0] as glyphIndex; was hardcoded 0 → every glyph went to slot 0. **2026-08-27 (#173):** only the first Major and first Minor socket accepted a glyph after a relog — `WriteUpdateActivePlayerGlyphsGroup` wrote all six `GlyphSlots` then all six `Glyphs`, but native `ActivePlayerData::WriteUpdate` interleaves per index (`UpdateFields.cpp:4104`), so the client reread glyph property ids as `GlyphSlot.dbc` rows. Create was already interleaved; only the Values path was wrong. All six sockets verified on TC |
+| Glyphs — apply (CMSG_USE_ITEM) | ✅ | ❓ | ✅ | forwards SpellCastRequest.Misc[0] as glyphIndex; was hardcoded 0 → every glyph went to slot 0. **2026-08-27 ([#173](https://github.com/Xian55/HermesProxy/pull/173)):** only the first Major and first Minor socket accepted a glyph after a relog — `WriteUpdateActivePlayerGlyphsGroup` wrote all six `GlyphSlots` then all six `Glyphs`, but native `ActivePlayerData::WriteUpdate` interleaves per index (`UpdateFields.cpp:4104`), so the client reread glyph property ids as `GlyphSlot.dbc` rows. Create was already interleaved; only the Values path was wrong. All six sockets verified on TC |
 | Glyphs — remove (CMSG_REMOVE_GLYPH) | ✅ | ❓ | ✅ | modern 13056 → legacy 0x48A, identical payload (uint8 GlyphSlot) |
 | Glyphs — dual-spec swap UnitData refresh | ✅ | ❓ | ✅ | dirty-flag drives ObjectUpdateBuilder to re-emit GlyphSlots in player Values update; without this, "already applied this glyph" check fired against stale (previous-spec) glyphs |
 | Chat (`/say`, `/emote`) | ✅ | ✅ | ✅ | |
 | Party / raid (form, convert) | ✅ | ✅ | ✅ | bits-first wire format |
 | Party chat / raid chat / raid warning | ✅ | ✅ | ✅ | |
-| Raid promote-to-assistant (single + "Everyone is assistant") | ✅ | ❓ | ✅ | 2026-05-16 — V3_4_3 bits-first parse fix for `SetAssistantLeader` + `SetEveryoneIsAssistant` (`82c8f83`); verified on TC, cMangos retest pending. **AzerothCore 2026-08-24:** single promote-to-assistant and Everyone is Assistant both apply. |
+| Raid promote-to-assistant (single + "Everyone is assistant") | ✅ | ❓ | ✅ | 2026-05-16 — V3_4_3 bits-first parse fix for `SetAssistantLeader` + `SetEveryoneIsAssistant` ([`82c8f83`](https://github.com/Xian55/HermesProxy/commit/82c8f83)); verified on TC, cMangos retest pending. **AzerothCore 2026-08-24:** single promote-to-assistant and Everyone is Assistant both apply. |
 | Raid kick (single member) | ❓ | ❌ | ✅ | cMangos: disbands whole raid; party uninvite is fine. **AzerothCore 2026-08-24:** Remove on a 2-person raid kicks the other player. Raid frames hide because only you remain; the group does not explode the way cMangos does. |
 | Trade (between players) | ✅ | ✅ | ✅ | **AzerothCore 2026-08-24:** copper, items, and mixed trades complete between two real player sessions (RADU ↔ RADU2). |
-| Char-list — auto-select newly created character | ✅ | ❓ | ✅ | `a515bd0` — character pre-selected in char-list after create; QoL |
-| Mail — open + inbox + take attachments + COD pay + delete | ✅ | ❓ | ✅ | 2026-05-09 — V3_4_3 wire-format fix (`d3004b1`); 12-attachment + 1-COD mail end-to-end on TC; V1_14/V2_5 regression-clean; cMangos untested |
-| Achievement panel — earned + criteria progress | ✅ | ❓ | ✅ | 2026-05-23: §F bridge — new `AchievementHandler.cs` translates `SMSG_ALL_ACHIEVEMENT_DATA` (init), `SMSG_CRITERIA_UPDATE` (runtime tick), `SMSG_ACHIEVEMENT_EARNED` (toast). New `AchievementPackets.cs` ships modern V3_4_3 wire format per TC 3.4.3 source (`Duration<Seconds>`/`Timestamp<int64>` = 8 B each; fork's `CreationTime` UInt32 bug corrected). Shared `CriteriaProgressPkt` in `MiscPackets.cs` fixed to TC layout (added `Unused_10_1_5`, widened times to Int64, full UInt32 Flags); old wire was dormant (`AllAccountCriteria` always sent empty). `EmptyAllAchievementData` stub + dispatch removed. Version-gated to `V3_0_2+` so V1_14/V2_5 unaffected. cMangos untested. |
+| Char-list — auto-select newly created character | ✅ | ❓ | ✅ | [`a515bd0`](https://github.com/Xian55/HermesProxy/commit/a515bd0) — character pre-selected in char-list after create; QoL |
+| Mail — open + inbox + take attachments + COD pay + delete | ✅ | ❓ | ✅ | 2026-05-09 — V3_4_3 wire-format fix ([`d3004b1`](https://github.com/Xian55/HermesProxy/commit/d3004b1)); 12-attachment + 1-COD mail end-to-end on TC; V1_14/V2_5 regression-clean; cMangos untested |
+| Achievement panel — earned + criteria progress | ✅ | ❓ | ✅ | 2026-05-23: §F bridge — new `AchievementHandler.cs` translates `SMSG_ALL_ACHIEVEMENT_DATA` (init), `SMSG_CRITERIA_UPDATE` (runtime tick), `SMSG_ACHIEVEMENT_EARNED` (toast). New `AchievementPackets.cs` ships modern V3_4_3 wire format per TC 3.4.3 source (`Duration<Seconds>`/`Timestamp<int64>` = 8 B each; fork's `CreationTime` UInt32 bug corrected). Shared `CriteriaProgressPkt` in `MiscPackets.cs` fixed to TC layout (added `Unused_10_1_5`, widened times to Int64, full UInt32 Flags); old wire was dormant (`AllAccountCriteria` always sent empty). `EmptyAllAchievementData` stub + dispatch removed. Version-gated to `V3_0_2+` so V1_14/V2_5 unaffected. cMangos untested.  **2026-08-30 — second defect, same packet ([#200](https://github.com/Xian55/HermesProxy/issues/200) → [`3129925a`](https://github.com/Xian55/HermesProxy/commit/3129925a)).** `SMSG_ALL_ACHIEVEMENT_DATA` is the largest packet a WotLK core sends at world entry (~25-38 B per criteria row). On a long-played level 80 it crosses `0x7FFF`, past which WotLK cores widen the server header from 4 bytes to 5; HermesProxy read a fixed 4, so the RC4 receive keystream fell a byte behind permanently and the character froze at 95% loading. Not an achievement-translation bug — achievements were merely the first packet large enough to trip it. Freshly made test characters never reach the threshold, which is why it survived months of playtesting. |
 | Account heirloom panel — collection listing | ✅ | ❓ | ✅ | 2026-05-23: §G packet `AccountHeirloomUpdate` (`World/Server/Packets/CollectionPackets.cs`) ships 38 IDs; §G2 `ActivePlayerData::Heirlooms[38]` descriptor field populates the panel as 38/38 owned; §G3 inventory tooltip renders correctly via `ItemFieldFlag.Child` injection + Item/ItemSparse hotfix skip. Right-click "Create from Collection" (spell 160597) is intercepted + silently CastFailed-replied — no item created, no client spam, no `unknown spell id 160597` legacy server log noise. Heirlooms acquired via normal legacy gameplay (vendor/quest), panel is cosmetic-only mirror. Verified on TC; cMangos untested. AzerothCore 2026-08-24: the panel lists the collection correctly. Clicking an entry does not create the item in the bag, which is correct for this era rather than a gap — summoning a copy from the collection is a Warlords-era mechanic. In WotLK heirlooms are physical items bought with Emblems of Heroism and mailed between characters, so the modern client simply offers a UI the legacy server has no concept of. |
-| Toy Box — learn from bags + use from journal | ❓ | ❓ | ✅ | **AzerothCore 2026-08-27 / 28 (#170):** 3.4.3 `CMSG_ADD_TOY` / `CMSG_USE_TOY` were unmapped. The journal lists only what **this character** can fire: a toy item in equipment/bags, or an on-use spell already in the 3.3.5a spellbook (`.learn`). Account metadata still records Add Toy for Already known. Other characters' unlocks stay hidden. Use with the item forwards `CMSG_USE_ITEM` (equipment first). Use with no bag copy forwards `CMSG_CAST_SPELL` if `HasActiveSpell`; else `CastFailed ItemNotFound`. Equippable but not worn → `CastFailed EquippedItem`. HasFanfare left off. First learn plays WotLK spell 55884. |
+| Toy Box — learn from bags + use from journal | ❓ | ❓ | ✅ | **AzerothCore 2026-08-27 / 28 ([#170](https://github.com/Xian55/HermesProxy/pull/170)):** 3.4.3 `CMSG_ADD_TOY` / `CMSG_USE_TOY` were unmapped. The journal lists only what **this character** can fire: a toy item in equipment/bags, or an on-use spell already in the 3.3.5a spellbook (`.learn`). Account metadata still records Add Toy for Already known. Other characters' unlocks stay hidden. Use with the item forwards `CMSG_USE_ITEM` (equipment first). Use with no bag copy forwards `CMSG_CAST_SPELL` if `HasActiveSpell`; else `CastFailed ItemNotFound`. Equippable but not worn → `CastFailed EquippedItem`. HasFanfare left off. First learn plays WotLK spell 55884. |
 | Spellbook fresh-login animations (`InitialLogin` flag) | ✅ | ✅ | ✅ | 2026-05-23: `SMSG_SEND_KNOWN_SPELLS.InitialLogin` now synthesised from `GameState.IsFirstEnterWorld` for V3_4_3 (`SpellHandler.cs:21-24`); V1_14/V2_5 still forward legacy bool. Matches TC 3.4.3 `IsLoading()` semantics. |
 | Pet spellbook tab + chat spam on login | ✅ | ✅ | ✅ | 2026-05-23: V3_4_3 pet tab refused to bind. Four diffs vs native sniff `World_hunter_pet_tame_pet_actionbar_pet_spellbook`: (1) `SMSG_PET_SPELLS_MESSAGE.Specialization` forced to `0` instead of native `-1` (removed overrides in `PetHandler.cs:126` + `QueryHandler.cs:738`); (2) `Actions[]` shipped legacy-encoded — added `TranslateLegacyPetActionButtonToV343` mapping in `PetHandler.cs:69-78` to match modern `(slot:9 \| spell:23)`; (3) `SMSG_UPDATE_TALENT_DATA(IsPetTalents=true)` SpecID was 0 / GlyphCount padded to 6 — fixed to 255 / 0 in `TalentHandler.ForwardPetTalents`; (4) synth `SMSG_PET_LEARNED_SPELLS` on every PetSpellsMessage caused "You learned X" spam on login — removed (real LEARNED still forwarded on tame/level-up via `PetHandler.HandlePetLearnedSpells`). |
 | Flat / Pct spell modifier array shape | ⚠️ | ⚠️ | ✅ | 2026-05-21 diff: native TC 3.4.3 always emits canonical 40-row spell modifier array (~204 B, mostly empty rows); proxy writes only populated mods (~14 B). Unverified whether V3_4_3 client requires the 40-row form or accepts dynamic count. No symptom reported by user yet — flagged as suspect for later disasm verification. See *TODO* (H). **AzerothCore 2026-08-24:** treated as a non-bug. Wire is count-prefixed (`WriteInt32(Modifiers.Count)`); WPP reads that count. A hardcoded-40 parse would have crashed on the first talent/glyph (`reason=7`). Not seen across the AC play-pass. |
 | repair | ✅ | ❓ | ✅ | 2026-05-24: root cause was S→C, not the (correctly forwarded) CMSG. Backend repairs items then pushes an `SMSG_UPDATE_OBJECT` Values delta that populates only `ItemData.Durability` (+ player `Coinage`). `IsEmptyValuesDelta` (`UpdatePackets.cs`) had no `ItemData` probe, so every item-Durability delta was classified empty and stripped for V3_4_3 — gold deducted (Coinage probed) but durability bars never updated ⇒ "nothing happened". Added ItemData probe (Durability/MaxDurability/StackCount/Flags/owner GUIDs/enchant/charges). Item Values writer is source-gen'd so the write path was already correct. Confirmed against native sniff `World_character_death_revive_sicnkess_losing_durability_then_repair`. |
 | Spirit healer — resurrect with sickness (gossip) | ✅ | ❓ | ✅ | 2026-05-24: legacy backend sends `SMSG_SPIRIT_HEALER_CONFIRM` (546) after the res-gossip select, which translated to `MSG_NULL_ACTION` (0) and was dropped — no confirm dialog, no res. V3_4_3 removed that packet; native sniff shows the modern client expects `SMSG_NPC_INTERACTION_OPEN_RESULT` (wire 10378) with `InteractionType=SpiritHealer (18)` + Success bit. Fix: added `SMSG_SPIRIT_HEALER_CONFIRM = 10378u` alias to V3_4_3 `Opcode.cs` (same wire as SHOW_BANK) and made the `SpiritHealerConfirm` packet emit the Guid+Int32 type+Success-bit tail on V3_4_3. Client then sends `CMSG_SPIRIT_HEALER_ACTIVATE` (already forwarded) to confirm. |
 | Innkeeper — make this inn your home | ❓ | ❓ | ✅ | **AzerothCore 2026-08-25:** gossip "Make this inn your home" opened the confirm dialog, OK bound, hearthstone tooltip updated. Same 10378 alias as spirit healer / bank: AC `SMSG_BINDER_CONFIRM` (747) was `0u` and dropped; V3_4_3 has no dedicated packet (WPP `V3_4_3_51666`). Emit `SMSG_NPC_INTERACTION_OPEN_RESULT` with `InteractionType=Binder (20)` + Success. `CMSG_BINDER_ACTIVATE` (13490) was already forwarded. |
-| Battlegrounds — list, queue, port, scoreboard | ✅ | ❓ | ✅ | 2026-06 → 2026-08-23: #102 chain (worldstate gating for the BG list, `CMSG_BATTLEFIELD_LIST` forwarding, missing `CMSG_BATTLEFIELD_PORT` opcode, RideTicket `Unknown925` bit, arenatype) plus #113/#106 for the scoreboard. Arathi Basin won end-to-end — mid-match "All Stats" and the end-of-match winner popup both render. |
+| Battlegrounds — list, queue, port, scoreboard | ✅ | ❓ | ✅ | 2026-06 → 2026-08-23: [#102](https://github.com/Xian55/HermesProxy/issues/102) chain (worldstate gating for the BG list, `CMSG_BATTLEFIELD_LIST` forwarding, missing `CMSG_BATTLEFIELD_PORT` opcode, RideTicket `Unknown925` bit, arenatype) plus [#113](https://github.com/Xian55/HermesProxy/pull/113)/[#106](https://github.com/Xian55/HermesProxy/issues/106) for the scoreboard. Arathi Basin won end-to-end — mid-match "All Stats" and the end-of-match winner popup both render. |
 | Wintergrasp — join, capture, vehicles | ❓ | ❓ | ✅ | **2026-08-28.** 3.4.3 has no `BATTLEFIELD_MGR_*` opcodes (Classic remade WG as BattlemasterList 1089 / map 2118). AC still sends outdoor BfMgr on map 571. Invite → `STATUS_NEED_CONFIRMATION`, accept → `CMSG_BF_MGR_ENTRY_INVITE_RESPONSE`, factory phase mask bits 16/32 → Phase.db2 173/174. Play-tested on AC: join popup, capture slider hide-on-leave, catapult + demolisher + passenger, die/GY, mid-war relog, hearth out. No 3.4.3 minimap Leave button (BfMgr UI is gone). Recruit still has no vehicle gossip (AC rank). |
 | Who / friends / ignore | ❓ | ❓ | ✅ | **2026-08-28.** Existing social translation. `/who` lists the other account and playerbots; add/remove friend, notes, add/remove ignore. No proxy change. |
-| Arena — skirmish queue + enter (2v2 / 3v3 / 5v5) | ✅ | ❓ | ✅ | **2026-08-27** (#171 + [#174](https://github.com/Xian55/HermesProxy/pull/174)). 3v3/5v5 popped but **Enter Battle** did nothing. Two halves: `CMSG_BATTLEFIELD_PORT` hardcoded `arenatype=2`, so a 3v3 pop resolved to the 2v2 queue (#171 stores `ArenaTeamSize` per queue slot); and the byte the proxy wrote as padding is the **BracketId** — TC reads the leading fields as one packed `uint64` queue id (`BattlemasterListId = p>>16`, `BracketId = p>>8`, `TeamSize = p`), and matches the whole struct, so a level-80 character (bracket 14) addressed a queue it was not in and the server returned silently. Echo the bracket from `SMSG_BATTLEFIELD_STATUS` on PORT and LEAVE. Verified on TC with two clients and `.debug arena`: queue → Enter Battle → STATUS_ACTIVE → TRANSFER_PENDING → NEW_WORLD |
+| Arena — skirmish queue + enter (2v2 / 3v3 / 5v5) | ✅ | ❓ | ✅ | **2026-08-27** ([#171](https://github.com/Xian55/HermesProxy/pull/171) + [#174](https://github.com/Xian55/HermesProxy/pull/174)). 3v3/5v5 popped but **Enter Battle** did nothing. Two halves: `CMSG_BATTLEFIELD_PORT` hardcoded `arenatype=2`, so a 3v3 pop resolved to the 2v2 queue ([#171](https://github.com/Xian55/HermesProxy/pull/171) stores `ArenaTeamSize` per queue slot); and the byte the proxy wrote as padding is the **BracketId** — TC reads the leading fields as one packed `uint64` queue id (`BattlemasterListId = p>>16`, `BracketId = p>>8`, `TeamSize = p`), and matches the whole struct, so a level-80 character (bracket 14) addressed a queue it was not in and the server returned silently. Echo the bracket from `SMSG_BATTLEFIELD_STATUS` on PORT and LEAVE. Verified on TC with two clients and `.debug arena`: queue → Enter Battle → STATUS_ACTIVE → TRANSFER_PENDING → NEW_WORLD |
 | Arena — team assignment (friend vs foe) | ✅ | ❓ | ❓ | **2026-08-27** ([#175](https://github.com/Xian55/HermesProxy/pull/175)). Two same-faction players in a skirmish rendered as team mates, both counters read *0 Players Remaining*, and the match never resolved. `PLAYER_BYTES_3` byte 3 is the honor rank pre-WotLK but the **arena team** from WotLK on (TC `PLAYER_BYTES_3_OFFSET_ARENA_FACTION = 3`); the reader mapped it to `PvPRank` on every build and left `ArenaFaction` guessed from race. Version-gated to `V3_0_2+`. Not V3_4_3-specific — affected every WotLK-backed build. Verified on TC: the two characters are hostile and the match ends with a victory screen |
-| Titles — character-panel dropdown | ✅ | ❓ | ✅ | **2026-08-27** (#172). Unlocked titles never appeared in the `C` panel while `.titles current` still painted the name over the head. Two defects: Create advertised `KnownTitles.size = 0` (count belongs next to `SummonedBattlePetGUID`, payload after `NumStableSlots`, per Wrathion `ActivePlayerData::WriteCreate`), and the WotLK ingest read only 3 of the 6 `uint32` title words, dropping every MaskID ≥ 96. Verified on TC with titles 1 / 100 / 170: all three list, and `CMSG_SET_TITLE` round-trips. **Footnote:** the dropdown paints a filled radio on the selected title *and* every known title above it — cosmetic, the wire carries exactly one `ChosenTitle` |
+| Titles — character-panel dropdown | ✅ | ❓ | ✅ | **2026-08-27** ([#172](https://github.com/Xian55/HermesProxy/pull/172)). Unlocked titles never appeared in the `C` panel while `.titles current` still painted the name over the head. Two defects: Create advertised `KnownTitles.size = 0` (count belongs next to `SummonedBattlePetGUID`, payload after `NumStableSlots`, per Wrathion `ActivePlayerData::WriteCreate`), and the WotLK ingest read only 3 of the 6 `uint32` title words, dropping every MaskID ≥ 96. Verified on TC with titles 1 / 100 / 170: all three list, and `CMSG_SET_TITLE` round-trips. **Footnote:** the dropdown paints a filled radio on the selected title *and* every known title above it — cosmetic, the wire carries exactly one `ChosenTitle` |
 | Master Looter — candidate list + assignment | ❓ | ❓ | ✅ | **2026-08-28** ([#164](https://github.com/Xian55/HermesProxy/issues/164) → [#176](https://github.com/Xian55/HermesProxy/pull/176)). No candidate players in the assignment UI, so loot could not be given out. Three defects: `SMSG_LOOT_MASTER_LIST` and `CMSG_LOOT_MASTER_GIVE` were `0u` placeholders (real values `9759` / `12818`, confirmed against a native Wrathion capture), and the send path returned early because **`GetCurrentGroup()` cannot see LFG groups** — an LFG dungeon group is filed under the instance category (slot 1) but looked up under home (slot 0). That also blinded `GetCurrentGroupSize` / `Leader` / `LootMethod` / `GroupGuid` inside any LFG dungeon. Verified on AC + playerbots across a full random dungeon. Needs a real party, so TC NPCBots cannot exercise it |
-| Dungeon Finder — queue, proposal, enter, teleport, leave | ✅ | ❓ | ✅ | 2026-08-23: #112 (proposal crash, invisible join errors, silent hang on 3.4.3-only dungeons) + #117/#118 (in-dungeon eye state, `CMSG_DF_TELEPORT`, group-leave and eye clearing). Solo queue → proposal → accept → enter → teleport out/in → leave all working. |
-| Auction House — open, search, bid, buyout, post, cancel, sold mail | ✅ | ❓ | ✅ | TC 2026-05-30 (#85). **AzerothCore 2026-08-27: fully working.** Catalog browse (mod-ah-bot listings), bid, buyout, sold-mail receive + take attachment, create auction, owned tab, cancel. No proxy changes — existing V3_4_3 AH translation. |
-| Transports — elevators, trams (GO type 11) | ✅ | ✅ | ✅ | 2026-08-24 (#114): animation-driven, present in `TransportAnimation.db2`. Deeprun Tram rides Stormwind↔Ironforge textured and carrying the player across map 0→369→0; Thunder Bluff's elevators verified textured + carrying on cMangos. |
-| Transports — zeppelins, boats (GO type 15 / MO_TRANSPORT) | ✅ | ❌ | ✅ | 2026-08-24 (#114 + #119): taxi-path-driven via `gameobject_template.Data0`, never in `TransportAnimation.db2` in any build. 13 routes ridden on TC across maps 0/1/369/530/571. **cMangos: filtered out entirely** — creates arrive with `Position=(0,0,0)` so `MayForwardTransport` drops them (16 skipped vs 2 forwarded in one session); passengers still spawn, all with `clientKnowsTransport=False`, so the crew stands on the ground with no zeppelin. |
+| Dungeon Finder — queue, proposal, enter, teleport, leave | ✅ | ❓ | ✅ | 2026-08-23: [#112](https://github.com/Xian55/HermesProxy/pull/112) (proposal crash, invisible join errors, silent hang on 3.4.3-only dungeons) + [#117](https://github.com/Xian55/HermesProxy/pull/117)/[#118](https://github.com/Xian55/HermesProxy/pull/118) (in-dungeon eye state, `CMSG_DF_TELEPORT`, group-leave and eye clearing). Solo queue → proposal → accept → enter → teleport out/in → leave all working. |
+| Auction House — open, search, bid, buyout, post, cancel, sold mail | ✅ | ❓ | ✅ | TC 2026-05-30 ([#85](https://github.com/Xian55/HermesProxy/issues/85)). **AzerothCore 2026-08-27: fully working.** Catalog browse (mod-ah-bot listings), bid, buyout, sold-mail receive + take attachment, create auction, owned tab, cancel. No proxy changes — existing V3_4_3 AH translation. |
+| Transports — elevators, trams (GO type 11) | ✅ | ✅ | ✅ | 2026-08-24 ([#114](https://github.com/Xian55/HermesProxy/pull/114)): animation-driven, present in `TransportAnimation.db2`. Deeprun Tram rides Stormwind↔Ironforge textured and carrying the player across map 0→369→0; Thunder Bluff's elevators verified textured + carrying on cMangos. |
+| Transports — zeppelins, boats (GO type 15 / MO_TRANSPORT) | ✅ | ❌ | ✅ | 2026-08-24 ([#114](https://github.com/Xian55/HermesProxy/pull/114) + [#119](https://github.com/Xian55/HermesProxy/pull/119)): taxi-path-driven via `gameobject_template.Data0`, never in `TransportAnimation.db2` in any build. 13 routes ridden on TC across maps 0/1/369/530/571. **cMangos: filtered out entirely** — creates arrive with `Position=(0,0,0)` so `MayForwardTransport` drops them (16 skipped vs 2 forwarded in one session); passengers still spawn, all with `clientKnowsTransport=False`, so the crew stands on the ground with no zeppelin. |
+| Ready check (raid) | ❓ | ❓ | ❓ | **Never exercised** (added to matrix 2026-09-01). Translation exists both ways: `CMSG_DO_READY_CHECK` (13877) + `CMSG_READY_CHECK_RESPONSE` (13878) in `Server/PacketHandlers/GroupHandler.cs`; legacy `MSG_RAID_READY_CHECK` (0x322) / `_CONFIRM` (0x3AE) / `_FINISHED` (0x3C6) in `Client/PacketHandlers/GroupHandler.cs`; `ReadyCheckStarted` at `GroupPackets.cs:639`. Known gap: legacy `SMSG_READY_CHECK_ERROR` (0x408) has no handler. The `CMSG_/SMSG_RAID_READY_CHECK*` enum members are dead `0u` aliases — the modern client uses the names above, so a `0u` there is not evidence of a gap. Tracked as [#210](https://github.com/Xian55/HermesProxy/issues/210). |
+| Raid target icons (skull / cross / …) | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Both directions wired: `CMSG_UPDATE_RAID_TARGET` (13907) in `Server/PacketHandlers/GroupHandler.cs`, legacy `MSG_RAID_TARGET_UPDATE` (0x321) in `Client/PacketHandlers/GroupHandler.cs`. Test alongside ready check — same UI surface, same session. Tracked as [#211](https://github.com/Xian55/HermesProxy/issues/211). |
+| Respec — talent wipe at trainer | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Fully wired: `CMSG_CONFIRM_RESPEC_WIPE` (12813) in `Server/PacketHandlers/NPCHandler.cs:111`, legacy `MSG_TALENT_WIPE_CONFIRM` (0x2AA) in `Client/PacketHandlers/NPCHandler.cs:240`, `RespecWipeConfirm` at `NPCPackets.cs:604`. Cost-escalation gold value and the post-wipe talent-tree re-emit are the parts most likely to be wrong. Tracked as [#212](https://github.com/Xian55/HermesProxy/issues/212). |
+| Reputation panel — standings, at-war, watched faction | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Wired: legacy `SMSG_INITIALIZE_FACTIONS` (0x122) + `SMSG_SET_FACTION_STANDING` (0x124) + `SMSG_SET_FACTION_VISIBLE` (0x123) in `Client/PacketHandlers/ReputationHandler.cs`; `CMSG_SET_WATCHED_FACTION`, `CMSG_SET_FACTION_AT_WAR` / `_NOT_AT_WAR`, `CMSG_SET_FACTION_INACTIVE` in `Server/PacketHandlers/ReputationHandler.cs`. WotLK added factions the modern client indexes differently — the reputation-index → `FactionID` mapping is the likely failure point. Tracked as [#213](https://github.com/Xian55/HermesProxy/issues/213). |
+| Currency / honor panel | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). 3.3.5a has no currency packet — honor and arena points live in player update fields. `SetupCurrency` is synthesized from those at `Client/PacketHandlers/UpdateHandler.cs:3926-3936`; `EmptySetupCurrency` goes out at `CharacterHandler.cs:409` and `WorldStateHandler.cs:50`. `CMSG_LOOT_CURRENCY` = `0u` is Cata-era and correctly unmapped. Verify honor/arena totals render and tick after a BG. Tracked as [#214](https://github.com/Xian55/HermesProxy/issues/214). |
+| Tutorials (popup tips + reset) | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Wired: legacy `SMSG_TUTORIAL_FLAGS` (0x0FD) in `Client/PacketHandlers/MiscHandler.cs`, `CMSG_TUTORIAL_FLAG` (0x0FE) in `Server/PacketHandlers/MiscHandler.cs`. Legacy `CMSG_TUTORIAL_CLEAR` (0x0FF) / `CMSG_TUTORIAL_RESET` (0x100) are unmapped on the modern side — the Reset Tutorials button likely does nothing. Tracked as [#215](https://github.com/Xian55/HermesProxy/issues/215). |
+| Send mail (compose + attach + postage) | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Only the *receive* half is verified ([`d3004b1`](https://github.com/Xian55/HermesProxy/commit/d3004b1), 2026-05-09: inbox / take / COD / delete). Send is wired — `CMSG_SEND_MAIL` (13819) in `Server/PacketHandlers/MailHandler.cs` → legacy 0x238 — but the V3_4_3 send layout was never diffed against a native capture, and the mail family already burned us once on Int64 id widening. Tracked as [#216](https://github.com/Xian55/HermesProxy/issues/216). |
+| Feed pet / happiness | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). No dedicated opcode: feeding is `CMSG_USE_ITEM` targeting the pet, happiness is a power (`PowerType.Happiness = 4` → `UNIT_FIELD_POWER5`, `ClassPowerTypes.cs:127`). Check that the happiness meter on the pet frame moves and that the loyalty-loss warning fires. Tracked as [#217](https://github.com/Xian55/HermesProxy/issues/217). |
+| Fishing — cast + bobber + catch | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). Only *training* Fishing was verified (2026-05-09); the cast was never performed. No dedicated opcode — channelled spell + bobber GameObject spawn + click-to-catch + loot. Exercises the channel path, dynamic GO spawn, and loot together, so a failure here is likely to be one of those rather than a fishing bug. Tracked as [#218](https://github.com/Xian55/HermesProxy/issues/218). |
+| Pick lock / open locked container | ❓ | ❓ | ❓ | **Never exercised** (added 2026-09-01). No dedicated opcode — Rogue Pick Lock spell or a key, targeting a locked chest / lockbox, then `CMSG_OPEN_ITEM` (12998). Shares the GameObject-interaction path already proven by the DK runeblade rack ([`39cf991`](https://github.com/Xian55/HermesProxy/commit/39cf991)). Tracked as [#219](https://github.com/Xian55/HermesProxy/issues/219). |
+| Barber shop | ❌ | ❌ | ❌ | **Unbridged** (added 2026-09-01). `CMSG_ALTER_APPEARANCE` is mapped on both sides (modern 13557, legacy 0x426) but has **no handler**, and legacy `SMSG_ENABLE_BARBER_SHOP` (0x427) / `SMSG_BARBER_SHOP_RESULT` (0x428) have neither handler nor packet class. Sitting in a barber chair will not open the UI. Small, self-contained bridge: 1 CMSG forward + 2 SMSG translations. Tracked as [#220](https://github.com/Xian55/HermesProxy/issues/220). |
+| GM ticket / support UI | ❌ | ❌ | ❌ | **Unbridged** (added 2026-09-01). Modern side maps only `CMSG_GM_TICKET_GET_SYSTEM_STATUS` (13966) and `CMSG_GM_TICKET_GET_CASE_STATUS` (13967), neither handled; `CREATE` / `DELETE_TICKET` / `GET_TICKET` / `UPDATE_TEXT` are `0u`. Legacy has the full family (0x205-0x21B). Opening the in-game help window and submitting a ticket does nothing today. Tracked as [#221](https://github.com/Xian55/HermesProxy/issues/221). |
+| Calendar | ❌ | ❌ | ❌ | **Unbridged** (added 2026-09-01). The modern enum contains exactly one calendar opcode (`CMSG_CALENDAR_GET_NUM_PENDING` = 13948) with no handler and no packet class; legacy 3.3.5a has 19 CMSG + 20 SMSG (0x429-0x4BB) including the raid-lockout alerts. Largest of the unbridged subsystems by opcode count. Tracked as [#222](https://github.com/Xian55/HermesProxy/issues/222). |
+| Instance lockouts + heroic difficulty toggle | ⚠️ | ❓ | ⚠️ | **Partly wired, never exercised — no raid instance has ever been entered on any backend** (added 2026-09-01). Handled: `SMSG_RAID_INSTANCE_INFO` (0x2CC), `SMSG_INSTANCE_SAVE_CREATED` (0x2CB), `SMSG_RAID_INSTANCE_MESSAGE` (0x2FA), `SMSG_INSTANCE_RESET` / `_FAILED`, `CMSG_RESET_INSTANCES` in `InstanceHandler.cs`. Missing: legacy `SMSG_INSTANCE_DIFFICULTY` (0x33B) has **no handler** (heroic/normal toggle), `CMSG_INSTANCE_LOCK_RESPONSE` (13579) has no handler, and `SMSG_INSTANCE_LOCK_WARNING_QUERY` is `0u`. Tracked as [#223](https://github.com/Xian55/HermesProxy/issues/223). |
+| Stable — revive dead pet | ⚠️ | ❓ | ⚠️ | **Partly wired** (added 2026-09-01). The stable family is mapped and handled in `PetHandler.cs` (`CMSG_REQUEST_STABLED_PETS`, `STABLE_PET`, `UNSTABLE_PET`, `STABLE_SWAP_PET`, `BUY_STABLE_SLOT`, `SMSG_PET_STABLE_RESULT`) but was never play-tested. `CMSG_STABLE_REVIVE_PET` is `0u` on the modern side (legacy 0x274) — reviving a dead pet at the stable master is unmapped. Tracked as [#224](https://github.com/Xian55/HermesProxy/issues/224). |
 
 ---
 
@@ -218,13 +271,13 @@ AzerothCore column added 2026-08-24. It is marked ❓ rather than assumed-equal-
 | 2026-08-24 | `SMSG_MOVE_TELEPORT` deck-relative position ([#119](https://github.com/Xian55/HermesProxy/pull/119)) — found while play-testing #114. `HandleMoveTeleportAck` copied legacy `MovementInfo.Position` (world coords) straight into `MoveTeleport.Position`, but the modern packet wants `Pos`/`Facing` **transport-relative** whenever `TransportGUID` is set — `Unit::SendTeleportPacket` runs the position through `TransportBase::CalculatePassengerOffset` first. The client added a world coordinate to the transport's own position and stranded the player at sea (fatigue bar and all) while the server still had them on the deck. **Only reachable on same-map routes**: every map-crossing ride hides it because `SMSG_NEW_WORLD` re-creates and re-attaches the player. Grom'gol ↔ Brill (map 0 → 0) reproduced it every time. Non-transport teleports keep the old behaviour; V1_14/V2_5 never populate `TransportGuid` so no version gate is needed. | `e62ad8af` |
 | 2026-08-24 | Transport route matrix verified on TC 3.3.5a + NPCBots — 13 routes across maps 0, 1, 369, 530, 571: Deeprun Tram; Ratchet→Booty Bay and Menethil→Theramore boats; Orgrimmar→Tirisfal, Grom'gol→Orgrimmar, Grom'gol↔Brill, Orgrimmar→Thunder Bluff, Undercity↔Howling Fjord and Orgrimmar↔Warsong Hold zeppelins; Stormwind→Valiance Keep, Azuremyst→Auberdine and Auberdine→Teldrassil boats. Both GO types, both geometry classes (zeppelin decks hang below the balloon with **negative** passenger offsets; boats sit at sea level with **positive** ones), both directions on every route ridden back, plus a mid-voyage relog that correctly restored the player to the deck. Three of those are same-map rides — two zeppelins and one boat, on both continents — the only ones with nothing to mask a bad teleport. | feature branch |
 | 2026-08-24 | Flying mount dismounts on every area change — **not a proxy bug, no fix needed.** Reported while play-testing #114 on AzerothCore: a flying mount taken up in Azeroth is lost at the next zone line, leaving the player falling in mid-air, on any map between any two regions. The proxy is relaying the backend faithfully. WotLK does not permit flight in Azeroth, and the two halves of that rule live in different places: the **client** refuses to mount (which is why `.gm on` appears to bypass it — GM mode skips that check only), while the **server** independently re-runs `SpellInfo::CheckLocation` over every aura on each area change and strips any that are not legal there (`Player.cpp`, see also `Player::canFlyInZone`, which additionally gates Northrend on Cold Weather Flying, spell 54197). GM status does not exempt the server-side check. Falling in mid-air rather than being set down is the signature of an aura removal, and the aura trace confirmed the player's tracked aura count dropping at the moment of dismount. A server-side module can override this via the `sScriptMgr->OnPlayerCanFlyInZone` hook; nothing on the proxy side is involved. | n/a |
-| 2026-08-27 | **V3_4_3 quest Decline closes the details frame** ([#169](https://github.com/Xian55/HermesProxy/pull/169)) — 3.4.3 sends no cancel opcode for Decline; by the time the parchment is up the client has already closed gossip, so Decline emits `CMSG_TALK_TO_GOSSIP` to walk back to the list. Forwarding it pulled a fresh gossip that painted *under* the live parchment. The proxy now dismisses with `SMSG_QUEST_GIVER_INVALID_QUEST` and replays this NPC's cached list. Verified on TrinityCore. |
-| 2026-08-27 | **Glyph sockets past the first Major/Minor accept glyphs** ([#173](https://github.com/Xian55/HermesProxy/pull/173)) — the Values path wrote all six `GlyphSlots` then all six `Glyphs`; native interleaves per index, so after the talent-push re-emit the client reread glyph ids as `GlyphSlot.dbc` rows and only sockets 0 and the first Minor stayed valid drop targets. One loop body; all six verified on TC. |
-| 2026-08-27 | **Unlocked titles appear in the character panel** ([#172](https://github.com/Xian55/HermesProxy/pull/172)) — Create advertised `KnownTitles.size = 0`, and the WotLK ingest read 3 of 6 title words so every MaskID ≥ 96 was dropped. Both fixed; verified on TC. Also found: `SMSG_TITLE_EARNED` (883) is unmapped and dropped, so a title earned mid-session only appears after a relog. |
-| 2026-08-27 | **Arena skirmish works end-to-end on TrinityCore** ([#171](https://github.com/Xian55/HermesProxy/pull/171), [#174](https://github.com/Xian55/HermesProxy/pull/174), [#175](https://github.com/Xian55/HermesProxy/pull/175)) — three separate defects on one path. `CMSG_BATTLEFIELD_PORT` hardcoded `arenatype=2` (3v3/5v5 missed their queue); the "padding" byte beside it is the **BracketId** in TC's packed `uint64` queue id, hardcoded to 0, so any character above the first level bracket addressed a queue it was not in; and `ArenaFaction` was guessed from race instead of read from `PLAYER_BYTES_3` byte 3, putting both skirmish teams on the same side so the match could never resolve. Note #171 alone is **not** sufficient on TC — it was validated on AzerothCore, where the bracket apparently does not bite. |
-| 2026-08-26 | **Group loot Need / Greed / Pass dialog + roll numbers** ([#155](https://github.com/Xian55/HermesProxy/issues/155) → [#161](https://github.com/Xian55/HermesProxy/pull/161), [#162](https://github.com/Xian55/HermesProxy/issues/162) → [#163](https://github.com/Xian55/HermesProxy/pull/163)) — `SMSG_LOOT_START_ROLL` was `0u` (packet built then discarded at send); result packets had empty `LootObj` so numbers never painted. Mapped `9757` and carried the corpse GUID from `START_ROLL`. **AzerothCore play-test 2026-08-28:** Azjol-Nerub Krik'thir + playerbots, Group Loot / Uncommon — *Stone-Worn Footwraps* (blue) and a green both opened the roll window. |
-| 2026-08-28 | **Master Looter distributes loot** ([#164](https://github.com/Xian55/HermesProxy/issues/164) → [#176](https://github.com/Xian55/HermesProxy/pull/176)) — two `0u` opcode placeholders (`SMSG_LOOT_MASTER_LIST` = 9759, `CMSG_LOOT_MASTER_GIVE` = 12818, both confirmed against a native Wrathion 3.4.3 capture) plus a send path that never ran: **`GetCurrentGroup()` could not see LFG groups**, which are filed under the instance category (slot 1) but looked up under home (slot 0). That silently blinded `GetCurrentGroupSize` / `Leader` / `LootMethod` / `GroupGuid` inside every LFG dungeon, not just master loot. Verified on AzerothCore + playerbots across a full random dungeon. |
-| 2026-08-28 | Two loot gaps found while fixing #164, both still open — legacy `SMSG_LOOT_LIST` (1017) arrives from AzerothCore with **no handler** and is dropped; and the `LastMasterLootSentTarget` dedup **never engages**, because the loot release/clear paths reset it, so one corpse can receive the candidate list several times. The second is written up on [#31](https://github.com/Xian55/HermesProxy/issues/31), where that dedup is listed as the mitigation for the auto-loot popup showing a stale item. |
+| 2026-08-27 | **V3_4_3 quest Decline closes the details frame** ([#169](https://github.com/Xian55/HermesProxy/pull/169)) — 3.4.3 sends no cancel opcode for Decline; by the time the parchment is up the client has already closed gossip, so Decline emits `CMSG_TALK_TO_GOSSIP` to walk back to the list. Forwarding it pulled a fresh gossip that painted *under* the live parchment. The proxy now dismisses with `SMSG_QUEST_GIVER_INVALID_QUEST` and replays this NPC's cached list. Verified on TrinityCore. | n/a |
+| 2026-08-27 | **Glyph sockets past the first Major/Minor accept glyphs** ([#173](https://github.com/Xian55/HermesProxy/pull/173)) — the Values path wrote all six `GlyphSlots` then all six `Glyphs`; native interleaves per index, so after the talent-push re-emit the client reread glyph ids as `GlyphSlot.dbc` rows and only sockets 0 and the first Minor stayed valid drop targets. One loop body; all six verified on TC. | n/a |
+| 2026-08-27 | **Unlocked titles appear in the character panel** ([#172](https://github.com/Xian55/HermesProxy/pull/172)) — Create advertised `KnownTitles.size = 0`, and the WotLK ingest read 3 of 6 title words so every MaskID ≥ 96 was dropped. Both fixed; verified on TC. Also found: `SMSG_TITLE_EARNED` (883) is unmapped and dropped, so a title earned mid-session only appears after a relog. | n/a |
+| 2026-08-27 | **Arena skirmish works end-to-end on TrinityCore** ([#171](https://github.com/Xian55/HermesProxy/pull/171), [#174](https://github.com/Xian55/HermesProxy/pull/174), [#175](https://github.com/Xian55/HermesProxy/pull/175)) — three separate defects on one path. `CMSG_BATTLEFIELD_PORT` hardcoded `arenatype=2` (3v3/5v5 missed their queue); the "padding" byte beside it is the **BracketId** in TC's packed `uint64` queue id, hardcoded to 0, so any character above the first level bracket addressed a queue it was not in; and `ArenaFaction` was guessed from race instead of read from `PLAYER_BYTES_3` byte 3, putting both skirmish teams on the same side so the match could never resolve. Note #171 alone is **not** sufficient on TC — it was validated on AzerothCore, where the bracket apparently does not bite. | n/a |
+| 2026-08-26 | **Group loot Need / Greed / Pass dialog + roll numbers** ([#155](https://github.com/Xian55/HermesProxy/issues/155) → [#161](https://github.com/Xian55/HermesProxy/pull/161), [#162](https://github.com/Xian55/HermesProxy/issues/162) → [#163](https://github.com/Xian55/HermesProxy/pull/163)) — `SMSG_LOOT_START_ROLL` was `0u` (packet built then discarded at send); result packets had empty `LootObj` so numbers never painted. Mapped `9757` and carried the corpse GUID from `START_ROLL`. **AzerothCore play-test 2026-08-28:** Azjol-Nerub Krik'thir + playerbots, Group Loot / Uncommon — *Stone-Worn Footwraps* (blue) and a green both opened the roll window. | n/a |
+| 2026-08-28 | **Master Looter distributes loot** ([#164](https://github.com/Xian55/HermesProxy/issues/164) → [#176](https://github.com/Xian55/HermesProxy/pull/176)) — two `0u` opcode placeholders (`SMSG_LOOT_MASTER_LIST` = 9759, `CMSG_LOOT_MASTER_GIVE` = 12818, both confirmed against a native Wrathion 3.4.3 capture) plus a send path that never ran: **`GetCurrentGroup()` could not see LFG groups**, which are filed under the instance category (slot 1) but looked up under home (slot 0). That silently blinded `GetCurrentGroupSize` / `Leader` / `LootMethod` / `GroupGuid` inside every LFG dungeon, not just master loot. Verified on AzerothCore + playerbots across a full random dungeon. | n/a |
+| 2026-08-28 | Two loot gaps found while fixing #164, both still open — legacy `SMSG_LOOT_LIST` (1017) arrives from AzerothCore with **no handler** and is dropped; and the `LastMasterLootSentTarget` dedup **never engages**, because the loot release/clear paths reset it, so one corpse can receive the candidate list several times. The second is written up on [#31](https://github.com/Xian55/HermesProxy/issues/31), where that dedup is listed as the mitigation for the auto-loot popup showing a stale item. | n/a |
 | 2026-08-27 | **Auction House fully working on AzerothCore 3.3.5a.** Same V3_4_3 translation as TC (#85). Play-tested: open, browse a seeded catalog, bid, buyout, sold-mail receive + take, post, owned tab, cancel. No code change. | (this PR) |
 | 2026-08-28 | **Who / friends / ignore work on AzerothCore.** `/who`, add/remove friend, notes, add/remove ignore. Existing social handlers; no proxy change. | n/a |
 | 2026-08-28 | **Wintergrasp join + workshops + vehicles on AzerothCore.** 3.4.3 has none of the `BATTLEFIELD_MGR_*` opcodes (Wrathion / WPP / lineagedr). AC `ENTRY_INVITE` is rewritten as `STATUS_NEED_CONFIRMATION` (list 1089), Enter Battle as `CMSG_BF_MGR_ENTRY_INVITE_RESPONSE`, `ENTERING` as `STATUS_ACTIVE` (map 571), `EJECTED` as `STATUS_FAILED`. Factory phase auras add 3.3.5 mask bits 16/32; 3.4.3 `SpellEffect.MiscValue_1` maps those to Phase.db2 173/174. Play-tested: join popup, capture slider, catapult, demolisher, passenger, GY, relog, hearth. No minimap Leave button — that UI died with BfMgr. | (this PR) |
@@ -340,12 +393,29 @@ The fork received a thorough class-by-class test matrix from `kasperfriend` (202
 ### Combat & state propagation
 
 - **Channel-spell loop animation (TC fixed 2026-05-06; cMangos retest pending).** Root cause was hypothesis (a): the V3_4_3 `ChannelObjects` DynamicUpdateField (bit 4 of UnitData changesMask) was never being written by `ObjectUpdateBuilder.cs`, so the modern client received an empty channel-target list and dropped the loop animation after the start anim. The legacy reader (`UpdateHandler.cs:1918`) was already populating `UnitData.ChannelObject` from `UNIT_FIELD_CHANNEL_OBJECT`; the data was being silently dropped at the V3_4_3 writer. Fix: write `uint32(ChannelObjects.size())` + the GUID body in the create path, and `WriteCompleteDynamicFieldUpdateMask` + GUID body (before Health, per TC ordering) in the values path; also added `ChannelObject` probe to `IsEmptyValuesDelta` so a channel-end clear isn't dropped.
-- **No-handler warnings — silent state drops.** Each gates a UI feature; prioritize by user-visibility:
-  - `SMSG_THREAT_UPDATE` — threat meter / boss frames
-  - `SMSG_LOAD_EQUIPMENT_SET` — equipment manager
+- **No-handler warnings — silent state drops.** Re-audited 2026-09-01 against the `[PacketHandler]` registrations;
+  three of the five originally listed here have since gained handlers (`SMSG_THREAT_UPDATE`,
+  `SMSG_LOAD_EQUIPMENT_SET`, `SMSG_UPDATE_TALENT_DATA`). Still unhandled:
+  - `SMSG_INSTANCE_DIFFICULTY` (legacy 0x33B) — heroic / normal toggle
   - `SMSG_LEARNED_DANCE_MOVES` — `/dance` variants
-  - `SMSG_INSTANCE_DIFFICULTY` — heroic/normal toggle
-  - `SMSG_UPDATE_TALENT_DATA` — talent panel
+
+- **Resurrection sickness does not render red / `*75%` (open since 2026-05-31).** The reduction itself is forwarded
+  correctly — toggling `.aura` / `.unaura 15007` moves Stats 24→6 and Attack Power 82→28 — but the modern client will
+  not colour the reduced attributes. The native 3.4.3 *server* computes derived display fields that a legacy 3.3.5a
+  server never populates (`ModDamageDonePercent` is 0.25 native versus 1.0 through the proxy, and native Attack Power
+  goes negative), and the red text keys off those. A necessary but insufficient fix already landed: the dropped
+  `Negative` aura flag, which `SpellHandler.ReadSingleAura` was not mapping. Closing it properly means synthesizing
+  the derived fields from the aura's `MOD_PERCENT_STAT` / `MOD_DAMAGE_PERCENT_DONE` effects — a real feature, deferred.
+  Captures: `bin/Release/PacketsLog/modern_54261_20260531_023049_2.pkt` (proxy) and
+  `refs/3.4.3_Build/.../World_sickness_75_mod.pkt` (native).
+
+- **Flat / Pct spell modifier array shape — unverified, formerly §H (open since 2026-05-21).** Native TC 3.4.3 always
+  emits the canonical 40-row spell-modifier array (~204 B, mostly empty rows); the proxy writes only populated mods
+  (~14 B). Whether the V3_4_3 client requires the canonical shape is **unknown, and the symptom is speculative** — no
+  user-visible failure has been tied to it. Fix path is ~10 LOC if confirmed: pad the `Modifiers` array to 40 entries
+  in `SetFlatSpellModifier::Write()` (`World/Server/Packets/SpellPackets.cs`), same for the Pct variant. **Verify
+  before shipping** by reading the client's `SMSG_SET_FLAT_SPELL_MODIFIER` handler to confirm whether the loop trusts
+  the wire count or hardcodes 40; if it is dynamic, padding is pure waste.
 
 ### Infrastructure
 
@@ -441,11 +511,13 @@ Fallback: HermesProxy's own `SniffFile.cs` writes PKT 2.1 to `PacketsLog/` (gate
 
 The `/parse-pkt` skill wraps the WPP invocation; the `/hermes-logs` skill slices `hermes-*.log` runtime logs.
 
+**The native server is an oracle for wire format, not for game logic.** Wrathion is TrinityCore-derived and carries its own bugs; where one exists, a capture of it is a capture of the bug. Known case: [`3.4.3_Source#1`](https://github.com/Xian55/3.4.3_Source/issues/1) — `HandleSocketGems` rejects every gem aimed at a prismatic socket (Eternal Belt Buckle), because the colour check reads `SocketColorToGemTypeMask[GetSocketColor(i)]` and a prismatic socket has colour `0`, so the "unless it's prismatic" exemption can never fire. The request dies on a bare `return` with no reply packet at all, so a capture shows the client's `CMSG_SOCKET_GEMS` and then nothing — which reads exactly like a proxy-side drop if you assume the server is correct. AzerothCore accepts the same request. When a native capture shows an operation simply not happening, rule out a server-side bug before concluding the proxy is at fault.
+
 ---
 
 ## Reference repos
 
-Three external repos are pinned for V3_4_3 cross-checking. Cite whichever fits the question.
+Five external repos are pinned for V3_4_3 cross-checking. Cite whichever fits the question. The first three answer "what does a *modern* client expect on the wire"; the last two answer "what does the *legacy backend* actually send", which is the other half of every translation bug.
 
 ### `HermesProxy-WOTLK` — proxy fork (translated path)
 
@@ -482,321 +554,34 @@ The source tree carries 23 distributed `CLAUDE.md` files acting as a curated loo
 - **Role**: long-standing wire-format reference. Source comments throughout HermesProxy (e.g. `// matches CypherCore`, `// confirmed against CypherCore native`) were diff-verified against this fork. Now demoted to **secondary** behind Wrathion (see 2026-05-18 row in "Done so far"), but still cited where existing source comments call it out.
 - **Use**: tiebreaker / second-opinion sniff source for V3_4_3 wire-format work.
 
----
+### `azerothcore-wotlk` — secondary backend source
 
-## Action bar visibility & macro persistence (V3_4_3) — May 2026
+- **Origin**: `github.com/azerothcore/azerothcore-wotlk`
+- **Local clone**: `X:\Programming\refs\azerothcore-wotlk`
+- **Role**: the source for the secondary backend. Read it to settle what the legacy server actually emits before assuming the proxy dropped something — AC and TC diverge on plenty of handlers, and a symptom that appears on only one of them is usually explained here rather than in our translation layer.
+- **Precedent**: the `SMSG_ENCHANTMENTLOG` fix (`7f448b8f`) came from reading AC's `Item.cpp SendEnchantmentLog` and finding the legacy packet carries no item guid and no slot at all; the Wrathion prismatic-socket bug ([`3.4.3_Source#1`](https://github.com/Xian55/3.4.3_Source/issues/1)) was identified by diffing its colour check against AC's, which accepts the same request.
 
-### Solved
+### `TrinityCore-wotlk_classic` / `mangos-wotlk` — primary + legacy backend sources
 
-- **Macros on action bars (all bars 1-12) persist across logout/login.**
-  Root cause was the modern V3_4_3 wire format for `CMSG_SET_ACTION_BUTTON`
-  (Int32 packed action+type) being mis-decoded as two independent uint16
-  fields by the CypherCore-derived `SetActionButton.Read()`. Macros, items,
-  mounts, equipment sets and companions were all collapsing to a SPELL with a
-  truncated id, and the V3_4_3 client crashed the second or third time it
-  tried to render the resulting bogus slot on a side bar (most reproducibly
-  Action Bar 4).
+- **Local clones**: `X:\Programming\refs\TrinityCore-wotlk_classic`, `X:\Programming\refs\mangos-wotlk`
+- **Role**: same purpose as the AC clone for the primary backend and for cMangos. TC is also the upstream of Wrathion, so a handler that looks wrong in the native 3.4.3 source is worth checking against 3.3.5a TC before concluding the 3.4.3 fork introduced it.
 
-  Fix: version-gated repack in `HandleSetActionButton`
-  (`HermesProxy/World/Server/PacketHandlers/CharacterHandler.cs`):
+## TC 3.4.3 diff scan (2026-05-21) — closed
 
-  | Client | Wire layout (per WPP) | Repack |
-  |---|---|---|
-  | V3_4_3 (V3_4_0 module) | Int32 packed (low24=action, high8=type) + Byte | Recombine: `actionReal = Action \| ((Type&0xFF)<<16)`, `typeReal = (Type>>8)&0xFF` |
-  | V1_14 / V2_5 (V1_13_2 module) | Int16 Action + Int16 Type + Byte (independent fields) | Direct: `actionReal = Action`, `typeReal = Type & 0xFF` |
+A big-diff scan between a native TC 3.4.3 capture and a HermesProxy modern session found four data-flow gaps where
+the proxy shipped empty or stale data. **All of them are now fixed.** The long working notes that used to fill this
+section have been removed; what they recorded is either in the matrix above, in the commits below, or — for the two
+items that turned out to still be open — moved into *Open issues*.
 
-  Trace logging at `[V343Trace][SaveButton]` shows wire bytes, build branch
-  and the resolved `actionReal/typeReal/packedLE` triple per click.
+| § | Gap | Resolved |
+|---|---|---|
+| F | `SMSG_ALL_ACHIEVEMENT_DATA` was an 8-byte stub against native's ~606 B | 2026-05-23 — [`120b827b`](https://github.com/Xian55/HermesProxy/commit/120b827b) + [`a3352639`](https://github.com/Xian55/HermesProxy/commit/a3352639). A second, unrelated defect on the same packet surfaced later as [#200](https://github.com/Xian55/HermesProxy/issues/200); see the achievement row in the matrix. |
+| G | `SMSG_ACCOUNT_HEIRLOOM_UPDATE` was an empty stub | 2026-05-23 — [`4a9c222a`](https://github.com/Xian55/HermesProxy/commit/4a9c222a) |
+| G2 | `ActivePlayerData::Heirlooms` / `HeirloomFlags` dynamic fields never written | 2026-05-23 |
+| G3 | Heirloom inventory tooltip showed broken stats | 2026-05-23 |
+| G4 | Character pane showed 0% crit / dodge / parry until an equipment slot was touched | 2026-05-31 — `WriteCreateActivePlayerAll` wrote hardcoded zeros for the whole `RangedExpertise..OffhandCritPercentage` block. The 2026-05-23 attempt made it worse by inserting a `TrackResourceMask[2]` that **already existed** under a mislabelled name, shifting every downstream field 8 bytes and breaking the backpack. Lesson kept: diff against `refs/3.4.3_Source/.../UpdateFields.cpp`, never against WPP's 51666 module, and never re-insert a field that already occupies wire space even when it is mislabelled. |
+| I | `SMSG_SEND_KNOWN_SPELLS.InitialLogin` flag never set | 2026-05-23 — synthesised from `GameState.IsFirstEnterWorld` for V3_4_3 only |
 
-- **`alwaysShowActionBars` checkbox persists across logout/login.** Worked
-  through the natural account-data round-trip — the V3_4_3 client uploads
-  this CVar to `GlobalConfigCache` (account-data type 0) and reads it back.
-  No proxy work needed; verified in `data-0.bin`.
-
-- **Action Bar 2 / 3 / 4 / 5 visibility checkboxes persist across
-  logout/login.** Fixed 2026-08-24 (#121); the May 2026 Edit Mode theory
-  was wrong. `SendAccountDataTimes` bumped the GlobalConfigCache
-  (type 0) timestamp to `now` on every login so the client would re-request
-  the blob and pick up synthesised CVars. Advertising a timestamp *newer*
-  than the client's own cache makes it drop that cache and wait for the
-  server copy, which lands after the action bars have already been built —
-  so an empty bar stayed hidden until the checkbox was re-toggled. A merely
-  mismatched timestamp is harmless: only server-newer defers frame init.
-
-  The synthesised CVars were never used. Across repeated sessions the
-  client's own type-0 upload carries `alwaysShowActionBars` and
-  `lockActionBars` and none of `bottomLeftActionBar` /
-  `bottomRightActionBar` / `rightActionBar` / `rightActionBar2` — it
-  discards all four every time. The bump, the Phase 7 augmenter
-  (`AugmentGlobalConfigBlob`) and the `MultiActionBarsMask` that fed it are
-  all removed.
-
-  Also disproved: the client only ever uploads account-data types 0, 1, 4, 7
-  and 9. Types 13 / 14 are advertised (count 15, correct for 3.4.3) and
-  never touched, so the Edit Mode enum gap was never the cause.
-
-- **`MultiActionBars` legacy descriptor field** is correctly extracted from
-  `PLAYER_FIELD_BYTES` byte 2 and written to the V3_4_3 modern descriptor at
-  bit 72 in block 70 (matching `trinitywotlk` reference, *not* the newer
-  `wotlk_classic` repo's bit 78 which is V3_4_4+). Corrected 2026-08-24: the
-  V3_4_3 client reads bits 0-3 (the four extra bars) too and adopts them at
-  login. Bit 4 (`alwaysShowActionBars`) is the one it overrides from its own
-  cached CVar — observed live as the client answering a server `0x1E` with
-  `CMSG_SET_ACTION_BAR_TOGGLES 0x0E`, keeping bits 1-3 and clearing only
-  bit 4.
-
-### Open / not solved
-
-- **Sporadic `CMSG_LOG_DISCONNECT(reason=7)` under load** (combat / hotfix
-  bursts / bar toggles). The ring buffer in `WorldSocket` dumps the last 40
-  SMSG packets sent before each disconnect (search log for
-  `[ActionBarTrace] reason=7`). Across multiple captured disconnects the
-  buffer never showed an obviously malformed packet from the proxy — looks
-  like a V3_4_3 client × HermesProxy stability issue under the 3.3.5
-  backend that needs client-side telemetry to pin down.
-
-### Diagnostic logging left in place
-
-All emit at `LogType.Trace` under the `[ActionBarTrace]` prefix
-(`[V343Trace][SaveButton]` for the action-button path):
-
-| Where | What |
-|---|---|
-| `World/Server/PacketHandlers/ClientConfigHandler.cs` | `HandleUpdateAccountData` (DataType + size + decompressed text preview); `HandleRequestAccountData` (DataType + slot present); type-0 response augmentation log |
-| `World/Server/PacketHandlers/CharacterHandler.cs` (~line 247) | `HandleSetActionBarToggles` (Mask byte hex+binary); `HandleSetActionButton` (slot→bar mapping + wire+resolved values+legacy packedLE) |
-| `World/Server/WorldSocket.cs` (~line 1184) | `SendAccountDataTimes` (non-zero slot timestamps); type-0 timestamp bump; ring-buffer dump on `CMSG_LOG_DISCONNECT(reason=7)` |
-| `World/Client/PacketHandlers/UpdateHandler.cs:3171` | `MultiActionBars` byte extracted from `PLAYER_FIELD_BYTES` (hex + binary + raw32 + guid) |
-
-Persisted state: per-character `MultiActionBarsMask` (nullable byte) on
-`PlayerSettings.InternalStorage` / `settings.json` — captures the last
-non-zero `CMSG_SET_ACTION_BAR_TOGGLES` mask the user sent, so Phase 7+8
-can replay it on next login (currently inert for bars 2-5 per the open
-issue above).
-
-## TODO — Not yet bridged from TC 3.4.3 (2026-05-21 diff scan)
-
-Big-diff scan between native TC 3.4.3 capture (`refs/3.4.3_Build/.../World_questing_level_1_parsed.txt`) and HermesProxy modern session (`modern_54261_20260520_231838_2_parsed.txt`) surfaced four data-flow gaps where the proxy ships empty / stale data the V3_4_3 client otherwise expects from native. None of these crash the client, but each leaves a UI surface silent / incorrect.
-
-### F. ~~SMSG_ALL_ACHIEVEMENT_DATA — empty stub (8 B) vs native ~606 B~~ — FIXED 2026-05-23
-
-Resolved. New `HermesProxy/World/Client/PacketHandlers/AchievementHandler.cs`
-translates three legacy opcodes to modern V3_4_3:
-
-- `SMSG_ALL_ACHIEVEMENT_DATA` (0x47D, panel init) — reads two `-1`-terminated
-  loops (earned + criteria progress), maps player GUID via
-  `GameState.CurrentPlayerGuid`, packed-time via
-  `Time.GetUnixTimeFromPackedTime`, realm via `RealmId.GetAddress()`.
-- `SMSG_CRITERIA_UPDATE` (0x46A, runtime tick).
-- `SMSG_ACHIEVEMENT_EARNED` (0x468, toast). Legacy carries one GUID
-  (earner); modern wants both `Sender` + `Earner` — mirrored.
-
-New `HermesProxy/World/Server/Packets/AchievementPackets.cs` ships modern
-wire packets (`AllAchievementData`, `CriteriaUpdatePkt`,
-`AchievementEarnedPkt`). Wire layout taken from TC 3.4.3 source
-(`AchievementPackets.{h,cpp}` + `PacketUtilities.h` —
-`Duration<Seconds>` and `Timestamp<int64>` are 8-byte Int64 on wire, not
-4-byte as the HermesProxy-WOTLK fork wrote it).
-
-Shared `CriteriaProgressPkt` in `MiscPackets.cs` corrected to TC layout
-(added `Unused_10_1_5` UInt32, widened `TimeFromStart`/`TimeFromCreate`
-to Int64, expanded `Flags` from 4-bit to UInt32). Old wire was dormant —
-`AllAccountCriteria` is always sent with an empty `Progress` list — so
-the foreach never ran, the bug never manifested.
-
-`EmptyAllAchievementData` class deleted from `EmptyInitPackets.cs` and
-the dispatch removed from `CharacterHandler.cs:386`. Version-gated to
-`ClientVersionBuild.V3_0_2_9056+` so V1_14/V2_5 paths fall through
-unchanged. Verified on TC 3.3.5 backend; cMangos untested.
-
-### G. ~~SMSG_ACCOUNT_HEIRLOOM_UPDATE — empty stub~~ — FIXED 2026-05-23
-
-Resolved. `EmptyAccountHeirloomUpdate` removed; replaced by
-`AccountHeirloomUpdate` in new `World/Server/Packets/CollectionPackets.cs`
-shipping 38 IDs sourced from `CSV/Hotfix/Heirloom3.csv` via
-`GameData.LoadHeirlooms`. Packet wire format matches TC
-`MiscPackets.cpp:646-664` exactly (verified against WPP V3_4_0/V4_4_0/V6_0_2
-`HandleAccountHeirloomUpdate`). All `Flags=0` (`HEIRLOOM_FLAG_NONE`).
-
-Note: this packet alone is not enough to populate the Collections panel
-header — modern client computes "owned count" from
-`ActivePlayerData::Heirlooms` DynamicUpdateField, not from this packet.
-The packet just triggers a panel refresh against descriptor state. The
-matching descriptor write landed in §G2.
-
-### G2. ~~ActivePlayerData::Heirlooms / HeirloomFlags dynamic fields~~ — FIXED 2026-05-23
-
-Symptom (was): heirloom panel showed `0/38` even after §G's packet shipped
-38 IDs. Modern client computed "owned count" from
-`ActivePlayerData::Heirlooms` + `HeirloomFlags` DynamicUpdateFields, not
-from the packet.
-
-Fix (`ObjectUpdateBuilder.cs:WriteCreateActivePlayerAll` lines 989-1004 +
-new payload block after NumStableSlots):
-- Replaced 16-uint32 placeholder loop with 16 explicit per-slot writes
-  matching WPP V3_4_0 wire layout (slots 6 + 7 = Heirlooms.Resize +
-  HeirloomFlags.Resize, set to `(uint)GameData.Heirlooms.Length` = 38).
-- Inserted 38×Int32 ItemIDs + 38×UInt32 Flags payload after NumStableSlots
-  (=304 added wire bytes). Downstream PvpInfo / ResearchHistory etc. shift
-  +304 on wire; client expects them at the same relative offset since it
-  reads the 304 payload bytes per the count prefix → aligned.
-
-Result: Collections → Heirlooms tab now shows `38/38` owned, all icons
-colored. No regressions to bags, tracked rep, or stats panel (PvpInfo
-and trailing fixed-size area land at correctly-aligned offset on both
-sides of the dynamic payload).
-
-Caveat — right-click "Create from Collection" not supported: the modern
-client casts spell 160597 (`Misc[0] = itemID`) to summon a copy of the
-heirloom to the player's bag. Legacy 3.3.5a server has no such spell
-("unknown spell id 160597") and silently drops the cast → client
-re-spams. Proxy intercepts the cast in
-`SpellHandler.HandleCastSpell` (`World/Server/PacketHandlers/SpellHandler.cs:109`)
-and replies with `SendCastRequestFailed` so the client stops; the cast
-is NOT forwarded to the legacy server. Item creation is not bridged
-(no clean legacy path that doesn't require GM `.additem`; account-bound
-collection tracking is a Cataclysm+ feature the legacy server doesn't
-have). Users obtain heirlooms via normal legacy gameplay: heirloom-vendor
-NPC (if present on the 3.3.5a server's DB) or quest reward
-(Champion's Seals / Stone Keeper's Shards). Collection panel is a
-visual-only mirror.
-
-Same dynamic-field-payload pattern applies to other empty-stub init
-packets (`EmptyAccountMountUpdate` for Mounts, Transmog, etc.) if those
-panels are ever wired in. Toys are no longer a stub: bag items in
-`Toy.db2` can be learned into the 3.4.3 Toy Box (`CMSG_ADD_TOY` /
-`ActivePlayerData.Toys` / `SMSG_ACCOUNT_TOY_UPDATE`) and used from the
-journal (`CMSG_USE_TOY` → legacy `CMSG_USE_ITEM` on the item this
-character still carries). The journal is account-wide (native 3.4.3);
-the 3.3.5a backend still requires the physical item, so we do not hide
-it. Equippable toys (trinkets / head) must be worn first.
-
-### G3. ~~Heirloom inventory tooltip — broken stats~~ — FIXED 2026-05-23
-
-Symptom: `.additem 42946` (any of the 38 heirlooms) rendered an
-inventory tooltip showing "1 - 0 Damage", no Equip lines, and "Account
-Bound" instead of "Binds to Blizzard account". Collections-tab tooltip
-for the same item rendered correctly (25-48 Damage + 3 green Equip lines).
-
-Root cause (resolved via native TC 3.4.3 sniff
-`X:\Programming\refs\3.4.3_Build\bin\Release\Logs\World.pkt` →
-`World_parsed.txt` line 76250-76369): item descriptor
-`ItemData.DynamicFlags` is `0x00200001` on native (`Soulbound | Child`),
-but legacy 3.3.5a `ITEM_FIELD_FLAGS` ships only `0x01` (Soulbound) —
-3.3.5a has no `Child` bit concept. Bit 21 (`ITEM_FIELD_FLAG_CHILD`) is
-what tells the V3_4_3 client to fire the `ScalingStatDistributionID`-
-driven heirloom scaling formula on inventory render. Other candidates
-(ItemBonusKey, BonusListIDs, ContentTuning, ItemAppearanceModID,
-RandomProperties) were all zero in the native sniff — single bit on a
-single field.
-
-Fix (`UpdateHandler.cs:1940-1953`): when `ModernVersion.ExpansionVersion
->= 3` AND `updateData.ObjectData.EntryID ∈ GameData.HeirloomItemIds`,
-OR `ItemFieldFlag.Child` (0x00200000) into the forwarded
-`ItemData.Flags`. New `ItemFieldFlag` enum in
-`HermesProxy/World/Enums/ItemDefines.cs` mirrors TC `Item.h`
-`ItemFieldFlags`. Fast-path predicate via new
-`GameData.HeirloomItemIds` (FrozenSet<int>, populated in
-`LoadHeirlooms`). V1_14 / V2_5 paths untouched.
-
-### G4. Character pane stats show 0% on login (Ranged Crit / Dodge / Parry / etc.) — RESOLVED 2026-05-31
-
-Symptom: after login, character pane Ranged tab (and likely Melee /
-Spell tabs) shows 0% crit chance, 0 Power, Hit Rating 0, etc. Touching
-any equipment slot (equip/unequip cycle) triggers a Values update that
-ships the real percentage and the UI catches up.
-
-Diagnosis (2026-05-23): `WriteCreateActivePlayerAll`
-(`HermesProxy/World/Objects/Version/V3_4_3_54261/ObjectUpdateBuilder.cs:806`)
-writes hardcoded zeros for the entire RangedExpertise..OffhandCritPercentage
-+ ShieldBlock block (12 fields × 4 bytes = 48 bytes) instead of reading
-`active.RangedCritPercentage` etc. Live values are populated correctly
-in `_updateData.ActivePlayerData` by `UpdateHandler.cs` (PLAYER_*_CRIT_PERCENTAGE
-reads) but never written to the V3_4_3 wire on Create.
-
-Fix attempt 2026-05-23 (reverted): inserted `TrackResourceMask[2]`
-(8 bytes — required per WPP V3_4_0 wire layout) and converted the
-12-field block + Mainhand/Offhand expertise from hardcoded zeros to
-live `active.*` reads. Stats panel started displaying correctly. **But**
-inventory broke: backpack inaccessible ("available slot count is (0)",
-pressing B did nothing). Tracked-reputation also wrong. Reverted full
-ObjectUpdateBuilder.cs delta.
-
-Suspect: V3_4_3.54261 client wire layout differs from WPP V3_4_3.51666
-module's `ReadCreateActivePlayerData` — possibly the 54261 client does
-NOT expect TrackResourceMask[2] in CreateActivePlayerData. Adding it
-shifted every downstream field +8 bytes on the wire from what the 54261
-client expects, even though the values themselves landed at "correct"
-WPP-stated positions. Symptom was non-fatal because the player session
-ran, but bag descriptors (which depend on NumBackpackSlots and bag-slot
-GUIDs being at correct client-side wire offsets) parsed garbage.
-
-**RESOLVED 2026-05-31.** The 2026-05-23 conclusion was wrong: there is no
-8-byte 54261 vs WPP difference. The break that day was a **duplicate**
-`TrackResourceMask[2]` insert — those two UInt32 slots already existed in
-`WriteCreateActivePlayerAll`, mislabeled as `Mainhand/OffhandExpertise`
-("TYPE MISMATCH: wire is UInt32 here" was the tell). Inserting them again
-shifted every downstream field +8 bytes → bag breakage.
-
-Ground truth is TC `refs/3.4.3_Source/.../UpdateFields.cpp:2869`
-`ActivePlayerData::WriteCreate` — the proxy's pre-existing byte layout
-already matched it field-for-field (count verified end-to-end). Fix this
-session: relabeled the mislabeled slots and replaced the hardcoded-zero
-blocks with live `active.*` reads **without changing any byte width** —
-the exact thing the old note said was needed. Filled: TrackResourceMask,
-Mainhand/Offhand/Ranged expertise, Block/Dodge/Parry/Crit %, multi-school
-`ModDamageDone*` + `SpellCritPercentage`, ShieldBlock, ModHealingDonePos,
-ModTargetResistance/Physical, LocalFlags, RestInfo, BuybackPrice/Timestamp,
-kill counters + contributions, AuraVision, PvPRankProgress. On-client
-confirmed (Ranged Crit etc. now correct on login, no equip-cycle needed).
-Lesson: diff against TC 3.4.3_Source, NOT WPP's 51666 module; never
-re-insert a field that already occupies wire space (even if mislabeled).
-
-**Sub-note — Attack Power +N green / −N red (2026-05-31):** legacy
-`UNIT_FIELD_ATTACK_POWER_MODS` packs `low16=POSITIVE, high16=NEGATIVE`
-(mangos `StatSystem.cpp:385`; TC `Unit.cpp:10279` adds both, Neg signed).
-`UpdateHandler.cs` had them swapped + zero-extended → flat +AP items never
-showed green. Fixed (melee+ranged): `(short)apMods` / `(short)(apMods>>16)`.
-On-client confirmed.
-
-**Sub-note — Resurrection Sickness red text / `*75%` NOT rendering (OPEN,
-2026-05-31):** the proxy DOES forward the reduction (verified via
-`.aura/.unaura 15007` toggle: Stats 24→6, AttackPower 82→28). The modern
-client still won't color the reduced attributes red. Root cause: the native
-3.4.3 *server* computes and ships derived display fields the legacy 3.3.5
-server never populates — e.g. `ModDamageDonePercent` = 0.25 on native vs
-1.0 (unchanged) via proxy; native AP goes negative. The red/`*75%` depends
-on these derived fields. Also fixed this session (necessary but not
-sufficient): the dropped `Negative` aura flag (`SpellHandler.ReadSingleAura`
-mapped Positive/Duration/NoCaster but not `AuraFlagsWotLK.Negative`).
-Fully matching native would require the proxy to **synthesize** the derived
-display fields from the active aura's MOD_PERCENT_STAT / MOD_DAMAGE_PERCENT_DONE
-effects — a real feature, deferred. Captures:
-`bin/Release/PacketsLog/modern_54261_20260531_023049_2.pkt` (proxy toggle),
-`refs/3.4.3_Build/.../World_sickness_75_mod.pkt` (native).
-
-Symptom: speculative. Native always emits the full 40-row spell modifier array (mostly empty rows). Proxy writes only populated mods. Unclear whether V3_4_3 client requires the canonical 40-row form or accepts dynamic count. **AzerothCore 2026-08-24:** closed as a non-bug for the AC column — wire is count-prefixed, sparse is legal, no play symptom.
-
-Fix path (~10 LOC if confirmed):
-- Modify `World/Server/Packets/SpellPackets.cs` `SetFlatSpellModifier::Write()` to pad the Modifiers array to 40 entries (each empty entry: `modIndex:0, count:0`) before write. Same change for `SetPctSpellModifier` likely.
-- **Verify first** before shipping: read V3_4_3 client's `SMSG_SET_FLAT_SPELL_MODIFIER` handler via IDA/Ghidra to confirm loop iterates `count` from the wire vs hardcoded 40. If dynamic, this is a non-bug; if hardcoded 40, fix is required.
-
-### I. ~~SMSG_SEND_KNOWN_SPELLS `InitialLogin` flag~~ — FIXED 2026-05-23
-
-Resolved. `SpellHandler.cs:21-24` now sets
-`spells.InitialLogin = GameState.IsFirstEnterWorld` for V3_4_3 only
-(other builds forward the legacy bool unchanged). Matches TC 3.4.3
-`IsLoading()` semantics: true during the first SendKnownSpells after
-`CMSG_PLAYER_LOGIN`, false on subsequent zone changes (flipped in
-`MovementHandler.HandleTransferPending` / `HandleNewWorld`). Original
-wotlk.md suggestion `!IsInWorld` was inverted vs packet ordering —
-`IsInWorld` is set true inside `SMSG_LOGIN_VERIFY_WORLD` *before*
-`SMSG_INITIAL_SPELLS` arrives, so the expression would always be false.
-
-### Implementation priority
-
-| # | Fix | Effort | User-visible impact |
-|---|---|---|---|
-| F | All achievement data | M (~150 LOC) | Achievement UI fully silent until fixed |
-| H | Flat spell modifier 40-row pad | XS (~10 LOC, after verification) | Unknown — verify client behavior first |
-
-Both scoped V3_4_3-gated; V1_14 / V2_5 paths unaffected.
+Two items that lived in this section were **not** actually resolved and have been moved to *Open issues*: the
+resurrection-sickness red text, and the §H flat spell-modifier array shape. Both were filed under a heading marked
+RESOLVED, which is how they stayed invisible.

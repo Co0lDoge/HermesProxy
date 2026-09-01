@@ -433,6 +433,19 @@ public sealed class GameSessionData
     // delta alone. Only transports and destructible buildings ever land here.
     public HashSet<WowGuid128> WmoMapObjectGuids = [];
 
+    // Type 11 GAMEOBJECT_TYPE_TRANSPORT objects whose parking and sailing the proxy drives
+    // itself, because the backend never relocates them (TrinityCore 3.3.5a leaves
+    // GameObjectRelocation commented out). Captured from the create: a later state flip
+    // arrives as a Values update carrying only GAMEOBJECT_BYTES_1, so the stop frame it has
+    // to sail to is no longer on the wire, and a rider's deck-relative offset can only be
+    // derived from where the deck actually is. Keyed by the modern guid; a struct value so
+    // registering a boat does not allocate.
+    public Dictionary<WowGuid128, SynthesizedTransport> SynthesizedTransports = [];
+
+    // The transport guid the client last reported in its own movement, so boarding and
+    // leaving can be logged as transitions rather than on every packet.
+    public WowGuid128 LastReportedTransportGuid;
+
     // gameobject_template.data[18] (destructibleData -> DestructibleModelData.db2 id) keyed by
     // GameObject entry, harvested from SMSG_QUERY_GAME_OBJECT_RESPONSE as it passes through.
     // A V3_4_3 client resolves a type-33 object's model through this id and will draw nothing

@@ -988,6 +988,22 @@ public partial class WorldClient
             // See: https://github.com/vmangos/core/commit/14b2598d8d9f0910cb1a492b81502296d272dad3
             if (guid == GetSession().GameState.CurrentPlayerGuid)
                 continue;
+            // A transport the proxy is sailing must not be range-destroyed under its rider.
+            // Native never sends OUT_OF_RANGE for a transport, and TrinityCore's own
+            // GameObject::IsTransport() comment says the same -- yet on a 3.3.5a core the
+            // boat's server-side position stays at spawn while the client carries the
+            // player away from it, and once past the visibility distance the core did drop
+            // it mid-crossing: the client removed the boat and the player fell into the sea
+            // (observed once in twelve crossings). Keep it; a later create is a no-op for a
+            // guid the client holds, and an explicit SMSG_DESTROY_OBJECT -- the round-2
+            // respawn -- still goes through HandleDestroyObject untouched.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+                && GetSession().GameState.SynthesizedTransports.ContainsKey(guid))
+            {
+                if (_melGoFields.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                    TransportLogMessages.OutOfRangeSuppressed(_melGoFields, guid.Low, guid.GetEntry());
+                continue;
+            }
             PrintString($"Guid = {objCount}", index, j);
             lock (GetSession().GameState.ObjectCacheLock)
             {
@@ -4049,6 +4065,47 @@ public partial class WorldClient
                     return (sbyte)((updates[bytes1Field].UInt32Value >> 8) & 0xFF);
 
                 return null;
+            }
+
+            // A transport's ParentRotation can arrive one packet after its create, and the
+            // client keeps whatever the first create said through every re-create. TrinityCore's
+            // Strand of the Ancients ResetObjs adds a boat to the map -- which broadcasts its
+            // create to anyone already in range -- and only then calls
+            // SetParentRotation(0, 0, 1, ~0) on it (BattlegroundSA.cpp), so that first create
+            // carries GameObject::Create's default and the correction follows as a Values with
+            // PARENTROTATION z and w. ParentRotation is what the client rotates the transport's
+            // path by: left stale, the boat carries its riders off in the wrong direction
+            // (reproduced by forcing the stale value on a good boat -- it sailed north instead
+            // of south). Unmasked components come from the field cache the read above just
+            // refreshed. Tracked transports only; for a destructible building this slot is a
+            // model id, not a rotation.
+            if (GAMEOBJECT_ROTATION >= 0 && updateData.CreateData == null
+                && ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                // Mask bits first: almost no Values touches rotation, and the registry
+                // lookup behind them is the only cost worth avoiding on the common path.
+                bool rotationChanged = false;
+                for (int i = 0; i < 4; i++)
+                    rotationChanged |= updateMaskArray[GAMEOBJECT_ROTATION + i];
+                if (rotationChanged && GetSession().GameState.SynthesizedTransports.ContainsKey(guid))
+                {
+                    var cached = GetSession().GameState.GetCachedObjectFieldsLegacy(guid);
+                    var parentRotation = updateData.GameObjectData.ParentRotation;
+                    for (int i = 0; i < 4; i++)
+                    {
+                        int index = GAMEOBJECT_ROTATION + i;
+                        if (updateMaskArray[index])
+                            parentRotation[i] = updates[index].FloatValue;
+                        else if (cached != null && cached.TryGetValue(index, out var field))
+                            parentRotation[i] = field.FloatValue;
+                        else
+                            parentRotation[i] = i == 3 ? 1f : 0f;
+                    }
+                    if (_melGoFields.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                        TransportLogMessages.ParentRotationForwarded(_melGoFields, guid.Low, guid.GetEntry(),
+                            parentRotation[0]!.Value, parentRotation[1]!.Value,
+                            parentRotation[2]!.Value, parentRotation[3]!.Value);
+                }
             }
 
             if (GAMEOBJECT_ROTATION >= 0 && updateData.CreateData != null && updateData.CreateData.MoveInfo != null)

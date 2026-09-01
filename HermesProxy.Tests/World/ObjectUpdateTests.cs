@@ -103,6 +103,33 @@ public class ObjectUpdateConstructorTests
     }
 
     [Fact]
+    public void InitializePlaceholders_ValuesUpdateWithoutFlags_DoesNotFabricateFlags()
+    {
+        var session = CreateGlobalSession();
+        var gameState = (GameSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GameSessionData));
+        gameState.WmoMapObjectGuids = [];
+        session.GameState = gameState;
+
+        var guid = WowGuid128.Create(HighGuidType703.GameObject, 0, 193182, 13);
+
+        var create = new ObjectUpdate(guid, UpdateTypeModern.CreateObject1, session);
+        create.GameObjectData.TypeID = (sbyte)GameObjectTypeModern.MOTransport;
+        create.GameObjectData.Flags = 0x8;
+        create.InitializePlaceholders();
+        Assert.Equal(0x100008u, create.GameObjectData.Flags!.Value);
+
+        // A Values delta that does not carry GAMEOBJECT_FLAGS must not publish one. Publishing
+        // MAP_OBJECT alone would clear every other bit on the client -- GO_FLAG_TRANSPORT (0x8)
+        // among them, which is what lets a player attach to the deck. TrinityCore sends
+        // exactly such a delta (ParentRotation + DynamicFlags) right after a boat's create.
+        var values = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
+        values.ObjectData.DynamicFlags = 0;
+        values.InitializePlaceholders();
+
+        Assert.Null(values.GameObjectData.Flags);
+    }
+
+    [Fact]
     public void InitializePlaceholders_ValuesUpdateForUnknownGameObject_LeavesFlagsAlone()
     {
         var session = CreateGlobalSession();

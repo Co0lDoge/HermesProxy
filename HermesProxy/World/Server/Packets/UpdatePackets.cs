@@ -22,9 +22,12 @@ using Framework.IO;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace HermesProxy.World.Server.Packets;
 
@@ -101,6 +104,16 @@ public class ObjectUpdate
     /// gameobject_template.data[0] -- the same value native 3.4.3 sends as PauseTimes[0].
     /// </summary>
     public uint? TransportStopFrame;
+    /// <summary>
+    /// ServerTime for the create of a transport the proxy parks and sails itself. Native
+    /// 3.4.3 writes GameTime::GetGameTimeMS() there, and the client seeds the clock it
+    /// compares GameObjectData.Level against from it, so the two must share a source. A
+    /// backend that never relocates its type 11 transports hands us a free-running path
+    /// counter instead, which cannot be extended into a deadline. Null leaves the builder
+    /// forwarding the legacy path progress, which is right for a backend that moves the
+    /// boat itself.
+    /// </summary>
+    public uint? TransportServerTime;
     public DynamicObjectData DynamicObjectData = null!;
     public CorpseData CorpseData = null!;
 
@@ -183,7 +196,15 @@ public class ObjectUpdate
         else
             needsWmoFlag = wmoMapObjects.Contains(Guid);
 
-        if (needsWmoFlag)
+        // Only touch Flags where the whole value is being published: on the create, or on
+        // a Values that carries GAMEOBJECT_FLAGS. Fabricating Flags = MAP_OBJECT alone on a
+        // Values that does not carry the field ships a value with every other bit cleared,
+        // GO_FLAG_TRANSPORT (0x8) included -- and that bit is what lets the client attach a
+        // player to a GameObject. TrinityCore follows a freshly spawned boat's create with a
+        // Values carrying only ParentRotation and DynamicFlags in the same tick; with the
+        // flag fabricated there, a player landing on that boat was never attached and stood
+        // still while it sailed away. Native leaves Flags off such a Values entirely.
+        if (needsWmoFlag && (CreateData != null || GameObjectData.Flags != null))
             GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
 
         if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
@@ -214,18 +235,34 @@ public class ObjectUpdate
         if (GameObjectData.Level is > 0)
             TransportStopFrame = (uint)GameObjectData.Level.Value;
 
+        // Remember the boat from its create. The ships-start flip arrives later as a Values
+        // update carrying only GAMEOBJECT_BYTES_1, so the stop frame it has to sail to is
+        // no longer on the wire by then, and the deck position is what a rider's offset is
+        // measured from.
+        //
+        // One hash lookup per update: a create always writes its slot, a Values update only
+        // reads one that exists. The ref is not held across any other mutation of the map.
+        var transports = GlobalSession.GameState.SynthesizedTransports;
+        bool isCreate = CreateData?.MoveInfo != null;
+        ref SynthesizedTransport known = ref isCreate
+            ? ref CollectionsMarshal.GetValueRefOrAddDefault(transports, Guid, out _)
+            : ref CollectionsMarshal.GetValueRefOrNullRef(transports, Guid);
+        if (isCreate)
+        {
+            // A re-create keeps whatever sail is already under way (see below).
+            known = new SynthesizedTransport(
+                TransportStopFrame ?? known.StopFrame,
+                CreateData!.MoveInfo.Position,
+                CreateData.MoveInfo.Orientation,
+                known.SailDeadline,
+                known.SailTargetState);
+        }
+
         // GO_STATE_TRANSPORT_ACTIVE parks the transport at path position 0 -- its spawn --
         // and GO_STATE_TRANSPORT_STOPPED + n parks it at _stopFrames[n], which for the SotA
         // gunships is the landing beach. That maps cleanly onto the two phases a 3.3.5a core
         // expresses with the only states it has: GO_STATE_READY during the warm-up, and
         // GO_STATE_ACTIVE once TrinityCore's StartShips() calls DoorOpen() on the boats.
-        //
-        // The boat jumps between the two rather than sailing. Interpolating requires Level to
-        // be a deadline in the future -- the client animates only while `now < Level`
-        // (GameObject.cpp) -- and the ServerTime we forward is the legacy path-progress
-        // counter rather than the game clock the client compares against, so there is no
-        // shared time base to build that deadline on yet. Players are carried to the beach
-        // and can disembark, which is the gameplay outcome; the sail is cosmetic.
         //
         // Forwarding the raw door state is not an option: the client evaluates
         // `state - GO_STATE_TRANSPORT_ACTIVE`, so a raw 0 is stop-frame index -24 and an
@@ -240,18 +277,75 @@ public class ObjectUpdate
         // GameObjects and reads as a damaged transport.
         GameObjectData.PercentHealth = 255;
 
-        // Native's Level is a deadline in the game clock -- it interpolates the transport
-        // only while `now < Level` -- and synthesizing that deadline does make the boat sail,
-        // but a sailing boat leaves the player behind on a backend that never relocates it:
-        // nothing attaches the player to the deck and they drop into the water partway
-        // across. Playtested 2026-08-30; the boat also wandered somewhere invalid and
-        // vanished. Leaving Level expired keeps the transition instantaneous, which is the
-        // only variant where players actually arrive. Reinstating the sail needs the
-        // passenger link, which needs the proxy to simulate the path itself.
-        GameObjectData.Level = CreateData?.MoveInfo != null
-            ? (int)CreateData.MoveInfo.TransportPathTimer
-            : null;
+        // Level is a deadline in the game clock, not a period: the client interpolates the
+        // transport's path progress toward the state's stop frame only while `now < Level`,
+        // and parks it there otherwise (TrinityCore 3.4.3 GameObject.cpp). On a state change
+        // native sets Level = now + |pathProgress - stopPathProgress|, which the golden SotA
+        // capture confirms: the flip carried Level 227076 with the clock at 166942, a
+        // difference of 60134 against a stop frame of 60133.
+        //
+        // The client seeds `now` from the ServerTime it saw in the create, so both stamps
+        // come from the proxy clock. Native's own create shape is Level just below
+        // ServerTime -- already expired, boat parked at its spawn.
+        //
+        // A flip in either direction is a full traverse between the two stop positions, so
+        // the deadline is always now + stopFrame. That assumes the previous traverse had
+        // finished; a flip landing mid-sail would overshoot by whatever was left, which
+        // nothing in the SotA round timing produces.
+        //
+        // Whatever arrives while a sail is under way republishes the deadline already
+        // scheduled rather than stamping a new one. TrinityCore 3.3.5a never adds a type 11
+        // transport to m_clientGUIDs (Player.cpp UpdateVisibilityOf_helper, a deliberate
+        // hack so the Deeprun tram does not vanish under a rider), so every visibility pass
+        // re-sends the boat's full create -- once a second, observed live, all through the
+        // crossing. An expired Level on one of those would park the boat at the far end the
+        // instant the client honoured it. Same shape for a repeated flip.
+        //
+        // Only a transport with a stop frame gets any of this. A stop-frame-less type 11 --
+        // the Deeprun tram -- free-runs its path with no ServerTime create bit and nothing
+        // to sail to, and keeps the legacy path counter in Level exactly as before.
+        uint now = Time.GetMSTime();
+        sbyte state = GameObjectData.State ?? 0;
+        bool hasStopFrame = !Unsafe.IsNullRef(ref known) && known.StopFrame != 0;
+        bool sailing = hasStopFrame && known.IsSailing(now) && known.SailTargetState == state;
+        if (isCreate)
+        {
+            if (hasStopFrame)
+            {
+                TransportServerTime = now;
+                GameObjectData.Level = (int)(sailing ? known.SailDeadline : now);
+            }
+            else
+            {
+                GameObjectData.Level = (int)CreateData!.MoveInfo.TransportPathTimer;
+            }
+        }
+        else if (state is ModernTransportStateActive or ModernTransportStateStopped)
+        {
+            if (sailing)
+            {
+                GameObjectData.Level = (int)known.SailDeadline;
+            }
+            else if (hasStopFrame)
+            {
+                uint deadline = now + known.StopFrame;
+                GameObjectData.Level = (int)deadline;
+                known = known with { SailDeadline = deadline, SailTargetState = state };
+                if (_melTransport.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                    TransportLogMessages.SailScheduled(_melTransport, Guid.Low, Guid.GetEntry(),
+                        state, known.StopFrame, now, (int)deadline);
+            }
+            else if (_melTransport.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            {
+                // Nothing to sail to; Level stays off the wire and the state flip is
+                // instantaneous, as before.
+                TransportLogMessages.SailUnknownStopFrame(_melTransport, Guid.Low, Guid.GetEntry(), state);
+            }
+        }
     }
+
+    private static readonly Microsoft.Extensions.Logging.ILogger _melTransport =
+        Log.CreateMelLogger(Log.CategoryServer);
 
     public void InitializePlaceholders()
     {

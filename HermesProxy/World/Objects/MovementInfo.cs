@@ -44,6 +44,12 @@ public sealed class MovementInfo
     public uint TransportTime;
     public uint TransportTime2;
     public sbyte TransportSeat = -1;
+    /// <summary>
+    /// V3_4_3 only: the GameObject the client reports standing on, sent alongside -- and
+    /// independently of -- the transport block. Read for diagnostics; nothing on the legacy
+    /// wire carries it.
+    /// </summary>
+    public WowGuid128 StandingOnGameObjectGuid;
     // System.Numerics.Quaternion's default (0,0,0,0) is a non-unit quaternion that
     // the V3_4_3 client rejects on Transport/GameObject CreateObject. Initializing
     // to Identity (0,0,0,1) gives a valid baseline for objects whose legacy server
@@ -86,6 +92,7 @@ public sealed class MovementInfo
         copy.TransportTime = this.TransportTime;
         copy.TransportTime2 = this.TransportTime2;
         copy.TransportSeat = this.TransportSeat;
+        copy.StandingOnGameObjectGuid = this.StandingOnGameObjectGuid;
         copy.Rotation = this.Rotation;
         copy.WalkSpeed = this.WalkSpeed;
         copy.RunSpeed = this.RunSpeed;
@@ -329,7 +336,7 @@ public sealed class MovementInfo
             ReadTransportInfoModern(data);
 
         if (hasStandingOnGameObjectGUID)
-            data.ReadPackedGuid128();
+            moveInfo.StandingOnGameObjectGuid = data.ReadPackedGuid128();
 
         if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 1, 2, 5, 3))
         {

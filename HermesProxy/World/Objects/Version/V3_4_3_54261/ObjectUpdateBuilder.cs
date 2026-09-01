@@ -246,8 +246,14 @@ public partial class ObjectUpdateBuilder
             // what keeps every client seeing the boat in the same place. Matches the V1_14
             // and V2_5 builders. Only fall back to a local clock when the legacy server
             // sent nothing (non-transport objects that still set the bit).
+            //
+            // A transport the proxy parks and sails itself gets the proxy clock instead
+            // (ObjectUpdate.TransportServerTime): the client seeds the clock it compares
+            // GameObjectData.Level against from this field, and the sail deadline written
+            // into Level on the ships-start flip is stamped from the same clock.
             var pathProgress = _updateData.CreateData.MoveInfo.TransportPathTimer;
-            data.WriteUInt32(pathProgress != 0 ? pathProgress : (uint)Environment.TickCount);
+            data.WriteUInt32(_updateData.TransportServerTime
+                             ?? (pathProgress != 0 ? pathProgress : (uint)Environment.TickCount));
         }
 
         if (Has(CreateObjectBits.Vehicle))

@@ -967,3 +967,37 @@ public class WhoEntry
     public int AreaID;
     public bool IsGM;
 }
+
+class ItemTextQuery : ClientPacket
+{
+    public ItemTextQuery(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Id = _worldPacket.ReadPackedGuid128();
+    }
+
+    public WowGuid128 Id = WowGuid128.Empty;
+}
+
+class QueryItemTextResponse : ServerPacket
+{
+    public QueryItemTextResponse() : base(Opcode.SMSG_QUERY_ITEM_TEXT_RESPONSE) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteBit(Valid);
+        _worldPacket.FlushBits();
+
+        // ItemTextCache is written unconditionally, even when Valid is false.
+        _worldPacket.WriteBits(Text.GetByteCount(), 13);
+        _worldPacket.FlushBits();
+        _worldPacket.WriteString(Text);
+
+        _worldPacket.WritePackedGuid128(Id);
+    }
+
+    public WowGuid128 Id = WowGuid128.Empty;
+    public bool Valid;
+    public string Text = string.Empty;
+}

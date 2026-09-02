@@ -46,6 +46,16 @@ public static partial class GameData
     public static Dictionary<uint, ItemModifiedAppearance> ItemModifiedAppearanceStore = [];
     public static Dictionary<uint, ItemEffect> ItemEffectStore = [];
     public static FrozenDictionary<uint, Battleground> Battlegrounds = FrozenDictionary<uint, Battleground>.Empty;
+
+    /// Every currency the modern client can display on this build, keyed by currency id.
+    public static FrozenDictionary<uint, CurrencyTypeRecord> CurrencyTypeStore
+        = FrozenDictionary<uint, CurrencyTypeRecord>.Empty;
+
+    /// The subset legacy carries as items in the currency-token slots, keyed by the legacy item
+    /// id. 3.4.3's CurrencyTypes.db2 dropped the ItemID column that 3.3.5a's DBC had, so the
+    /// pairing cannot be derived at runtime and ships as CSV/CurrencyTypes{expansion}.csv.
+    public static FrozenDictionary<uint, CurrencyTypeRecord> CurrencyTypeByItemId
+        = FrozenDictionary<uint, CurrencyTypeRecord>.Empty;
     // Modern AreaTrigger id -> the 3.3.5a-era id the legacy server's areatrigger_teleport
     // (and BattlegroundWS::HandleAreaTrigger) is keyed on. Cataclysm renumbered most static
     // triggers; the Classic clients ship the post-Cataclysm DB2 while legacy cores kept the
@@ -639,6 +649,7 @@ public static partial class GameData
             LoadItemDisplayIdToFileDataId,
             LoadAreaTriggerRemap,
             LoadBattlegrounds,
+            LoadCurrencyTypes,
             LoadChatChannels,
             LoadItemEnchantVisuals,
             LoadSpellVisuals,
@@ -734,6 +745,39 @@ public static partial class GameData
             broadcastText.EmoteDelays[2] = UInt16.Parse(row[9].Span);
             BroadcastTextStore.Add(broadcastText.Entry, broadcastText);
         }
+    }
+
+    public static void LoadCurrencyTypes()
+    {
+        var path = Path.Combine("CSV", $"CurrencyTypes{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: the expansion has no item-backed currencies to bridge.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        int estimate = EstimateRowCount(path, 48);
+        var byId = new Dictionary<uint, CurrencyTypeRecord>(estimate);
+        var byItemId = new Dictionary<uint, CurrencyTypeRecord>(estimate);
+        foreach (var row in reader)
+        {
+            uint currencyId = uint.Parse(row[0].Span);
+            uint itemId = uint.Parse(row[1].Span);
+            uint maxQuantity = uint.Parse(row[2].Span);
+
+            var record = new CurrencyTypeRecord(currencyId, itemId, maxQuantity);
+            byId[currencyId] = record;
+
+            // Honor and arena points carry item id 0: legacy keeps them in player fields rather
+            // than the currency-token slots, so they must not be picked up by the token sweep.
+            if (itemId != 0)
+                byItemId[itemId] = record;
+        }
+
+        CurrencyTypeStore = byId.ToFrozenDictionary();
+        CurrencyTypeByItemId = byItemId.ToFrozenDictionary();
     }
 
     public static void LoadItemDisplayIds()

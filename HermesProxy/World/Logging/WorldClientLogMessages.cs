@@ -217,4 +217,14 @@ internal static partial class WorldClientLogMessages
         string SourceFile,
         string NetDir,
         Exception Exception);
+
+    [LoggerMessage(
+        EventId = 219,
+        Level = LogLevel.Debug,
+        Message = "Publishing {Records} currency records to the client.")]
+    public static partial void CurrencyPublished(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        int Records);
 }

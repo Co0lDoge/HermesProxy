@@ -408,10 +408,19 @@ public partial class WorldClient
                         HermesProxy.World.Server.CollectionSync.StampSummonedBattlePet(updateData, GetSession().GameState);
                     }
 
-                    if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
-                       !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
+                    if (guid.IsItem())
                     {
-                        missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                        // A bag slot pointing at an item that has no CreateObject yet reads back as
+                        // entry 0, so the player's own create - which carries the slot guids - is
+                        // always swept too early. Re-arm on the item's create so the inventory is
+                        // re-read once the object it names actually exists.
+                        GetSession().GameState.InventoryChangedSinceQuestResync = true;
+
+                        if (updateData.ObjectData.EntryID != null &&
+                            !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
+                        {
+                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                        }
                     }
 
                     if (updateData.CreateData.MoveInfo != null || !guid.IsWorldObject() )
@@ -480,10 +489,19 @@ public partial class WorldClient
 
                     TraceNpcBotCreateObject("CreateObject2", oldGuid, guid, updateData);
 
-                    if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
-                       !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
+                    if (guid.IsItem())
                     {
-                        missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                        // A bag slot pointing at an item that has no CreateObject yet reads back as
+                        // entry 0, so the player's own create - which carries the slot guids - is
+                        // always swept too early. Re-arm on the item's create so the inventory is
+                        // re-read once the object it names actually exists.
+                        GetSession().GameState.InventoryChangedSinceQuestResync = true;
+
+                        if (updateData.ObjectData.EntryID != null &&
+                            !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
+                        {
+                            missingItemTemplates.Add((uint)updateData.ObjectData.EntryID);
+                        }
                     }
 
                     if (updateData.CreateData.MoveInfo != null || !guid.IsWorldObject())
@@ -555,6 +573,7 @@ public partial class WorldClient
         {
             GetSession().GameState.InventoryChangedSinceQuestResync = false;
             ResyncItemQuestCredits();
+            RefreshCurrencies();
             CollectionSync.RefreshUsableToys(GetSession());
         }
 
@@ -2190,6 +2209,96 @@ public partial class WorldClient
         }
     }
     
+    // Legacy has no currency packet at all. Honor and arena points live in player fields, and
+    // everything else the modern currency tab lists - emblems, battleground marks, Champion's Seals
+    // - is an item in the currency-token slots there, so the whole panel has to be synthesised from
+    // those two sources. Native does the same conversion through g_ItemToCurrencyStore.
+    //
+    // The set is republished as a whole rather than as a delta because a currency that drops to
+    // zero has to be sent as a zero record: the client keeps the last quantity it was told about,
+    // so simply leaving the record out strands a stale total on screen. LastPublishedCurrencies
+    // keeps the packet off the wire when nothing actually moved.
+    void RefreshCurrencies(Dictionary<int, UpdateField>? freshFields = null)
+    {
+        var gameState = GetSession().GameState;
+        if (ModernVersion.ExpansionVersion <= 1 || gameState.CurrentPlayerGuid.IsEmpty())
+            return;
+
+        var snapshot = new Dictionary<uint, uint>();
+
+        int honorField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_HONOR_CURRENCY);
+        int arenaField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_ARENA_CURRENCY);
+        if (honorField >= 0)
+            snapshot[(uint)Currency.HonorPoints] = ReadPlayerCurrencyField(freshFields, honorField, PlayerField.PLAYER_FIELD_HONOR_CURRENCY);
+        if (arenaField >= 0)
+            snapshot[(uint)Currency.ArenaPoints] = ReadPlayerCurrencyField(freshFields, arenaField, PlayerField.PLAYER_FIELD_ARENA_CURRENCY);
+
+        if (GameData.CurrencyTypeByItemId.Count != 0)
+        {
+            foreach (var (itemId, count) in gameState.GetCurrencyTokenCounts())
+            {
+                if (count != 0 && GameData.CurrencyTypeByItemId.TryGetValue(itemId, out var currency))
+                    snapshot[currency.CurrencyId] = count;
+            }
+        }
+
+        var lastPublished = gameState.LastPublishedCurrencies;
+        var published = new Dictionary<uint, uint>(snapshot);
+        if (lastPublished != null)
+        {
+            foreach (uint currencyId in lastPublished.Keys)
+                published.TryAdd(currencyId, 0);
+        }
+
+        if (!HasCurrencyChanged(lastPublished, published))
+            return;
+
+        // SMSG_SETUP_CURRENCY replaces the client's list outright rather than merging into it, so
+        // every record goes out on every publish. Sending only the changed ones wiped honor and
+        // arena off the panel the moment an emblem arrived.
+        SetupCurrency currencies = new SetupCurrency();
+        foreach (var (currencyId, quantity) in published)
+        {
+            var record = new SetupCurrency.Record
+            {
+                Type = currencyId,
+                Quantity = quantity,
+            };
+            // A zero cap in CurrencyTypes.db2 means uncapped; sending it would show "0" as the
+            // ceiling, so the optional field is left out instead.
+            if (GameData.CurrencyTypeStore.TryGetValue(currencyId, out var type) && type.MaxQuantity != 0)
+                record.MaxQuantity = (int)type.MaxQuantity;
+
+            currencies.Data.Add(record);
+        }
+
+        gameState.LastPublishedCurrencies = published;
+        WorldClientLogMessages.CurrencyPublished(_melLog, _sourceFile, _netDirNone, currencies.Data.Count);
+        SendPacketToClient(currencies);
+    }
+
+    private static bool HasCurrencyChanged(Dictionary<uint, uint>? lastPublished, Dictionary<uint, uint> published)
+    {
+        if (lastPublished == null || lastPublished.Count != published.Count)
+            return true;
+
+        foreach (var (currencyId, quantity) in published)
+        {
+            if (!lastPublished.TryGetValue(currencyId, out uint previous) || previous != quantity)
+                return true;
+        }
+
+        return false;
+    }
+
+    private uint ReadPlayerCurrencyField(Dictionary<int, UpdateField>? freshFields, int fieldIndex, PlayerField field)
+    {
+        if (freshFields != null && freshFields.TryGetValue(fieldIndex, out var value))
+            return value.UInt32Value;
+
+        return GetSession().GameState.GetLegacyFieldValueUInt32(GetSession().GameState.CurrentPlayerGuid, field);
+    }
+
     private void StoreObjectUpdateInternal(ref WowGuid128 guid, ObjectType objectType, BitArray updateMaskArray, Dictionary<int, UpdateField> updates, AuraUpdate auraUpdate, PowerUpdate? powerUpdate, bool isCreate, ObjectUpdate updateData)
     {
         // Object Fields
@@ -3242,6 +3351,21 @@ public partial class WorldClient
                     }
                 }
             }
+            // The modern client has no equivalent of the WotLK currency-token slots, so nothing is
+            // copied across - but spending the last emblem clears one of these and nothing else,
+            // and without re-arming here the currency panel keeps showing the old amount forever.
+            int PLAYER_FIELD_CURRENCYTOKEN_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_CURRENCYTOKEN_SLOT_1);
+            if (PLAYER_FIELD_CURRENCYTOKEN_SLOT_1 >= 0)
+            {
+                for (int i = 0; i < 32; i++)
+                {
+                    if (updateMaskArray[PLAYER_FIELD_CURRENCYTOKEN_SLOT_1 + i * 2])
+                    {
+                        GetSession().GameState.InventoryChangedSinceQuestResync = true;
+                        break;
+                    }
+                }
+            }
             int PLAYER_FIELD_BANK_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BANK_SLOT_1);
             if (PLAYER_FIELD_BANK_SLOT_1 >= 0)
             {
@@ -3923,22 +4047,9 @@ public partial class WorldClient
                 if (PLAYER_FIELD_HONOR_CURRENCY >= 0 && PLAYER_FIELD_ARENA_CURRENCY >= 0 &&
                    (updateMaskArray[PLAYER_FIELD_HONOR_CURRENCY] || updateMaskArray[PLAYER_FIELD_ARENA_CURRENCY]))
                 {
-                    SetupCurrency currencies = new SetupCurrency();
-                    if (updates.ContainsKey(PLAYER_FIELD_ARENA_CURRENCY))
-                    {
-                        SetupCurrency.Record honor = new SetupCurrency.Record();
-                        honor.Type = (uint)Currency.ArenaPoints;
-                        honor.Quantity = updates[PLAYER_FIELD_ARENA_CURRENCY].UInt32Value;
-                        currencies.Data.Add(honor);
-                    }
-                    if (updates.ContainsKey(PLAYER_FIELD_HONOR_CURRENCY))
-                    {
-                        SetupCurrency.Record honor = new SetupCurrency.Record();
-                        honor.Type = (uint)Currency.HonorPoints;
-                        honor.Quantity = updates[PLAYER_FIELD_HONOR_CURRENCY].UInt32Value;
-                        currencies.Data.Add(honor);
-                    }
-                    SendPacketToClient(currencies);
+                    // On a CreateObject the block is only written to the session cache after this
+                    // returns, so hand the freshly parsed fields over rather than reading it back.
+                    RefreshCurrencies(updates);
                 }
             }
             int PLAYER_FIELD_MOD_MANA_REGEN = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_MANA_REGEN);

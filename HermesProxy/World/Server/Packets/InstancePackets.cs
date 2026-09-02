@@ -276,3 +276,40 @@ class RaidInstanceMessage : ServerPacket, ISpanWritable
     public bool Locked;
     public bool Extended;
 }
+
+/// <summary>
+/// Sent when the player steps into an instance that will bind them, so the client can put up the
+/// "you will be saved" confirmation. Legacy calls this SMSG_INSTANCE_LOCK_WARNING_QUERY and sends
+/// two uint32s plus a byte (Map.cpp, the perm-bound branch of Map::CannotEnter); V3_4_3 renamed it
+/// and moved the trailing flags into bits.
+/// </summary>
+class PendingRaidLock : ServerPacket
+{
+    public PendingRaidLock() : base(Opcode.SMSG_PENDING_RAID_LOCK) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteInt32(TimeUntilLock);
+        _worldPacket.WriteUInt32(CompletedMask);
+        _worldPacket.WriteBit(Extending);
+        _worldPacket.WriteBit(WarningOnly);
+        _worldPacket.FlushBits();
+    }
+
+    public int TimeUntilLock;
+    public uint CompletedMask;
+    public bool Extending;
+    public bool WarningOnly;
+}
+
+class InstanceLockResponse : ClientPacket
+{
+    public InstanceLockResponse(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        AcceptLock = _worldPacket.HasBit();
+    }
+
+    public bool AcceptLock;
+}

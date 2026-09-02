@@ -299,16 +299,65 @@ public partial class WorldClient
         packet.ReadInt32(); // always 1
         packet.ReadInt32(); // IsInGroup
         SendPacketToClient(difficulty);
+
+        RefreshGroupDifficulty(dungeon: (DifficultyModern)difficulty.DifficultyID, raidLegacyMode: null);
+    }
+
+    /// <summary>
+    /// While in a group the 3.4.3 difficulty pickers read the party's own difficulty settings, not
+    /// SMSG_SET_DUNGEON_DIFFICULTY / SMSG_RAID_DIFFICULTY_SET - those only drive the chat line.
+    /// Legacy announces a change with MSG_SET_*_DIFFICULTY and never re-sends SMSG_GROUP_LIST, so
+    /// the party settings the client received when the group formed were never updated and the
+    /// picker kept showing whatever the group started on. Re-issue the party update with the new
+    /// values so the tick lands on the entry the player actually chose.
+    /// </summary>
+    private void RefreshGroupDifficulty(DifficultyModern? dungeon, byte? raidLegacyMode)
+    {
+        var group = GetSession().GameState.GetCurrentGroup();
+        if (group?.DifficultySettings == null)
+            return;
+
+        if (dungeon != null)
+            group.DifficultySettings.DungeonDifficultyID = dungeon.Value;
+
+        if (raidLegacyMode != null)
+        {
+            // A native 3.4.3 server puts the chosen difficulty in RaidDifficultyID (3-6) and
+            // leaves LegacyRaidDifficultyID at its default - captured from Wrathion, where
+            // picking 10N then 25N gives RaidDifficultyID 3 then 4 with LegacyRaidDifficultyID
+            // pinned at 3 throughout. The picker reads RaidDifficultyID, so writing the Classic
+            // ids (175/176/193/194) there left no row highlighted no matter what was chosen.
+            group.DifficultySettings.RaidDifficultyID = RaidDifficulties.ToLegacyId(raidLegacyMode.Value);
+        }
+
+        // The cached PartyUpdate has already been written once and its buffer disposed, so
+        // re-emitting the instance would resend the original bytes - the difficulty edits above
+        // and even the new SequenceNum would never reach the client. Clone first.
+        var refreshed = group.CloneUnwritten();
+        refreshed.SequenceNum = GetSession().GameState.GroupUpdateCounter++;
+        group.SequenceNum = refreshed.SequenceNum;
+        SendPacketToClient(refreshed);
     }
 
     [PacketHandler(Opcode.MSG_SET_RAID_DIFFICULTY)]
     void HandleSetRaidDifficulty(WorldPacket packet)
     {
         RaidDifficultySet difficulty = new();
-        difficulty.DifficultyID = (int)RaidDifficulties.ToLegacyId((byte)packet.ReadUInt32());
-        difficulty.Legacy = 1;
+        byte legacyRaidMode = (byte)packet.ReadUInt32();
+        difficulty.DifficultyID = (int)RaidDifficulties.ToLegacyId(legacyRaidMode);
+
+        // Legacy selects which id family DifficultyID carries - native picks
+        // GetLegacyRaidDifficultyID() when set and GetRaidDifficultyID() otherwise, and
+        // HandleSetRaidDifficultyOpcode rejects a request whose flag disagrees with the
+        // difficulty's DIFFICULTY_FLAG_LEGACY. The ids written above (3-6) are not legacy-flagged
+        // on 3.4.3: the client itself sends them with Legacy 0 for all four raid sizes. Claiming
+        // Legacy here filed the answer under the legacy slot, so the picker never showed a
+        // selection and fell back to 25-player.
+        difficulty.Legacy = (byte)(ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 0 : 1);
         packet.ReadInt32(); // always 1
         packet.ReadInt32(); // IsInGroup
         SendPacketToClient(difficulty);
+
+        RefreshGroupDifficulty(dungeon: null, raidLegacyMode: legacyRaidMode);
     }
 }

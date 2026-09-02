@@ -16,6 +16,7 @@
  */
 
 
+using HermesProxy.Enums;
 using System;
 using Framework.Constants;
 using Framework.GameMath;
@@ -90,9 +91,21 @@ class SetFactionStanding : ServerPacket, ISpanWritable
 {
     public SetFactionStanding() : base(Opcode.SMSG_SET_FACTION_STANDING, ConnectionType.Instance) { }
 
+    /// <summary>
+    /// V3_4_3 dropped the leading ReferAFriendBonus float - native writes only
+    /// BonusFromAchievementSystem before the count (Wrathion SetFactionStanding::Write, whose
+    /// packet class has no such field; WowPacketParser's V3_4_0 parser agrees). Writing both made
+    /// the client read the second float as the faction count, i.e. zero, so a live reputation gain
+    /// updated nothing and only appeared after a relog re-seeded standings from
+    /// SMSG_INITIALIZE_FACTIONS. Older builds still carry it - WPP's V6_0_2 parser, which covers
+    /// V1_14 and V2_5, reads both.
+    /// </summary>
+    private static bool HasReferAFriendBonus => ModernVersion.Build != ClientVersionBuild.V3_4_3_54261;
+
     public override void Write()
     {
-        _worldPacket.WriteFloat(ReferAFriendBonus);
+        if (HasReferAFriendBonus)
+            _worldPacket.WriteFloat(ReferAFriendBonus);
         _worldPacket.WriteFloat(BonusFromAchievementSystem);
 
         _worldPacket.WriteInt32(Factions.Count);
@@ -105,7 +118,7 @@ class SetFactionStanding : ServerPacket, ISpanWritable
 
     // Cap for faction standing changes - usually just a few at once
     private const int MaxFactions = 16;
-    // 2 floats(8) + count(4) + factions(8 each) + 1 bit
+    // up to 2 floats(8) + count(4) + factions(8 each) + 1 bit
     public int MaxSize => 8 + 4 + MaxFactions * 8 + 1;
 
     public int WriteToSpan(Span<byte> buffer)
@@ -114,7 +127,8 @@ class SetFactionStanding : ServerPacket, ISpanWritable
             return -1;
 
         var writer = new SpanPacketWriter(buffer);
-        writer.WriteFloat(ReferAFriendBonus);
+        if (HasReferAFriendBonus)
+            writer.WriteFloat(ReferAFriendBonus);
         writer.WriteFloat(BonusFromAchievementSystem);
         writer.WriteInt32(Factions.Count);
         foreach (FactionStandingData factionStanding in Factions)

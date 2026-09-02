@@ -180,6 +180,11 @@ public sealed class GameSessionData
     public readonly Dictionary<(uint QuestId, uint ItemId), ushort> SentItemQuestCredits = new();
     public readonly HashSet<uint> RequestedQuestTemplateIds = new();
     public bool InventoryChangedSinceQuestResync;
+
+    /// The last currency snapshot published to the client, so an unchanged inventory does not
+    /// re-emit SMSG_SETUP_CURRENCY on every item update, and so a currency the client has already
+    /// seen can be republished at zero instead of silently vanishing when the last one is spent.
+    public Dictionary<uint, uint>? LastPublishedCurrencies;
     public WowGuid128 CurrentInteractedWithGO;
     // Per-slot QuestID cache used by ReadQuestLogEntry. Legacy 3.3.5a often sends
     // partial Values updates where StateFlags / Progress changes but the QuestID
@@ -854,6 +859,41 @@ public sealed class GameSessionData
 
         return total;
     }
+    // WotLK keeps currency-like items - emblems, battleground marks, Champion's Seals - out of
+    // the bags entirely, in 32 dedicated slots behind PLAYER_FIELD_CURRENCYTOKEN_SLOT_1
+    // (CURRENCYTOKEN_SLOT_START 118 .. CURRENCYTOKEN_SLOT_END 150). A bag sweep never sees them,
+    // which is why the modern currency panel came up empty for a character holding emblems.
+    public Dictionary<uint, uint> GetCurrencyTokenCounts()
+    {
+        const int CurrencyTokenSlots = 32;
+
+        Dictionary<uint, uint> counts = new();
+        int tokenSlotField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_CURRENCYTOKEN_SLOT_1);
+        if (tokenSlotField < 0)
+            return counts;
+
+        var updates = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (updates == null)
+            return counts;
+
+        for (int slot = 0; slot < CurrencyTokenSlots; slot++)
+        {
+            var guid64 = updates.GetGuidValue(tokenSlotField + slot * 2);
+            if (guid64 == WowGuid64.Empty)
+                continue;
+
+            var guid128 = guid64.To128(this);
+            uint id = GetItemId(guid128);
+            if (id == 0)
+                continue;
+
+            counts.TryGetValue(id, out uint have);
+            counts[id] = have + GetItemStackCount(guid128);
+        }
+
+        return counts;
+    }
+
     // One pass over equipped slots and bags. Callers that need counts for several
     // item ids at once must use this instead of GetItemCountInInventory per id.
     public Dictionary<uint, uint> GetInventoryItemCounts()

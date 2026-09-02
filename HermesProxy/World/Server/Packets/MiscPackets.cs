@@ -210,8 +210,9 @@ public class SetupCurrency : ServerPacket, ISpanWritable
         }
     }
 
-    // Cap for currencies - reduced from 128 to 16 based on typical usage (0 observed at login)
-    private const int MaxCurrencies = 16;
+    // WotLK's CurrencyTypes.db2 has 20 rows, and a full snapshot can carry every one of them
+    // (each item-backed currency stays in the set at zero once the client has seen it).
+    private const int MaxCurrencies = 24;
     // Per currency max: 2 uints(8) + bits(2) + 5 optional uints(20) = 30 bytes
     private const int MaxRecordSize = 30;
     // count(4) + currencies

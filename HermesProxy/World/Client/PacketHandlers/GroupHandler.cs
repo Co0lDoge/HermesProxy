@@ -1,6 +1,7 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
@@ -464,6 +465,9 @@ public partial class WorldClient
             ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
             ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
             SendPacketToClient(ready);
+
+            GetSession().GameState.GroupReadyCheckResponses = 0;
+            ArmReadyCheckDeadline(ready.Duration);
         }
         else
         {
@@ -477,6 +481,7 @@ public partial class WorldClient
             if (GetSession().GameState.GroupReadyCheckResponses >= GetSession().GameState.GetCurrentGroupSize())
             {
                 GetSession().GameState.GroupReadyCheckResponses = 0;
+                StopReadyCheckDeadline();
                 ReadyCheckCompleted completed = new ReadyCheckCompleted();
                 completed.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
                 completed.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
@@ -493,6 +498,11 @@ public partial class WorldClient
         ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
         ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacketToClient(ready);
+
+        // A check that ends without a full set of answers used to leave the counter
+        // non-zero, so the next one completed early.
+        GetSession().GameState.GroupReadyCheckResponses = 0;
+        ArmReadyCheckDeadline(ready.Duration);
     }
 
     [PacketHandler(Opcode.MSG_RAID_READY_CHECK_CONFIRM, ClientVersionBuild.V2_0_1_6180)]
@@ -508,6 +518,7 @@ public partial class WorldClient
         if (GetSession().GameState.GroupReadyCheckResponses >= GetSession().GameState.GetCurrentGroupSize())
         {
             GetSession().GameState.GroupReadyCheckResponses = 0;
+            StopReadyCheckDeadline();
             ReadyCheckCompleted completed = new ReadyCheckCompleted();
             completed.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
             completed.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
@@ -518,10 +529,78 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_RAID_READY_CHECK_FINISHED, ClientVersionBuild.V2_0_1_6180)]
     void HandleRaidReadyCheckFinished(WorldPacket packet)
     {
+        GetSession().GameState.GroupReadyCheckResponses = 0;
+        StopReadyCheckDeadline();
+
         ReadyCheckCompleted ready = new ReadyCheckCompleted();
         ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
         ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacketToClient(ready);
+    }
+
+    // The modern client waits for the server to end a ready check once the Duration it
+    // was given lapses. Legacy 3.3.5a has no server-side timer: MSG_RAID_READY_CHECK_FINISHED
+    // travels *up* from the leader's own client, which the modern client never sends, so
+    // the legacy server never broadcasts it and a check nobody answers stays pending
+    // forever. Synthesize the deadline here instead.
+    // Armed on the packet thread, disposed from either that thread or the timer's own
+    // callback, so every swap goes through Interlocked - a plain read-then-dispose can
+    // drop a timer another thread has just armed.
+    private System.Threading.Timer? _readyCheckTimer;
+
+    private void ArmReadyCheckDeadline(ulong durationMs)
+    {
+        // Fire on the duration boundary, the way a native server ends the check
+        // (Group::UpdateReadyCheck, READYCHECK_DURATION = 35000). Landing late means the
+        // client has already torn its ready-check frame down and the completion arrives
+        // with nothing left to close.
+        long dueMs = (long)durationMs;
+        var timer = new System.Threading.Timer(OnReadyCheckDeadline, dueMs, dueMs, System.Threading.Timeout.Infinite);
+        System.Threading.Interlocked.Exchange(ref _readyCheckTimer, timer)?.Dispose();
+    }
+
+    private void StopReadyCheckDeadline()
+    {
+        System.Threading.Interlocked.Exchange(ref _readyCheckTimer, null)?.Dispose();
+    }
+
+    private void OnReadyCheckDeadline(object? state)
+    {
+        StopReadyCheckDeadline();
+
+        // An escaped exception on a timer thread has no handler above it and would take
+        // the whole proxy down, so nothing in here is allowed to propagate.
+        try
+        {
+            if (_closing || !IsConnected())
+                return;
+
+            var gameState = GetSession().GameState;
+            uint responses = gameState.GroupReadyCheckResponses;
+            uint expected = gameState.GetCurrentGroupSize();
+            gameState.GroupReadyCheckResponses = 0;
+
+            // Everyone answered in time - the response counter already completed the check.
+            if (responses >= expected)
+                return;
+
+            WowGuid128 partyGuid = gameState.GetCurrentGroupGuid();
+
+            // The group broke up while the check was running; there is nothing to complete.
+            if (partyGuid == null || partyGuid.IsEmpty())
+                return;
+
+            WorldClientLogMessages.ReadyCheckDeadlineLapsed(_melLog, _sourceFile, _netDirNone, (long)state!, responses, expected);
+
+            ReadyCheckCompleted completed = new ReadyCheckCompleted();
+            completed.PartyIndex = gameState.GetCurrentPartyIndex();
+            completed.PartyGUID = partyGuid;
+            SendPacketToClient(completed);
+        }
+        catch (Exception ex)
+        {
+            WorldClientLogMessages.ReadyCheckDeadlineFailed(_melLog, _sourceFile, _netDirNone, ex);
+        }
     }
 
     [PacketHandler(Opcode.MSG_RAID_TARGET_UPDATE)]

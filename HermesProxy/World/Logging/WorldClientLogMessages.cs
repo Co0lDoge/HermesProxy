@@ -1,4 +1,5 @@
-﻿using HermesProxy.World.Enums;
+﻿using System;
+using HermesProxy.World.Enums;
 using Microsoft.Extensions.Logging;
 
 namespace HermesProxy.World.Logging;
@@ -194,4 +195,26 @@ internal static partial class WorldClientLogMessages
         string NetDir,
         uint QuestId,
         int Slot);
+
+    [LoggerMessage(
+        EventId = 217,
+        Level = LogLevel.Debug,
+        Message = "Ready check deadline lapsed after {DurationMs} ms with {Responses} of {Expected} answers; completing it for the client.")]
+    public static partial void ReadyCheckDeadlineLapsed(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        long DurationMs,
+        uint Responses,
+        uint Expected);
+
+    [LoggerMessage(
+        EventId = 218,
+        Level = LogLevel.Error,
+        Message = "Ready check deadline callback failed.")]
+    public static partial void ReadyCheckDeadlineFailed(
+        ILogger logger,
+        string SourceFile,
+        string NetDir,
+        Exception Exception);
 }

@@ -621,7 +621,11 @@ public partial class WorldClient
                 $"[UpdateObjectTrace][C P<S] SMSG_UPDATE_OBJECT rawBytes={raw.Length} numObjUpdates={numObjUpdates} hasTransport={hasTransport} firstUpdateType={firstUpdateType} headHex={hex}");
         }
 
-        long startTimestamp = HermesProxy.Server.MetricsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        // The dispatch below is synchronous, so the per-thread allocation counter brackets
+        // exactly this packet's parse + translate + send even though ReceiveLoop is async.
+        bool metricsEnabled = HermesProxy.Server.MetricsEnabled;
+        long startTimestamp = metricsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        long allocBefore = metricsEnabled ? GC.GetAllocatedBytesForCurrentThread() : 0;
 
         switch (universalOpcode)
         {
@@ -675,9 +679,10 @@ public partial class WorldClient
                 break;
         }
 
-        if (HermesProxy.Server.MetricsEnabled)
+        if (metricsEnabled)
         {
-            HermesProxy.Server.Metrics.RecordServerToClientLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+            HermesProxy.Server.Metrics.RecordServerToClient(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, allocated);
         }
 
         SendDelayedPacketsToServerOnOpcode(universalOpcode);

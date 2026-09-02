@@ -16,7 +16,7 @@ Wrap `dotnet run --project HermesProxy` with the long `--set` configuration chai
 ```
 /hermes-run                          # debug mode (default)
 /hermes-run release                  # release mode, no metrics
-/hermes-run release --metrics        # release + per-opcode latency report every 60s
+/hermes-run release --metrics        # release + per-opcode latency/allocation report every 60s
 /hermes-run debug --no-build         # skip dotnet build
 /hermes-run release --address 127.0.0.1 --port 3724    # override target server
 
@@ -69,7 +69,7 @@ The `--` separator before app args is required so `dotnet run` doesn't try to pa
 | `-InstancePort` | `8087` | Modern client world port |
 | `-ClientBuild` | `V3_4_3_54261` | |
 | `-ServerBuild` | `V3_3_5a_12340` | |
-| `-Metrics` | (off) | Adds `--metrics` flag, enables `Framework/Metrics/ProxyMetrics.cs` per-opcode latency every 60s |
+| `-Metrics` | (off) | Adds `--metrics` flag, enables `Framework/Metrics/ProxyMetrics.cs` per-opcode latency + allocated bytes and a GC delta line every 60s |
 | `-NoBuild` | (off) | Adds `--no-build` to `dotnet run` |
 | `-DryRun` | (off) | Print the command and exit without running |
 

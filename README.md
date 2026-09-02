@@ -113,14 +113,16 @@ HermesProxy --metrics --LoggingOptions:PacketLevel=Debug
 
 ### `--metrics` Details
 
-When enabled, HermesProxy tracks per-opcode round-trip latency for both directions (Client → Server and Server → Client) and emits a summary line every minute through the `Server` logging category. Nothing is printed when no traffic has been observed, so idle proxies stay quiet.
+When enabled, HermesProxy tracks per-opcode handler latency **and managed bytes allocated per packet** for both directions (Client → Server and Server → Client), plus process-wide GC counters, and emits a summary every minute through the `Server` logging category. The GC line is printed even when idle; the per-opcode tables only once traffic has been observed.
 
 ```
-17:42:14 | I | S | Server          | Latency Metrics: 842 C->S opcodes, 1203 S->C opcodes tracked
-17:42:14 | I | S | Server          | <top 20 opcodes with min / max / avg / p99 latency>
+17:42:14 | I | S | Server          | Proxy Metrics: 842 C->S opcodes, 1203 S->C opcodes tracked
+17:42:14 | I | S | Server          | Proxy Metrics (Uptime: 00:12:03) | C->S 18422 pkts (31.2/s) | S->C 90311 pkts (150.8/s)
+17:42:14 | I | S | Server          | GC over 60s: gen0 +14 gen1 +2 gen2 +0 | allocated 118.4 MB (1.97 MB/s) | heap 61.2 MB | pause 0.31%
+17:42:14 | I | S | Server          | <per direction: top 20 opcodes by p99 latency with avg/max/total bytes, then top 20 by total allocated bytes>
 ```
 
-Useful for: identifying slow-dispatching opcodes, spotting regressions after a packet-handler change, and validating that hot-path migrations didn't shift the latency profile. Leave it off in normal play — it has a small per-packet timestamp overhead.
+Useful for: identifying slow-dispatching opcodes, finding which opcodes drive allocation and GC pressure, spotting regressions after a packet-handler change, and validating that hot-path migrations didn't shift the profile. Leave it off in normal play — it costs a timestamp and an allocation-counter read per packet.
 
 ## Configuration Reference
 

@@ -450,9 +450,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         {
             if (HermesProxy.Server.MetricsEnabled)
             {
+                // Handlers run synchronously on this thread, so the per-thread allocation
+                // counter brackets exactly this packet's parse + translate + send.
                 long startTimestamp = Stopwatch.GetTimestamp();
+                long allocBefore = GC.GetAllocatedBytesForCurrentThread();
                 handler.Invoke(this, packet);
-                HermesProxy.Server.Metrics.RecordClientToServerLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+                long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+                HermesProxy.Server.Metrics.RecordClientToServer(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, allocated);
             }
             else
             {

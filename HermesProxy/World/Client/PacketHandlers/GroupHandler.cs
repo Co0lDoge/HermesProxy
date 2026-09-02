@@ -785,8 +785,6 @@ public partial class WorldClient
             }
         }
 
-        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
-
         // The GUID and the update mask are the first two fields and neither allocates
         // (WowGuid128 is a readonly record struct). Decide the throttle from them so a
         // rate-limited update costs a dictionary probe instead of a packet object, an
@@ -803,15 +801,9 @@ public partial class WorldClient
         }
 
         GroupUpdateFlagTBC updateFlags = (GroupUpdateFlagTBC)packet.ReadUInt32();
-        PartyMemberStateMetrics.RecordFlags((uint)updateFlags);
 
         if (ShouldThrottlePartyMemberState(affectedGuid, updateFlags))
-        {
-            PartyMemberStateMetrics.RecordParsedOnly(GC.GetAllocatedBytesForCurrentThread() - allocBefore);
-            PartyMemberStateMetrics.RecordThrottled();
-            PartyMemberStateMetrics.MaybeReport();
             return;
-        }
 
         // NPCBot / Playerbot truncates: it sets `mask = GROUP_UPDATE_FULL` (0x7FFFF) but only
         // writes the leading subset of fields (typically through POSITION). Trusting the mask
@@ -819,15 +811,7 @@ public partial class WorldClient
         // and returns the partial state filled up to the truncation point so the modern client
         // still gets HP / power / position updates instead of nothing.
         PartyMemberPartialState state = ParsePartyMemberPartialState(packet, affectedGuid, updateFlags);
-
-        bool hasAuras = state.Auras is { Count: > 0 };
-        bool hasPosition = state.Position.HasValue;
-
         SendPacketToClient(state);
-
-        PartyMemberStateMetrics.RecordForwarded(
-            GC.GetAllocatedBytesForCurrentThread() - allocBefore, hasAuras, hasPosition);
-        PartyMemberStateMetrics.MaybeReport();
     }
 
     // Bot-filled battlegrounds re-send position/health for every raid member on every step.

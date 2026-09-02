@@ -135,15 +135,23 @@ internal sealed class ProxyHostedService : BackgroundService
                     if (metricsLogCounter >= metricsLogIntervalSeconds)
                     {
                         metricsLogCounter = 0;
+
+                        // The GC line goes out even on an idle proxy so a baseline run has a
+                        // continuous allocation/collection series to line up against packet bursts.
+                        var gc = Server.Metrics.CaptureGcDelta();
                         if (Server.Metrics.ClientToServerOpcodeCount > 0 || Server.Metrics.ServerToClientOpcodeCount > 0)
                         {
-                            Log.Print(LogType.Server, $"Latency Metrics: {Server.Metrics.ClientToServerOpcodeCount} C->S opcodes, {Server.Metrics.ServerToClientOpcodeCount} S->C opcodes tracked");
+                            Log.Print(LogType.Server, $"Proxy Metrics: {Server.Metrics.ClientToServerOpcodeCount} C->S opcodes, {Server.Metrics.ServerToClientOpcodeCount} S->C opcodes tracked");
 
-                            foreach (var line in Server.Metrics.GetSummary(displayMetricCount, Server.ResolveOpcodeName).Split('\n'))
+                            foreach (var line in Server.Metrics.GetSummary(displayMetricCount, Server.ResolveOpcodeName, gc).Split('\n'))
                             {
                                 if (!string.IsNullOrWhiteSpace(line))
                                     Log.Print(LogType.Server, line);
                             }
+                        }
+                        else
+                        {
+                            Log.Print(LogType.Server, gc.ToSummaryLine());
                         }
                     }
                 }

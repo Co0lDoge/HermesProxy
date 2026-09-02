@@ -1,3 +1,4 @@
+using System;
 using Framework.Metrics;
 using System.Threading.Tasks;
 using Xunit;
@@ -6,6 +7,12 @@ namespace HermesProxy.Tests.Framework;
 
 public class ProxyMetricsTests
 {
+    private enum TestOpcode : uint
+    {
+        Alpha = 0x1234,
+        Beta = 0x5678,
+    }
+
     [Fact]
     public void RecordClientToServerLatency_TracksLatency()
     {
@@ -17,10 +24,10 @@ public class ProxyMetricsTests
 
         var stats = metrics.GetClientToServerStats(0x1234);
         Assert.NotNull(stats);
-        Assert.Equal(3, stats.Value.Count);
-        Assert.Equal(1.5, stats.Value.Min);
-        Assert.Equal(3.5, stats.Value.Max);
-        Assert.Equal(2.5, stats.Value.Average, 2);
+        Assert.Equal(3, stats.Value.Latency.Count);
+        Assert.Equal(1.5, stats.Value.Latency.Min);
+        Assert.Equal(3.5, stats.Value.Latency.Max);
+        Assert.Equal(2.5, stats.Value.Latency.Average, 2);
     }
 
     [Fact]
@@ -33,10 +40,57 @@ public class ProxyMetricsTests
 
         var stats = metrics.GetServerToClientStats(0x5678);
         Assert.NotNull(stats);
-        Assert.Equal(2, stats.Value.Count);
-        Assert.Equal(10.0, stats.Value.Min);
-        Assert.Equal(20.0, stats.Value.Max);
-        Assert.Equal(15.0, stats.Value.Average, 2);
+        Assert.Equal(2, stats.Value.Latency.Count);
+        Assert.Equal(10.0, stats.Value.Latency.Min);
+        Assert.Equal(20.0, stats.Value.Latency.Max);
+        Assert.Equal(15.0, stats.Value.Latency.Average, 2);
+    }
+
+    [Fact]
+    public void RecordWithAllocation_TracksBytesAndLifetimeTotals()
+    {
+        var metrics = new ProxyMetrics();
+
+        metrics.RecordClientToServer(0x1234, 1.0, 100);
+        metrics.RecordClientToServer(0x1234, 1.0, 300);
+
+        var stats = metrics.GetClientToServerStats(0x1234);
+        Assert.NotNull(stats);
+        Assert.Equal(2, stats.Value.Allocation.Count);
+        Assert.Equal(2, stats.Value.Allocation.TotalCount);
+        Assert.Equal(400.0, stats.Value.Allocation.TotalSum);
+        Assert.Equal(100.0, stats.Value.Allocation.Min);
+        Assert.Equal(300.0, stats.Value.Allocation.Max);
+        Assert.Equal(200.0, stats.Value.Allocation.Average, 2);
+        Assert.Equal(2, metrics.ClientToServerPacketCount);
+    }
+
+    [Fact]
+    public void GenericEnumOverload_RoutesToSameKeyAsInt()
+    {
+        var metrics = new ProxyMetrics();
+
+        metrics.RecordClientToServer(TestOpcode.Alpha, 2.0, 64);
+        metrics.RecordServerToClient(TestOpcode.Beta, 4.0, 128);
+
+        Assert.Equal(64.0, metrics.GetClientToServerStats((int)TestOpcode.Alpha)?.Allocation.TotalSum);
+        Assert.Equal(128.0, metrics.GetServerToClientStats((int)TestOpcode.Beta)?.Allocation.TotalSum);
+    }
+
+    [Fact]
+    public void GenericEnumOverload_DoesNotBoxAfterWarmup()
+    {
+        var metrics = new ProxyMetrics();
+
+        // First call pays for the ConcurrentDictionary entry and the sample buffers.
+        metrics.RecordClientToServer(TestOpcode.Alpha, 1.0, 0);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++)
+            metrics.RecordClientToServer(TestOpcode.Alpha, 1.0, 0);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, allocated);
     }
 
     [Fact]
@@ -53,38 +107,36 @@ public class ProxyMetricsTests
     {
         var metrics = new ProxyMetrics();
 
-        // Add 100 samples: 1, 2, 3, ..., 100
         for (int i = 1; i <= 100; i++)
-        {
             metrics.RecordClientToServerLatency(0x1234, i);
-        }
 
         var stats = metrics.GetClientToServerStats(0x1234);
         Assert.NotNull(stats);
-        Assert.Equal(100, stats.Value.Count);
-        Assert.Equal(1.0, stats.Value.Min);
-        Assert.Equal(100.0, stats.Value.Max);
-        Assert.Equal(50.5, stats.Value.Average, 2);
-        Assert.Equal(50.5, stats.Value.P50, 1); // Median
-        Assert.Equal(95.05, stats.Value.P95, 1); // 95th percentile
-        Assert.Equal(99.01, stats.Value.P99, 1); // 99th percentile
+        var latency = stats.Value.Latency;
+        Assert.Equal(100, latency.Count);
+        Assert.Equal(1.0, latency.Min);
+        Assert.Equal(100.0, latency.Max);
+        Assert.Equal(50.5, latency.Average, 2);
+        Assert.Equal(50.5, latency.P50, 1);
+        Assert.Equal(95.05, latency.P95, 1);
+        Assert.Equal(99.01, latency.P99, 1);
     }
 
     [Fact]
-    public void CircularBuffer_OverwritesOldSamples()
+    public void CircularBuffer_OverwritesOldSamples_KeepsLifetimeTotals()
     {
-        var samples = new LatencySamples(5);
+        var samples = new SampleWindow(5);
 
-        // Add 10 samples, only last 5 should be kept
         for (int i = 1; i <= 10; i++)
-        {
             samples.Add(i);
-        }
 
         var stats = samples.GetStats();
         Assert.Equal(5, stats.Count);
-        // Average of 6, 7, 8, 9, 10 = 8
-        Assert.Equal(8.0, stats.Average, 2);
+        Assert.Equal(8.0, stats.Average, 2); // window holds 6..10
+        Assert.Equal(10, stats.TotalCount);
+        Assert.Equal(55.0, stats.TotalSum); // 1..10
+        Assert.Equal(1.0, stats.Min);
+        Assert.Equal(10.0, stats.Max);
     }
 
     [Fact]
@@ -99,6 +151,8 @@ public class ProxyMetricsTests
 
         Assert.Equal(0, metrics.ClientToServerOpcodeCount);
         Assert.Equal(0, metrics.ServerToClientOpcodeCount);
+        Assert.Equal(0, metrics.ClientToServerPacketCount);
+        Assert.Equal(0, metrics.ServerToClientPacketCount);
     }
 
     [Fact]
@@ -109,8 +163,8 @@ public class ProxyMetricsTests
 
         Parallel.For(0, iterations, i =>
         {
-            metrics.RecordClientToServerLatency(0x1234, i * 0.001);
-            metrics.RecordServerToClientLatency(0x5678, i * 0.001);
+            metrics.RecordClientToServer(0x1234, i * 0.001, i);
+            metrics.RecordServerToClient(0x5678, i * 0.001, i);
         });
 
         var c2sStats = metrics.GetClientToServerStats(0x1234);
@@ -118,9 +172,9 @@ public class ProxyMetricsTests
 
         Assert.NotNull(c2sStats);
         Assert.NotNull(s2cStats);
-        // Should have samples (may be less than iterations due to circular buffer)
-        Assert.True(c2sStats.Value.Count > 0);
-        Assert.True(s2cStats.Value.Count > 0);
+        Assert.Equal(iterations, c2sStats.Value.Latency.TotalCount);
+        Assert.Equal(iterations, s2cStats.Value.Allocation.TotalCount);
+        Assert.Equal(iterations, metrics.ClientToServerPacketCount);
     }
 
     [Fact]
@@ -128,15 +182,48 @@ public class ProxyMetricsTests
     {
         var metrics = new ProxyMetrics();
 
-        metrics.RecordClientToServerLatency(0x1234, 1.5);
-        metrics.RecordServerToClientLatency(0x5678, 2.5);
+        metrics.RecordClientToServer(0x1234, 1.5, 512);
+        metrics.RecordServerToClient(0x5678, 2.5, 0);
 
         var summary = metrics.GetSummary();
 
-        Assert.Contains("Client -> Server", summary);
-        Assert.Contains("Server -> Client", summary);
+        Assert.Contains("Client -> Server (top 1 by p99 latency)", summary);
+        Assert.Contains("Client -> Server (top 1 by allocated bytes", summary);
+        Assert.Contains("Server -> Client (top 1 by p99 latency)", summary);
+        // Zero bytes recorded on this side, so no allocation table.
+        Assert.DoesNotContain("Server -> Client (top 1 by allocated bytes", summary);
         Assert.Contains("0x1234", summary);
         Assert.Contains("0x5678", summary);
+        Assert.Contains("C->S 1 pkts", summary);
+    }
+
+    [Fact]
+    public void GetSummary_IncludesGcLineWhenSupplied()
+    {
+        var metrics = new ProxyMetrics();
+        var gc = new GcDelta(TimeSpan.FromSeconds(60), 3, 1, 0, 60L * 1024 * 1024, 0.5, 100L * 1024 * 1024);
+
+        var summary = metrics.GetSummary(gc: gc);
+
+        Assert.Contains("gen0 +3 gen1 +1 gen2 +0", summary);
+        Assert.Contains("allocated 60.0 MB (1.00 MB/s)", summary);
+        Assert.Contains("heap 100.0 MB", summary);
+    }
+
+    [Fact]
+    public void CaptureGcDelta_ReflectsAllocationSinceLastCapture()
+    {
+        var metrics = new ProxyMetrics();
+        metrics.CaptureGcDelta(); // arm
+
+        var keepAlive = new byte[4 * 1024 * 1024];
+        GC.KeepAlive(keepAlive);
+
+        var delta = metrics.CaptureGcDelta();
+
+        Assert.True(delta.AllocatedBytes >= keepAlive.Length, $"expected at least {keepAlive.Length} bytes, saw {delta.AllocatedBytes}");
+        Assert.True(delta.Elapsed >= TimeSpan.Zero);
+        Assert.True(delta.HeapSizeBytes > 0);
     }
 
     [Fact]
@@ -150,12 +237,8 @@ public class ProxyMetricsTests
 
         Assert.Equal(3, metrics.ClientToServerOpcodeCount);
 
-        var stats1 = metrics.GetClientToServerStats(0x0001);
-        var stats2 = metrics.GetClientToServerStats(0x0002);
-        var stats3 = metrics.GetClientToServerStats(0x0003);
-
-        Assert.Equal(1.0, stats1?.Average);
-        Assert.Equal(2.0, stats2?.Average);
-        Assert.Equal(3.0, stats3?.Average);
+        Assert.Equal(1.0, metrics.GetClientToServerStats(0x0001)?.Latency.Average);
+        Assert.Equal(2.0, metrics.GetClientToServerStats(0x0002)?.Latency.Average);
+        Assert.Equal(3.0, metrics.GetClientToServerStats(0x0003)?.Latency.Average);
     }
 }

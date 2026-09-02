@@ -113,7 +113,7 @@ Prints the detected HermesProxy PID and exits. Useful for piping or sanity check
 - **Profile a Release build.** Profiling Debug gives you a flamegraph dominated by stack-frame setup, not real hot code.
 - **Sampling captures elapsed wall time, not work.** A function that spends 90% of its time blocked on `socket.Receive` will dominate the flamegraph; that's not a bug, that's idle. Sort by `Self time` and discard frames that are obviously I/O wait.
 - **`GetFirstFreeId` is unlikely to appear.** It runs once per DBC/hotfix entry during initialization, not on the per-packet path. If it does appear, it's because a hotfix replay is firing during the capture window — extend the capture to cover steady-state gameplay instead.
-- **`--metrics` and `dotnet-trace` measure different things.** `--metrics` (in HermesProxy itself) measures network round-trip latency per opcode. `dotnet-trace` measures CPU time per stack frame. They're complementary, not redundant.
+- **`--metrics` and `dotnet-trace` measure different things.** `--metrics` (in HermesProxy itself) measures handler latency and managed bytes allocated per opcode, plus GC counts. `dotnet-trace` measures CPU time per stack frame. They're complementary, not redundant.
 - **`dotnet-dump` files are big.** A live HermesProxy dump is typically 200–500 MB. Don't accidentally commit one.
 
 ## See also

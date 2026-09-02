@@ -628,6 +628,15 @@ class DoReadyCheck : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: a HasPartyIndex bit first, then the optional byte.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadInt8();
     }
 
@@ -670,6 +679,22 @@ class ReadyCheckResponseClient : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: a HasPartyIndex bit, then IsReady, then the optional
+            // PartyIndex byte - the same bits-first shape as PartyInviteResponse above.
+            // Reading PartyIndex first consumed the bit byte and then took the MSB of the
+            // (always zero) index byte as IsReady, so every answer reached the group as
+            // "not ready". Observed bytes: Ready = C0 00, Not Ready = 80 00. WPP's
+            // V3_4_0 parser orders these bits the other way round, but it is registered
+            // at V3_4_4_59817 and does not hold for 54261.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            IsReady = _worldPacket.HasBit();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
         IsReady = _worldPacket.HasBit();
     }

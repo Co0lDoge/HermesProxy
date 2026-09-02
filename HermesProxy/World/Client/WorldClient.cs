@@ -179,6 +179,7 @@ public partial class WorldClient
     {
         _closing = true;
         StopKeepAliveTimer();
+        StopReadyCheckDeadline();
 
         // Unhook before closing so the receive loop does not treat this as an
         // unexpected drop and call OnDisconnect (that nulls AuthClient, which

@@ -118,10 +118,14 @@ public partial class WorldSocket
         packet.WriteBool(raid.IsReady);
         SendPacketToServer(packet);
 
+        // The legacy server broadcasts MSG_RAID_READY_CHECK_CONFIRM to the leader and
+        // assistants only, so a plain member never sees its own answer come back. Echo it
+        // locally under the real party GUID - a placeholder GUID does not match the party
+        // the client is tracking, so the echo was discarded.
         ReadyCheckResponse ready = new ReadyCheckResponse();
         ready.Player = GetSession().GameState.CurrentPlayerGuid;
         ready.IsReady = raid.IsReady;
-        ready.PartyGUID = WowGuid128.Create(HighGuidType703.Party, 1000);
+        ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacket(ready);
     }
 

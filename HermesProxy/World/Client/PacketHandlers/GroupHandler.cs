@@ -338,8 +338,12 @@ public partial class WorldClient
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             {
                 byte acRaid = packet.ReadUInt8();
-                party.DifficultySettings.LegacyRaidDifficultyID = RaidDifficulties.ToLegacyId(acRaid);
-                party.DifficultySettings.RaidDifficultyID = RaidDifficulties.ToClassicId(acRaid);
+                // Native puts the active raid difficulty in RaidDifficultyID as 3-6 and leaves
+                // LegacyRaidDifficultyID at its default; the client's picker reads the former.
+                // The Classic ids (175/176/193/194) belong to a different difficulty family and
+                // match no row in the WotLK raid dropdown.
+                party.DifficultySettings.RaidDifficultyID = RaidDifficulties.ToLegacyId(acRaid);
+                party.DifficultySettings.LegacyRaidDifficultyID = DifficultyModern.Raid10N;
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
                     packet.ReadUInt8(); // 3.3 dynamic heroic bit
             }

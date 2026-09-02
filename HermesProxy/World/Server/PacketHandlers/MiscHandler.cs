@@ -305,11 +305,16 @@ public partial class WorldSocket
         packet.WriteUInt32(RaidDifficulties.ToLegacy(difficulty.DifficultyID));
         SendPacketToServer(packet);
 
-        // AC solo (no group) SetRaidDifficulty is silent. Echo so the 3.4.3 UI
-        // does not snap back. In-group AC also sends MSG_SET_RAID_DIFFICULTY.
-        RaidDifficultySet difficultySet = new();
-        difficultySet.DifficultyID = difficulty.DifficultyID;
-        difficultySet.Legacy = difficulty.Legacy;
-        SendPacket(difficultySet);
+        // AC solo (no group) SetRaidDifficulty is silent, so the UI would snap back without an
+        // echo. In a group both AC and TC broadcast MSG_SET_RAID_DIFFICULTY, which the client
+        // handler already turns into SMSG_RAID_DIFFICULTY_SET - echoing as well produced two
+        // packets per click and a duplicate "Raid Difficulty set to..." line in chat.
+        if (Session.GameState.GetCurrentGroup() == null)
+        {
+            RaidDifficultySet difficultySet = new();
+            difficultySet.DifficultyID = difficulty.DifficultyID;
+            difficultySet.Legacy = difficulty.Legacy;
+            SendPacket(difficultySet);
+        }
     }
 }

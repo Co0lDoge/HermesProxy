@@ -350,8 +350,12 @@ public partial class WorldClient
 
             GetSession().GameState.WeWantToLeaveGroup = false;
             GetSession().GameState.LastAnnouncedPartyIndex = party.PartyIndex;
+            var previousGroup = GetSession().GameState.CurrentGroups[party.PartyIndex];
             GetSession().GameState.CurrentGroups[party.PartyIndex] = party;
             PruneAssignedRoles(party.PlayerList);
+
+            if (previousGroup == null || previousGroup.PartyGUID != party.PartyGUID)
+                RequestRaidTargetIconList();
         }
         else
         {
@@ -601,6 +605,21 @@ public partial class WorldClient
         {
             WorldClientLogMessages.ReadyCheckDeadlineFailed(_melLog, _sourceFile, _netDirNone, ex);
         }
+    }
+
+    // Legacy only sends the full icon list when a client asks for it - Group::SendTargetIconList
+    // has exactly one caller, the icon == 0xFF branch of HandleRaidTargetUpdateOpcode. The 3.3.5a
+    // client sent that request itself on joining a group; the modern client never does, because a
+    // modern server pushes SMSG_SEND_RAID_TARGET_UPDATE_ALL unsolicited. Without this, someone
+    // joining a group that already carries marks sees none of them.
+    private void RequestRaidTargetIconList()
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        WorldPacket packet = new WorldPacket(Opcode.MSG_RAID_TARGET_UPDATE);
+        packet.WriteUInt8(0xFF);
+        SendPacket(packet);
     }
 
     [PacketHandler(Opcode.MSG_RAID_TARGET_UPDATE)]

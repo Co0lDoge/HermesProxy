@@ -426,8 +426,9 @@ public enum ActivePlayerField
     [DescriptorCreatePlaceholder(DescriptorType.UInt32, Count = 2)]
     ACTIVEPLAYER_CREATE_SPELL_USES_RESIZE_PLACEHOLDER,
 
-    // NumStableSlots.
-    [DescriptorCreatePlaceholder(DescriptorType.UInt8)]
+    // NumStableSlots — real value, not a zero filler; see the custom writer.
+    [DescriptorCreatePlaceholder(DescriptorType.UInt8,
+        CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateActivePlayerNumStableSlots))]
     ACTIVEPLAYER_CREATE_NUM_STABLE_SLOTS_PLACEHOLDER,
 
     // Dynamic-field payloads: KnownTitles, Heirlooms, HeirloomFlags.
@@ -528,6 +529,10 @@ public enum ActivePlayerField
     ACTIVEPLAYER_SUMMONED_BATTLE_PET_GUID,
     [DescriptorUpdateField(nameof(ActivePlayerData.Coinage), DescriptorType.UInt64, bit: 28, ParentBit = 0)]
     ACTIVEPLAYER_COINAGE,
+    // Native UpdateFields.h:739 — UpdateField<uint8, 102, 123>. Parent 102 is the same
+    // nested group the glyph slots hang off, so both bits have to be set.
+    [DescriptorUpdateField(nameof(ActivePlayerData.NumStableSlots), DescriptorType.UInt8, bit: 123, ParentBit = 102)]
+    ACTIVEPLAYER_NUM_STABLE_SLOTS,
     [DescriptorUpdateField(nameof(ActivePlayerData.XP), DescriptorType.Int32, bit: 29, ParentBit = 0)]
     ACTIVEPLAYER_XP,
     [DescriptorUpdateField(nameof(ActivePlayerData.NextLevelXP), DescriptorType.Int32, bit: 30, ParentBit = 0)]

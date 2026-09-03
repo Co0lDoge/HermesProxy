@@ -127,7 +127,7 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt8((byte)0);
         for (int i = 0; i < 2; i++)
             data.WriteUInt32(0u);
-        data.WriteUInt8((byte)0);
+        WriteCreateActivePlayerNumStableSlots(data, src);
         WriteCreateActivePlayerDynamicPayloads(data, src);
         WriteCreateActivePlayerPvpInfo(data, src);
         data.WriteBits(0u, 0);
@@ -156,6 +156,7 @@ public partial class ObjectUpdateBuilder
         if (src.FarsightObject != null) { blocks.SetBit(0); blocks.SetBit(26); }
         if (src.SummonedBattlePetGUID != null) { blocks.SetBit(0); blocks.SetBit(27); }
         if (src.Coinage.HasValue) { blocks.SetBit(0); blocks.SetBit(28); }
+        if (src.NumStableSlots.HasValue) { blocks.SetBit(102); blocks.SetBit(123); }
         if (src.XP.HasValue) { blocks.SetBit(0); blocks.SetBit(29); }
         if (src.NextLevelXP.HasValue) { blocks.SetBit(0); blocks.SetBit(30); }
         if (src.TrialXP.HasValue) { blocks.SetBit(0); blocks.SetBit(31); }
@@ -1574,6 +1575,7 @@ public partial class ObjectUpdateBuilder
         if (blocks.IsBitSet(114)) data.WriteUInt8(src.PvPRankProgress!.Value);
         if (blocks.IsBitSet(120)) data.WriteUInt8(src.GlyphsEnabled!.Value);
         data.FlushBits();
+        if (blocks.IsBitSet(123)) data.WriteUInt8(src.NumStableSlots!.Value);
         if (blocks.IsBitSet(124)) WriteUpdateActivePlayerInvSlotsGroup(data, ref blocks, src);
         if (blocks.IsBitSet(267)) data.WriteUInt32(src.TrackResourceMask![0]!.Value);
         if (blocks.IsBitSet(268)) data.WriteUInt32(src.TrackResourceMask![1]!.Value);
@@ -2822,6 +2824,7 @@ public partial class ObjectUpdateBuilder
         if (src.FarsightObject != null) return true;
         if (src.SummonedBattlePetGUID != null) return true;
         if (src.Coinage.HasValue) return true;
+        if (src.NumStableSlots.HasValue) return true;
         if (src.XP.HasValue) return true;
         if (src.NextLevelXP.HasValue) return true;
         if (src.TrialXP.HasValue) return true;

@@ -357,6 +357,111 @@ class PetStableList : ServerPacket, ISpanWritable
     public List<PetStableInfo> Pets = new();
 }
 
+/// <summary>
+/// V3_4_3 replacement for <see cref="PetStableList"/>. The 3.4.3 protocol has no
+/// SMSG_PET_STABLE_LIST — the stable moved into ActivePlayerData, and the native server
+/// delivers it as a hand-built SMSG_UPDATE_OBJECT Values block on the player
+/// (3.4.3_Source Player.cpp:27589 Player::SendStable). The descriptor path cannot express
+/// it, so this mirrors the native writer byte for byte.
+///
+/// Layout verified against a native Wrathion capture and confirmed in-client with four
+/// stabled pets. Do NOT trust WowPacketParser here: its ReadUpdateStableInfo
+/// (UpdateFieldsHandler343.cs:2434) reads PetSlot first and expects a trailing
+/// PackedGuid128 that is not on the wire, so it shifts every field by one and throws.
+/// </summary>
+class PetStableUpdate : ServerPacket
+{
+    public PetStableUpdate() : base(Opcode.SMSG_UPDATE_OBJECT, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        // The framing carries two lengths that are only known once the body exists, and
+        // ByteBuffer has no in-place patch, so the payload is measured before framing.
+        byte[] guidBytes = BuildPackedGuid(PlayerGuid);
+        byte[] payload = BuildFieldPayload();
+
+        // dataSize counts from the UpdateType byte onward — native's `pkt.size() - 11`.
+        uint dataSize = (uint)(1 + guidBytes.Length + 4 + payload.Length);
+
+        _worldPacket.WriteUInt32(1);                    // NumObjUpdates
+        _worldPacket.WriteUInt16((ushort)MapId);
+        _worldPacket.WriteUInt8(0);                     // HasRemovedObjects
+        _worldPacket.WriteUInt32(dataSize);
+        _worldPacket.WriteUInt8(0);                     // UpdateType: Values
+        _worldPacket.WriteBytes(guidBytes);
+        _worldPacket.WriteUInt32((uint)payload.Length);
+        _worldPacket.WriteBytes(payload);
+    }
+
+    private static byte[] BuildPackedGuid(WowGuid128 guid)
+    {
+        WorldPacket buffer = new WorldPacket();
+        buffer.WritePackedGuid128(guid);
+        return Trim(buffer);
+    }
+
+    /// <summary>
+    /// Everything after the field-size prefix. The leading constants are the changed-mask
+    /// cascade that selects ActivePlayerData's PetStable block; they are reproduced from
+    /// the native writer rather than derived, because the descriptor generator has no
+    /// PetStable definition to derive them from.
+    /// </summary>
+    private byte[] BuildFieldPayload()
+    {
+        WorldPacket buffer = new WorldPacket();
+        buffer.WriteUInt32(128);
+        buffer.WriteUInt32(8);
+        buffer.WriteUInt16(0);
+        buffer.WriteUInt32(1073741828);
+        buffer.WriteUInt8(128);
+        buffer.WriteUInt32(224);
+
+        // Low 3 bits carry the entry count, the rest is the slot mask; 31 means "empty".
+        buffer.WriteUInt8(Pets.Count > 0 ? (byte)(32 * Pets.Count + 32 - 1) : (byte)31);
+
+        foreach (PetStableInfo pet in Pets)
+        {
+            buffer.WriteBits(255u, 8);                  // update-all mask for this entry
+            buffer.FlushBits();
+
+            buffer.WriteUInt32(pet.PetNumber);
+            buffer.WriteUInt32(pet.CreatureID);
+            buffer.WriteUInt32(pet.DisplayID);
+            buffer.WriteUInt32(pet.ExperienceLevel);
+            buffer.WriteUInt8(pet.PetSlot);
+            buffer.WriteUInt8(pet.PetFlags);
+
+            buffer.WriteBits((uint)pet.PetName.GetByteCount(), 8);
+            buffer.WriteString(pet.PetName);
+            buffer.FlushBits();
+        }
+
+        // Omitted when the list was not opened at a stable master, matching native: a
+        // "call stabled pet" style spell has no object to attribute the window to.
+        if (!StableMaster.IsEmpty())
+            buffer.WritePackedGuid128(StableMaster);
+
+        return Trim(buffer);
+    }
+
+    private static byte[] Trim(WorldPacket buffer)
+    {
+        buffer.FlushBits();
+        byte[] data = buffer.GetData();
+        int size = (int)buffer.GetSize();
+        if (data.Length == size)
+            return data;
+        byte[] exact = new byte[size];
+        Array.Copy(data, exact, size);
+        return exact;
+    }
+
+    public WowGuid128 PlayerGuid;
+    public WowGuid128 StableMaster;
+    public uint MapId;
+    public List<PetStableInfo> Pets = new();
+}
+
 class PetStableInfo
 {
     public uint PetNumber;
@@ -364,6 +469,8 @@ class PetStableInfo
     public uint DisplayID;
     public uint ExperienceLevel;
     public byte LoyaltyLevel = 1;
+    /// <summary>V3_4_3 slot byte; 0xFF marks the first entry (native Player::SendStable).</summary>
+    public byte PetSlot;
     public byte PetFlags;
     public string PetName = string.Empty;
 }

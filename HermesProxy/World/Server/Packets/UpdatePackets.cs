@@ -793,6 +793,9 @@ public class UpdateObject : ServerPacket
         if (ap != null)
         {
             if (ap.Coinage.HasValue || ap.XP.HasValue || ap.NextLevelXP.HasValue) return false;
+            // Stable-slot purchases arrive as a lone NumStableSlots delta; without this probe
+            // the filter called them empty and dropped them, so bought slots stayed locked (#224).
+            if (ap.NumStableSlots.HasValue) return false;
             if (ap.CharacterPoints.HasValue) return false;
             if (ap.FarsightObject != null) return false;
             if (ap.SummonedBattlePetGUID != null) return false;

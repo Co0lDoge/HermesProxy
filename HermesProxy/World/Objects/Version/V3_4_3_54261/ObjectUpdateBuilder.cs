@@ -994,6 +994,14 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt8(_gameState.GlyphsEnabled);
     }
 
+    // NumStableSlots. A zero placeholder here makes every stable slot render locked even
+    // after the player has paid for one, because the count reaches the client only through
+    // ActivePlayerData (issue #224). Sourced from the legacy stable list.
+    internal void WriteCreateActivePlayerNumStableSlots(WorldPacket data, ActivePlayerData src)
+    {
+        data.WriteUInt8(_gameState.NumStableSlots);
+    }
+
     // Dynamic-field payloads, in WPP wire order: KnownTitles (folded to 64-bit words),
     // then Heirlooms[Count], HeirloomFlags[Count], then Toys[Count]. Counts were
     // written earlier by the resize prefixes, so payload length has to agree with them.

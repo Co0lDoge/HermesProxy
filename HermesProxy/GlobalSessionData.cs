@@ -124,6 +124,13 @@ public sealed class GameSessionData
     public Queue<ServerPacket> PendingRealmPackets = new();
     public readonly Lock PendingRealmPacketsLock = new();
     public bool IsInWorld;
+    // Purchased stable slots, learned from legacy MSG_LIST_STABLED_PETS. V3_4_3 keeps this
+    // in ActivePlayerData, and the client greys out every slot it thinks is unpurchased,
+    // so a hardcoded 0 here makes bought slots stay locked (issue #224).
+    public byte NumStableSlots;
+    // Stable master currently being talked to. Needed because a slot purchase has to
+    // re-request the stable list to learn the new count (#224).
+    public WowGuid128? LastStableMaster;
     public uint? CurrentMapId;
     public uint CurrentZoneId;
     public uint CurrentTaxiNode;

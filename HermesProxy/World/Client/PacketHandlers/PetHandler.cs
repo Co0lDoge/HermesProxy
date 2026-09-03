@@ -3,6 +3,7 @@ using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
+using System.Collections.Generic;
 
 namespace HermesProxy.World.Client;
 
@@ -169,10 +170,25 @@ public partial class WorldClient
         }
         SendPacketToClient(pets);
 
-        PetStableList stable = new PetStableList();
-        stable.StableMaster = packet.ReadGuid().To128(GetSession().GameState);
+        // Parsed into plain locals rather than straight into PetStableList: on V3_4_3 that
+        // packet's opcode resolves to 0 and its ServerPacket constructor throws, which used
+        // to abort this handler before anything reached the client (issue #224).
+        WowGuid128 stableMaster = packet.ReadGuid().To128(GetSession().GameState);
         byte count = packet.ReadUInt8();
-        stable.NumStableSlots = packet.ReadUInt8();
+        byte numStableSlots = packet.ReadUInt8();
+        // The client greys out slots it believes are unpurchased and only ever learns the count
+        // from ActivePlayerData. Cache it for the next CreateObject, and push a Values update
+        // now so an already-logged-in player sees a slot unlock the moment it is bought.
+        GetSession().GameState.NumStableSlots = numStableSlots;
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            ObjectUpdate slotUpdate = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
+            slotUpdate.ActivePlayerData.NumStableSlots = numStableSlots;
+            UpdateObject slotPacket = new UpdateObject(GetSession().GameState);
+            slotPacket.ObjectUpdates.Add(slotUpdate);
+            SendPacketToClient(slotPacket);
+        }
+        List<PetStableInfo> stabledPets = new();
         for (byte i = 0; i < count; i++)
         {
             PetStableInfo pet = new PetStableInfo();
@@ -198,9 +214,59 @@ public partial class WorldClient
                 SendPacket(query);
             }
 
-            stable.Pets.Add(pet);
+            stabledPets.Add(pet);
         }
+
+        // V3_4_3 deleted SMSG_PET_STABLE_LIST; the stable lives in ActivePlayerData and the
+        // native server ships it as a hand-built SMSG_UPDATE_OBJECT (issue #224).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            SendPacketToClient(BuildStableUpdate(stableMaster, stabledPets));
+            return;
+        }
+
+        PetStableList stable = new PetStableList();
+        stable.StableMaster = stableMaster;
+        stable.NumStableSlots = numStableSlots;
+        stable.Pets.AddRange(stabledPets);
         SendPacketToClient(stable);
+    }
+
+    /// <summary>
+    /// Reshapes the decoded legacy stable list into the V3_4_3 ActivePlayerData block.
+    /// Native writes the stabled pets first — the first entry carrying the 0xFF sentinel —
+    /// and the currently summoned pet last in slot 0, so the client can tell which row is
+    /// the active companion rather than a stabled one.
+    /// </summary>
+    private PetStableUpdate BuildStableUpdate(WowGuid128 stableMaster, List<PetStableInfo> pets)
+    {
+        PetStableUpdate update = new PetStableUpdate();
+        update.PlayerGuid = GetSession().GameState.CurrentPlayerGuid;
+        update.StableMaster = stableMaster;
+        update.MapId = GetSession().GameState.CurrentMapId ?? 0;
+
+        // Legacy flag 1 marks the pet that is currently out; everything else is stabled.
+        int stabledCount = 0;
+        foreach (PetStableInfo pet in pets)
+        {
+            if (pet.PetFlags == 1)
+                continue;
+
+            pet.PetSlot = stabledCount == 0 ? (byte)0xFF : (byte)(stabledCount + 1);
+            update.Pets.Add(pet);
+            stabledCount++;
+        }
+
+        foreach (PetStableInfo pet in pets)
+        {
+            if (pet.PetFlags != 1)
+                continue;
+
+            pet.PetSlot = 0;
+            update.Pets.Add(pet);
+        }
+
+        return update;
     }
 
     [PacketHandler(Opcode.SMSG_PET_STABLE_RESULT)]
@@ -209,6 +275,19 @@ public partial class WorldClient
         PetStableResult stable = new PetStableResult();
         stable.Result = packet.ReadUInt8();
         SendPacketToClient(stable);
+
+        // Legacy answers a slot purchase with this result and nothing else — it never
+        // re-sends the stable list, and 3.3.5a has no update field carrying the count. The
+        // modern client only unlocks a slot from ActivePlayerData, so without re-requesting
+        // the list here the newly bought slot stays red until the window is reopened (#224).
+        const byte StableSuccessBuySlot = 0x0A;
+        if (stable.Result == StableSuccessBuySlot &&
+            GetSession().GameState.LastStableMaster is { } stableMaster)
+        {
+            WorldPacket relist = new WorldPacket(Opcode.MSG_LIST_STABLED_PETS);
+            relist.WriteGuid(stableMaster.To64());
+            SendPacket(relist);
+        }
     }
 
     [PacketHandler(Opcode.SMSG_PET_TAME_FAILURE)]

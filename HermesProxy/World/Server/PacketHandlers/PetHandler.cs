@@ -140,6 +140,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BUY_STABLE_SLOT)]
     void HandleBuyStableSlot(BuyStableSlot stable)
     {
+        GetSession().GameState.LastStableMaster = stable.StableMaster;
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BUY_STABLE_SLOT);
         packet.WriteGuid(stable.StableMaster.To64());
         SendPacketToServer(packet);

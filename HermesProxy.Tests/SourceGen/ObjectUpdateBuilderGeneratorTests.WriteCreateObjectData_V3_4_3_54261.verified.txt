@@ -3296,13 +3296,13 @@ public partial class ObjectUpdateBuilder
         data.WritePackedGuid128(src.ContainedIn ?? HermesProxy.World.WowGuid128.Empty);
         data.WritePackedGuid128(src.Creator ?? HermesProxy.World.WowGuid128.Empty);
         data.WritePackedGuid128(src.GiftCreator ?? HermesProxy.World.WowGuid128.Empty);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt32(src.StackCount.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt32(src.Duration.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.SpellCharges != null && src.SpellCharges[0].HasValue ? src.SpellCharges[0]!.Value : 0);
             data.WriteInt32(src.SpellCharges != null && src.SpellCharges[1].HasValue ? src.SpellCharges[1]!.Value : 0);
             data.WriteInt32(src.SpellCharges != null && src.SpellCharges[2].HasValue ? src.SpellCharges[2]!.Value : 0);
@@ -3325,29 +3325,29 @@ public partial class ObjectUpdateBuilder
         WriteEnchantmentCreate(data, src.Enchantment, 12);
         data.WriteInt32((int)src.PropertySeed.GetValueOrDefault());
         data.WriteInt32((int)src.RandomProperty.GetValueOrDefault());
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt32(src.Durability.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt32(src.MaxDurability.GetValueOrDefault());
         }
         data.WriteUInt32(src.CreatePlayedTime.GetValueOrDefault());
         data.WriteInt32(0);
         data.WriteInt64(0L);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt64(0uL);
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt8((byte)0);
         }
         data.WriteUInt32(0u);
         WriteCreateItemGemsSize(data, src);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt32(0u);
         }
         data.WriteUInt32(0u);
         data.WriteUInt32(0u);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteUInt16((ushort)0);
         }
         WriteCreateItemGemsBody(data, src);
@@ -3521,7 +3521,7 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(0);
         data.WriteUInt32(src.DuelTeam.GetValueOrDefault());
         data.WriteInt32(src.GuildTimeStamp.GetValueOrDefault());
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreatePlayerQuestLog(data, src);
         }
         WriteCreatePlayerVisibleItems(data, src);
@@ -3800,7 +3800,7 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt32(0u);
         data.WritePackedGuid128(src.Charm ?? HermesProxy.World.WowGuid128.Empty);
         data.WritePackedGuid128(src.Summon ?? HermesProxy.World.WowGuid128.Empty);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WritePackedGuid128(src.Critter ?? HermesProxy.World.WowGuid128.Empty);
         }
         data.WritePackedGuid128(src.CharmedBy ?? HermesProxy.World.WowGuid128.Empty);
@@ -3819,7 +3819,7 @@ public partial class ObjectUpdateBuilder
         WriteCreateUnitSexId(data, src);
         data.WriteUInt8((byte)src.DisplayPower.GetValueOrDefault());
         data.WriteUInt32(0u);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreateUnitOwnerFloatPairs(data, src);
         }
         WriteCreateUnitPowerInterleaved(data, src);
@@ -3840,7 +3840,7 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt32(src.AuraState.GetValueOrDefault());
         data.WriteUInt32(src.AttackRoundBaseTime != null && src.AttackRoundBaseTime[0].HasValue ? src.AttackRoundBaseTime[0]!.Value : 0u);
         data.WriteUInt32(src.AttackRoundBaseTime != null && src.AttackRoundBaseTime[1].HasValue ? src.AttackRoundBaseTime[1]!.Value : 0u);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreateUnitRangedAttackTime(data, src);
         }
         data.WriteFloat(src.BoundingRadius ?? 0.389f);
@@ -3849,16 +3849,16 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(src.NativeDisplayID.GetValueOrDefault());
         data.WriteFloat(1f);
         data.WriteInt32(src.MountDisplayID.GetValueOrDefault());
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MinDamage.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MaxDamage.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MinOffHandDamage.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MaxOffHandDamage.GetValueOrDefault());
         }
         data.WriteUInt8(src.StandState.GetValueOrDefault());
@@ -3879,61 +3879,61 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(src.EmoteState.GetValueOrDefault());
         data.WriteInt16((short)0);
         data.WriteInt16((short)0);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreateUnitStatsInterleaved(data, src);
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreateUnitResistances(data, src);
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             WriteCreateUnitPowerCostInterleaved(data, src);
         }
         WriteCreateUnitResistanceBuffModsInterleaved(data, src);
         data.WriteInt32(src.BaseMana.GetValueOrDefault());
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.BaseHealth.GetValueOrDefault());
         }
         data.WriteUInt8(src.SheatheState.GetValueOrDefault());
         data.WriteUInt8(src.PvpFlags.GetValueOrDefault());
         data.WriteUInt8(src.PetFlags.GetValueOrDefault());
         data.WriteUInt8(src.ShapeshiftForm.GetValueOrDefault());
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.AttackPower.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.AttackPowerModPos.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.AttackPowerModNeg.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.AttackPowerMultiplier.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.RangedAttackPower.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.RangedAttackPowerModPos.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(src.RangedAttackPowerModNeg.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.RangedAttackPowerMultiplier.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteInt32(0);
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(0f);
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MinRangedDamage.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MaxRangedDamage.GetValueOrDefault());
         }
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WriteFloat(src.MaxHealthModifier ?? 1f);
         }
         data.WriteFloat(src.HoverHeight.GetValueOrDefault());
@@ -3956,7 +3956,7 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(0);
         data.WriteFloat(0f);
         data.WriteUInt32(0u);
-        if (IsOwner) {
+        if ((FieldVisibilityFlags & HermesProxy.World.Objects.Version.Attributes.FieldVisibility.Owner) != 0) {
             data.WritePackedGuid128(HermesProxy.World.WowGuid128.Empty);
         }
         WriteCreateUnitChannelObjectsBody(data, src);

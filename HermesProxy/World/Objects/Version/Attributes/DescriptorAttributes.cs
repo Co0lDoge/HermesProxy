@@ -181,11 +181,14 @@ public sealed class DescriptorCreateFieldAttribute : Attribute
     public ArrayMode ArrayMode { get; set; }
 
     /// <summary>
-    /// When true, generator wraps this field's Create-path write in <c>if (IsOwner) { … }</c>.
-    /// Matches the existing <c>ObjectUpdateBuilder.IsOwner</c> property used by the hand-port.
-    /// Update path is unaffected — it relies on field presence (<c>.HasValue</c>) alone.
+    /// Viewer groups this write belongs to — the client's <c>UF::UpdateFieldFlag</c>. The generator
+    /// emits the write under a test against the builder's <c>FieldVisibilityFlags</c>, which is the
+    /// same byte that leads the values blob, so writer and reader gate on one value. Unset means
+    /// unconditional.
     /// </summary>
-    public bool OwnerOnly { get; set; }
+    public FieldVisibility Visibility { get; set; }
+    /// <remarks>Create path only. The Update path gates on field presence
+    /// (<c>.HasValue</c>) alone.</remarks>
 
     /// <summary>
     /// Optional method name on <c>ObjectUpdateBuilder</c> to delegate the wire write to.
@@ -506,9 +509,12 @@ public sealed class DescriptorCreatePlaceholderAttribute : Attribute
     public string LiteralExpression { get; }
 
     /// <summary>
-    /// When true, generator wraps this placeholder write in <c>if (IsOwner) { … }</c>.
+    /// Viewer groups this write belongs to — the client's <c>UF::UpdateFieldFlag</c>. The generator
+    /// emits the write under a test against the builder's <c>FieldVisibilityFlags</c>, which is the
+    /// same byte that leads the values blob, so writer and reader gate on one value. Unset means
+    /// unconditional.
     /// </summary>
-    public bool OwnerOnly { get; set; }
+    public FieldVisibility Visibility { get; set; }
 
     /// <summary>
     /// Repeat count. When greater than 1 the generator emits a <c>for</c> loop writing the
@@ -552,8 +558,13 @@ public sealed class DescriptorCreateBitsPlaceholderAttribute : Attribute
     /// <summary>When true, generator emits <c>FlushBits()</c> immediately after the bits write.</summary>
     public bool Flush { get; set; } = true;
 
-    /// <summary>When true, wraps the bit-write (and optional flush) in <c>if (IsOwner) { … }</c>.</summary>
-    public bool OwnerOnly { get; set; }
+    /// <summary>
+    /// Viewer groups this bit-write (and its optional flush) belongs to — the client's <c>UF::UpdateFieldFlag</c>. The generator
+    /// emits the write under a test against the builder's <c>FieldVisibilityFlags</c>, which is the
+    /// same byte that leads the values blob, so writer and reader gate on one value. Unset means
+    /// unconditional.
+    /// </summary>
+    public FieldVisibility Visibility { get; set; }
 }
 
 /// <summary>
@@ -572,4 +583,32 @@ public enum DescriptorType
     Int16,
     UInt16,
     PackedGuid128,
+}
+
+/// <summary>
+/// The client's <c>UF::UpdateFieldFlag</c>: which viewer groups a create-path field belongs to.
+/// </summary>
+/// <remarks>
+/// <para>
+/// From 5.5.0 (2.5.6 / 3.4.x-successor engines) the values blob for a create carries a leading
+/// visibility byte and the client gates its own reads on it. The byte is a <b>contract, not a
+/// hint</b>: declaring a bit obliges the writer to emit every field that bit gates, or the client
+/// reads the next group from the wrong offset, drifts, and faults. So visibility and field-filling
+/// are one job, and a field's <see cref="DescriptorCreateFieldAttribute.Visibility"/> is what tells
+/// the generator which of the declared groups it belongs to.
+/// </para>
+/// <para>
+/// V3_4_3 writes the same byte and always writes <c>Owner | PartyMember</c> or nothing, so it reads
+/// as a single boolean there — but it is the same mechanism, and expressing it as flags is what lets
+/// 2.5.6 split the groups apart (0x01 / 0x03 / 0x07) without a second vocabulary.
+/// </para>
+/// </remarks>
+[Flags]
+public enum FieldVisibility : byte
+{
+    None = 0x00,
+    Owner = 0x01,
+    PartyMember = 0x02,
+    UnitAll = 0x04,
+    Empath = 0x08,
 }

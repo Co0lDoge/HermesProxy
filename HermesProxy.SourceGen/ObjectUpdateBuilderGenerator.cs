@@ -30,6 +30,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
     private const string UpdateFieldAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorUpdateFieldAttribute";
     private const string CreatePlaceholderAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorCreatePlaceholderAttribute";
     private const string CreateBitsPlaceholderAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorCreateBitsPlaceholderAttribute";
+    private const string FieldVisibilityFullName = "HermesProxy.World.Objects.Version.Attributes.FieldVisibility";
     private const string CustomFieldAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorCustomFieldAttribute";
     private const string MaskPreambleAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorMaskPreambleAttribute";
     private const string UpdateBitsPreambleAttrFullName = "HermesProxy.World.Objects.Version.Attributes.DescriptorUpdateBitsPreambleAttribute";
@@ -378,7 +379,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
         string? defaultExpressionByIndex = null;
         int arrayCount = 0;
         int arrayMode = 0;
-        bool ownerOnly = false;
+        int visibility = 0;
         string? customWriter = null;
         string? cast = null;
         foreach (var named in attrData.NamedArguments)
@@ -389,7 +390,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                 case "DefaultExpressionByIndex": defaultExpressionByIndex = named.Value.Value as string; break;
                 case "ArrayCount": arrayCount = (named.Value.Value as int?) ?? 0; break;
                 case "ArrayMode": arrayMode = (named.Value.Value as int?) ?? 0; break;
-                case "OwnerOnly": ownerOnly = (named.Value.Value as bool?) ?? false; break;
+                case "Visibility": visibility = VisibilityOrdinal(named.Value.Value); break;
                 case "CustomWriter": customWriter = named.Value.Value as string; break;
                 case "Cast": cast = named.Value.Value as string; break;
             }
@@ -412,7 +413,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
             arrayCount: arrayCount,
             arrayMode: (ArrayMode)arrayMode,
             defaultExpressionByIndex: defaultExpressionByIndex,
-            ownerOnly: ownerOnly,
+            gate: GateFor(visibility),
             customWriter: customWriter,
             cast: cast);
     }
@@ -498,20 +499,20 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
             ? (attrData.ConstructorArguments[1].Value as string) ?? ""
             : "";
 
-        bool ownerOnly = false;
+        int visibility = 0;
         string? customWriter = null;
         int count = 0;
         foreach (var named in attrData.NamedArguments)
         {
             switch (named.Key)
             {
-                case "OwnerOnly": ownerOnly = (named.Value.Value as bool?) ?? false; break;
+                case "Visibility": visibility = VisibilityOrdinal(named.Value.Value); break;
                 case "CustomWriter": customWriter = named.Value.Value as string; break;
                 case "Count": count = (named.Value.Value as int?) ?? 0; break;
             }
         }
 
-        return new CreatePlaceholderEntry((DescriptorType)typeOrdinal.Value, literal, ownerOnly, customWriter, count);
+        return new CreatePlaceholderEntry((DescriptorType)typeOrdinal.Value, literal, GateFor(visibility), customWriter, count);
     }
 
     private static CreateBitsPlaceholderEntry? ReadCreateBitsPlaceholder(AttributeData attrData)
@@ -528,17 +529,53 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
             return null;
 
         bool flush = true;
-        bool ownerOnly = false;
+        int visibility = 0;
         foreach (var named in attrData.NamedArguments)
         {
             switch (named.Key)
             {
                 case "Flush": flush = (named.Value.Value as bool?) ?? true; break;
-                case "OwnerOnly": ownerOnly = (named.Value.Value as bool?) ?? false; break;
+                case "Visibility": visibility = VisibilityOrdinal(named.Value.Value); break;
             }
         }
 
-        return new CreateBitsPlaceholderEntry(value.Value, bitCount.Value, flush, ownerOnly);
+        return new CreateBitsPlaceholderEntry(value.Value, bitCount.Value, flush, GateFor(visibility));
+    }
+
+    /// <summary>
+    /// Reads a <c>Visibility</c> named argument. The attribute's enum is byte-backed, so the boxed
+    /// constant is a <c>byte</c> rather than the <c>int</c> the other named arguments hand back.
+    /// </summary>
+    private static int VisibilityOrdinal(object? value) => value switch
+    {
+        byte b => b,
+        int i => i,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// The condition guarding one create-path write, or null when it is unconditional.
+    /// <para>
+    /// The test reads the builder's <c>FieldVisibilityFlags</c> — the same byte that leads the
+    /// values blob — so the writer gates on exactly the value the client gates its reads on. Every
+    /// build that emits a visibility byte uses this, V3_4_3 included; there it resolves to
+    /// <c>Owner | PartyMember</c> or nothing, which is why a boolean sufficed before 2.5.6 split
+    /// the groups apart.
+    /// </para>
+    /// </summary>
+    private static string? GateFor(int visibility)
+    {
+        if (visibility == 0)
+            return null;
+
+        var groups = new List<string>();
+        if ((visibility & 0x01) != 0) groups.Add(FieldVisibilityFullName + ".Owner");
+        if ((visibility & 0x02) != 0) groups.Add(FieldVisibilityFullName + ".PartyMember");
+        if ((visibility & 0x04) != 0) groups.Add(FieldVisibilityFullName + ".UnitAll");
+        if ((visibility & 0x08) != 0) groups.Add(FieldVisibilityFullName + ".Empath");
+
+        string mask = groups.Count == 1 ? groups[0] : "(" + string.Join(" | ", groups) + ")";
+        return "(FieldVisibilityFlags & " + mask + ") != 0";
     }
 
     private static string Emit(VersionEntry version)
@@ -605,8 +642,8 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
             else if (kind == CreateSequenceKind.Placeholder)
             {
                 var p = (CreatePlaceholderEntry)payload;
-                if (p.OwnerOnly) sb.AppendLine("        if (IsOwner) {");
-                string indent = p.OwnerOnly ? "            " : "        ";
+                if (p.Gate != null) sb.Append("        if (").Append(p.Gate).AppendLine(") {");
+                string indent = p.Gate != null ? "            " : "        ";
                 if (!string.IsNullOrEmpty(p.CustomWriter))
                 {
                     sb.Append(indent).Append(p.CustomWriter).AppendLine("(data, src);");
@@ -628,16 +665,16 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                           .Append(literal).AppendLine(");");
                     }
                 }
-                if (p.OwnerOnly) sb.AppendLine("        }");
+                if (p.Gate != null) sb.AppendLine("        }");
             }
             else // BitsPlaceholder
             {
                 var b = (CreateBitsPlaceholderEntry)payload;
-                if (b.OwnerOnly) sb.AppendLine("        if (IsOwner) {");
-                string indent = b.OwnerOnly ? "            " : "        ";
+                if (b.Gate != null) sb.Append("        if (").Append(b.Gate).AppendLine(") {");
+                string indent = b.Gate != null ? "            " : "        ";
                 sb.Append(indent).Append("data.WriteBits(").Append(b.Value).Append("u, ").Append(b.BitCount).AppendLine(");");
                 if (b.Flush) sb.Append(indent).AppendLine("data.FlushBits();");
-                if (b.OwnerOnly) sb.AppendLine("        }");
+                if (b.Gate != null) sb.AppendLine("        }");
             }
         }
         sb.AppendLine("    }");
@@ -648,15 +685,15 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
 
     private static void EmitCreateField(StringBuilder sb, CreateFieldEntry f)
     {
-        string baseIndent = f.OwnerOnly ? "            " : "        ";
-        if (f.OwnerOnly) sb.AppendLine("        if (IsOwner) {");
+        string baseIndent = f.Gate != null ? "            " : "        ";
+        if (f.Gate != null) sb.Append("        if (").Append(f.Gate).AppendLine(") {");
 
         // Scalar field-level CustomWriter: delegate to a builder method, no inline write.
         // Array CustomWriter routes via the per-element loop branch below.
         if (f.ArrayCount == 0 && !string.IsNullOrEmpty(f.CustomWriter))
         {
             sb.Append(baseIndent).Append(f.CustomWriter).AppendLine("(data, src);");
-            if (f.OwnerOnly) sb.AppendLine("        }");
+            if (f.Gate != null) sb.AppendLine("        }");
             return;
         }
 
@@ -696,7 +733,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
                     sb.Append(baseIndent).Append("for (int i = 0; i < ").Append(f.ArrayCount).AppendLine("; i++)");
                     sb.Append(baseIndent).Append("    data.").Append(WriteMethodNameFor(f.Type))
                       .Append("(").Append(expr).AppendLine(");");
-                    if (f.OwnerOnly) sb.AppendLine("        }");
+                    if (f.Gate != null) sb.AppendLine("        }");
                     return;
                 }
 
@@ -757,7 +794,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
               .Append(valueExpr).AppendLine(");");
         }
 
-        if (f.OwnerOnly) sb.AppendLine("        }");
+        if (f.Gate != null) sb.AppendLine("        }");
     }
 
     private static void EmitUpdate(StringBuilder sb, SectionEntry section)
@@ -1343,7 +1380,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
         int arrayCount,
         ArrayMode arrayMode,
         string? defaultExpressionByIndex,
-        bool ownerOnly,
+        string? gate,
         string? customWriter,
         string? cast)
     {
@@ -1353,7 +1390,7 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
         public int ArrayCount => arrayCount;
         public ArrayMode ArrayMode => arrayMode;
         public string? DefaultExpressionByIndex => defaultExpressionByIndex;
-        public bool OwnerOnly => ownerOnly;
+        public string? Gate => gate;
         public string? CustomWriter => customWriter;
         public string? Cast => cast;
     }
@@ -1392,9 +1429,9 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
 
     private sealed record UpdateBitsPreambleEntry(uint Value, int BitCount);
 
-    private sealed record CreatePlaceholderEntry(DescriptorType Type, string LiteralExpression, bool OwnerOnly, string? CustomWriter, int Count);
+    private sealed record CreatePlaceholderEntry(DescriptorType Type, string LiteralExpression, string? Gate, string? CustomWriter, int Count);
 
-    private sealed record CreateBitsPlaceholderEntry(uint Value, int BitCount, bool Flush, bool OwnerOnly);
+    private sealed record CreateBitsPlaceholderEntry(uint Value, int BitCount, bool Flush, string? Gate);
 
     private sealed class MemberEntry
     {

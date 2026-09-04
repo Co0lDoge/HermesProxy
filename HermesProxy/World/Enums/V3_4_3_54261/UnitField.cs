@@ -1,4 +1,4 @@
-using HermesProxy.World.Objects;
+﻿using HermesProxy.World.Objects;
 using HermesProxy.World.Objects.Version.Attributes;
 
 namespace HermesProxy.World.Enums.V3_4_3_54261;
@@ -61,7 +61,7 @@ public enum UnitField
     [DescriptorCreateField(nameof(UnitData.Summon), DescriptorType.PackedGuid128)]
     [DescriptorUpdateField(nameof(UnitData.Summon), DescriptorType.PackedGuid128, bit: 12)]
     UNIT_SUMMON,
-    [DescriptorCreateField(nameof(UnitData.Critter), DescriptorType.PackedGuid128, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.Critter), DescriptorType.PackedGuid128, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.Critter), DescriptorType.PackedGuid128, bit: 13)]
     UNIT_CRITTER_OWNER,
     [DescriptorCreateField(nameof(UnitData.CharmedBy), DescriptorType.PackedGuid128)]
@@ -129,7 +129,7 @@ public enum UnitField
 
     // ---- Owner float pairs + Power interleaved (Create-only via custom writer) ----
 
-    [DescriptorCreatePlaceholder(DescriptorType.Float, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitOwnerFloatPairs))]
+    [DescriptorCreatePlaceholder(DescriptorType.Float, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitOwnerFloatPairs))]
     UNIT_OWNER_FLOAT_PAIRS_CUSTOM,
 
     [DescriptorCreatePlaceholder(DescriptorType.Int32, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitPowerInterleaved))]
@@ -200,7 +200,7 @@ public enum UnitField
 
     // ---- RangedAttackRoundBaseTime owner-only Create (bow-fallback) ----
 
-    [DescriptorCreatePlaceholder(DescriptorType.UInt32, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitRangedAttackTime))]
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitRangedAttackTime))]
     UNIT_RANGED_ATTACK_ROUND_TIME_CUSTOM,
 
     // ---- BoundingRadius / CombatReach / NativeDisplayID / MountDisplayID + padding ----
@@ -228,16 +228,16 @@ public enum UnitField
 
     // ---- Damage fields (owner-only Create, unconditional Update) ----
 
-    [DescriptorCreateField(nameof(UnitData.MinDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MinDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MinDamage), DescriptorType.Float, bit: 52)]
     UNIT_MIN_DAMAGE,
-    [DescriptorCreateField(nameof(UnitData.MaxDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MaxDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MaxDamage), DescriptorType.Float, bit: 53)]
     UNIT_MAX_DAMAGE,
-    [DescriptorCreateField(nameof(UnitData.MinOffHandDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MinOffHandDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MinOffHandDamage), DescriptorType.Float, bit: 54)]
     UNIT_MIN_OFF_HAND_DAMAGE,
-    [DescriptorCreateField(nameof(UnitData.MaxOffHandDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MaxOffHandDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MaxOffHandDamage), DescriptorType.Float, bit: 55)]
     UNIT_MAX_OFF_HAND_DAMAGE,
 
@@ -299,13 +299,13 @@ public enum UnitField
 
     // ---- Stats/Resistances/PowerCost/ResBuffMods interleaved groups (Create custom-writer placeholders) ----
 
-    [DescriptorCreatePlaceholder(DescriptorType.Int32, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitStatsInterleaved))]
+    [DescriptorCreatePlaceholder(DescriptorType.Int32, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitStatsInterleaved))]
     UNIT_STATS_INTERLEAVED_CUSTOM,
 
-    [DescriptorCreatePlaceholder(DescriptorType.Int32, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitResistances))]
+    [DescriptorCreatePlaceholder(DescriptorType.Int32, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitResistances))]
     UNIT_RESISTANCES_CUSTOM,
 
-    [DescriptorCreatePlaceholder(DescriptorType.Int32, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitPowerCostInterleaved))]
+    [DescriptorCreatePlaceholder(DescriptorType.Int32, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitPowerCostInterleaved))]
     UNIT_POWER_COST_INTERLEAVED_CUSTOM,
 
     [DescriptorCreatePlaceholder(DescriptorType.Int32, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitResistanceBuffModsInterleaved))]
@@ -317,7 +317,7 @@ public enum UnitField
     [DescriptorUpdateField(nameof(UnitData.BaseMana), DescriptorType.Int32, bit: 75)]
     UNIT_BASE_MANA,
 
-    [DescriptorCreateField(nameof(UnitData.BaseHealth), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.BaseHealth), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.BaseHealth), DescriptorType.Int32, bit: 76)]
     UNIT_BASE_HEALTH_OWNER,
 
@@ -338,43 +338,43 @@ public enum UnitField
 
     // ---- AttackPower block (owner-only Create, unconditional Update) ----
 
-    [DescriptorCreateField(nameof(UnitData.AttackPower), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.AttackPower), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.AttackPower), DescriptorType.Int32, bit: 81)]
     UNIT_ATTACK_POWER,
-    [DescriptorCreateField(nameof(UnitData.AttackPowerModPos), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.AttackPowerModPos), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.AttackPowerModPos), DescriptorType.Int32, bit: 82)]
     UNIT_ATTACK_POWER_MOD_POS,
-    [DescriptorCreateField(nameof(UnitData.AttackPowerModNeg), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.AttackPowerModNeg), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.AttackPowerModNeg), DescriptorType.Int32, bit: 83)]
     UNIT_ATTACK_POWER_MOD_NEG,
-    [DescriptorCreateField(nameof(UnitData.AttackPowerMultiplier), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.AttackPowerMultiplier), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.AttackPowerMultiplier), DescriptorType.Float, bit: 84)]
     UNIT_ATTACK_POWER_MULTIPLIER,
-    [DescriptorCreateField(nameof(UnitData.RangedAttackPower), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.RangedAttackPower), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.RangedAttackPower), DescriptorType.Int32, bit: 85)]
     UNIT_RANGED_ATTACK_POWER,
-    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerModPos), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerModPos), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.RangedAttackPowerModPos), DescriptorType.Int32, bit: 86)]
     UNIT_RANGED_ATTACK_POWER_MOD_POS,
-    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerModNeg), DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerModNeg), DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.RangedAttackPowerModNeg), DescriptorType.Int32, bit: 87)]
     UNIT_RANGED_ATTACK_POWER_MOD_NEG,
-    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerMultiplier), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.RangedAttackPowerMultiplier), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.RangedAttackPowerMultiplier), DescriptorType.Float, bit: 88)]
     UNIT_RANGED_ATTACK_POWER_MULTIPLIER,
 
-    [DescriptorCreatePlaceholder(DescriptorType.Int32, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.Int32, Visibility = FieldVisibility.Owner)]
     UNIT_PAD_INT32_OWNER,
-    [DescriptorCreatePlaceholder(DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     UNIT_PAD_FLOAT_OWNER,
 
-    [DescriptorCreateField(nameof(UnitData.MinRangedDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MinRangedDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MinRangedDamage), DescriptorType.Float, bit: 91)]
     UNIT_MIN_RANGED_DAMAGE,
-    [DescriptorCreateField(nameof(UnitData.MaxRangedDamage), DescriptorType.Float, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(UnitData.MaxRangedDamage), DescriptorType.Float, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(UnitData.MaxRangedDamage), DescriptorType.Float, bit: 92)]
     UNIT_MAX_RANGED_DAMAGE,
-    [DescriptorCreateField(nameof(UnitData.MaxHealthModifier), DescriptorType.Float, OwnerOnly = true, DefaultExpression = "1f")]
+    [DescriptorCreateField(nameof(UnitData.MaxHealthModifier), DescriptorType.Float, Visibility = FieldVisibility.Owner, DefaultExpression = "1f")]
     [DescriptorUpdateField(nameof(UnitData.MaxHealthModifier), DescriptorType.Float, bit: 93)]
     UNIT_MAX_HEALTH_MODIFIER,
 
@@ -447,7 +447,7 @@ public enum UnitField
     [DescriptorCreatePlaceholder(DescriptorType.UInt32)]
     UNIT_PAD_16,
 
-    [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128, Visibility = FieldVisibility.Owner)]
     UNIT_PAD_GUID_OWNER,
 
     [DescriptorCreatePlaceholder(DescriptorType.PackedGuid128, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreateUnitChannelObjectsBody))]

@@ -1,4 +1,4 @@
-using HermesProxy.World.Objects;
+﻿using HermesProxy.World.Objects;
 using HermesProxy.World.Objects.Version.Attributes;
 
 namespace HermesProxy.World.Enums.V3_4_3_54261;
@@ -97,7 +97,7 @@ public enum PlayerField
     PLAYER_GUILD_TIMESTAMP,
 
     // QuestLog Create — owner-gated 25× quest entries (custom writer drops the hand-port trace log).
-    [DescriptorCreatePlaceholder(DescriptorType.Int64, OwnerOnly = true, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreatePlayerQuestLog))]
+    [DescriptorCreatePlaceholder(DescriptorType.Int64, Visibility = FieldVisibility.Owner, CustomWriter = nameof(HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.WriteCreatePlayerQuestLog))]
     PLAYER_QUEST_LOG_CUSTOM,
 
     // VisibleItems Create — 19× always-write (zero fallback for null entries).

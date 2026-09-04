@@ -11,6 +11,7 @@
 using Framework.GameMath;
 using Framework.Util;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Objects.Version.Attributes;
 using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -73,6 +74,16 @@ public partial class ObjectUpdateBuilder
         _realObjectType == ObjectTypeBCC.ActivePlayer ||
         _realObjectType == ObjectTypeBCC.Item ||
         _realObjectType == ObjectTypeBCC.Container;
+
+    /// <summary>
+    /// The values blob's leading visibility byte, and the gate the generated create writers test
+    /// per field. This build only ever declares both groups or neither — PartyMember is what makes
+    /// QuestLog visible, and nothing here is party-visible without also being owner-visible — so
+    /// the whole byte follows <see cref="IsOwner"/>. Builds that separate the groups override the
+    /// flags per object instead.
+    /// </summary>
+    private FieldVisibility FieldVisibilityFlags =>
+        IsOwner ? FieldVisibility.Owner | FieldVisibility.PartyMember : FieldVisibility.None;
 
     private bool IsGameObjectOwner
     {
@@ -1483,8 +1494,7 @@ public partial class ObjectUpdateBuilder
         var effectiveMask = _objectTypeMask;
         bool trace = _objectType == ObjectTypeBCC.ActivePlayer;
 
-        // Owner=0x01, PartyMember=0x02 (needed for QuestLog visibility).
-        byte updateFieldFlags = (byte)(IsOwner ? 0x03 : 0);
+        byte updateFieldFlags = (byte)FieldVisibilityFlags;
         data.WriteUInt8(updateFieldFlags);
 
         int p0 = data.GetData().Length;

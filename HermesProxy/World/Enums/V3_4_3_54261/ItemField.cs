@@ -1,4 +1,4 @@
-using HermesProxy.World.Objects;
+﻿using HermesProxy.World.Objects;
 using HermesProxy.World.Objects.Version.Attributes;
 
 namespace HermesProxy.World.Enums.V3_4_3_54261;
@@ -53,16 +53,16 @@ public enum ItemField
     ITEM_GIFT_CREATOR,
 
     // Owner-only region: StackCount, Duration, then SpellCharges[5] per-element.
-    [DescriptorCreateField(nameof(ItemData.StackCount), DescriptorType.UInt32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(ItemData.StackCount), DescriptorType.UInt32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(ItemData.StackCount), DescriptorType.UInt32, bit: 7, ParentBit = 0)]
     ITEM_STACK_COUNT,
 
-    [DescriptorCreateField(nameof(ItemData.Duration), DescriptorType.UInt32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(ItemData.Duration), DescriptorType.UInt32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(ItemData.Duration), DescriptorType.UInt32, bit: 8, ParentBit = 0)]
     ITEM_DURATION,
 
     [DescriptorCreateField(nameof(ItemData.SpellCharges), DescriptorType.Int32,
-                           ArrayCount = 5, ArrayMode = ArrayMode.PerElement, OwnerOnly = true)]
+                           ArrayCount = 5, ArrayMode = ArrayMode.PerElement, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(ItemData.SpellCharges), DescriptorType.Int32, bit: 24,
                            ArrayCount = 5, ArrayMode = ArrayMode.PerElement, ParentBit = 23)]
     ITEM_SPELL_CHARGES,
@@ -92,11 +92,11 @@ public enum ItemField
     ITEM_RANDOM_PROPERTY,
 
     // Owner-only durability pair.
-    [DescriptorCreateField(nameof(ItemData.Durability), DescriptorType.UInt32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(ItemData.Durability), DescriptorType.UInt32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(ItemData.Durability), DescriptorType.UInt32, bit: 12, ParentBit = 0)]
     ITEM_DURABILITY,
 
-    [DescriptorCreateField(nameof(ItemData.MaxDurability), DescriptorType.UInt32, OwnerOnly = true)]
+    [DescriptorCreateField(nameof(ItemData.MaxDurability), DescriptorType.UInt32, Visibility = FieldVisibility.Owner)]
     [DescriptorUpdateField(nameof(ItemData.MaxDurability), DescriptorType.UInt32, bit: 13, ParentBit = 0)]
     ITEM_MAX_DURABILITY,
 
@@ -130,10 +130,10 @@ public enum ItemField
     [DescriptorCreatePlaceholder(DescriptorType.Int64)]
     ITEM_PAD_INT64,
 
-    [DescriptorCreatePlaceholder(DescriptorType.UInt64, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.UInt64, Visibility = FieldVisibility.Owner)]
     ITEM_PAD_OWNER_UINT64,
 
-    [DescriptorCreatePlaceholder(DescriptorType.UInt8, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.UInt8, Visibility = FieldVisibility.Owner)]
     ITEM_PAD_OWNER_UINT8,
 
     // ArtifactPowers.size() — stays zero-size; artifacts do not exist in this content
@@ -148,7 +148,7 @@ public enum ItemField
     ITEM_GEMS_SIZE_CREATE,
 
     // DynamicFlags2
-    [DescriptorCreatePlaceholder(DescriptorType.UInt32, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.UInt32, Visibility = FieldVisibility.Owner)]
     ITEM_PAD_OWNER_UINT32,
 
     // ItemBonusKey: Int32 ItemID + UInt32 BonusListIDs.size() (always 0 here).
@@ -159,7 +159,7 @@ public enum ItemField
     ITEM_PAD_UINT32_4,
 
     // DEBUGItemLevel
-    [DescriptorCreatePlaceholder(DescriptorType.UInt16, OwnerOnly = true)]
+    [DescriptorCreatePlaceholder(DescriptorType.UInt16, Visibility = FieldVisibility.Owner)]
     ITEM_PAD_OWNER_UINT16,
 
     // Gems payload — ArtifactPowers[] elements would precede it, but that field is

@@ -893,6 +893,23 @@ public class ByteBuffer : IDisposable
         return ReadBytes(remaining);
     }
 
+    /// <summary>
+    /// Bytes written so far, flushing any pending bit pack first — the same side effect
+    /// <see cref="GetData"/> has, but without allocating and copying the whole buffer.
+    /// </summary>
+    /// <remarks>
+    /// Diagnostics that only want a length must use this rather than <c>GetData().Length</c>,
+    /// which copies the entire packet on every call. Note that the flush is deliberate and not
+    /// merely inherited: callers sit mid-write, so skipping it would move where a partial bit
+    /// pack lands and change the bytes on the wire.
+    /// </remarks>
+    public int GetWrittenLength()
+    {
+        if (_isWriteMode)
+            FlushBits();
+        return _length;
+    }
+
     public byte[] GetData()
     {
         if (_isWriteMode)

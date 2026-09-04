@@ -27,6 +27,8 @@ using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
 
+using HermesProxy.World.Logging;
+
 namespace HermesProxy.World.Server.Packets;
 
 public sealed class EnumCharacters : ClientPacket
@@ -62,13 +64,19 @@ public sealed class ReorderCharacters : ClientPacket
 
 public sealed class EnumCharactersResult : ServerPacket
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    // Matches the column the [CallerFilePath] form used to render, so existing greps still work.
+    private static readonly string _logSource = "CharacterPackets".PadRight(15);
+
     public EnumCharactersResult() : base(Opcode.SMSG_ENUM_CHARACTERS_RESULT) { }
 
     public override void Write()
     {
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            $"[Trace] EnumCharactersResult.Write: ENTER expansion={ModernVersion.ExpansionVersion} chars={Characters.Count}");
-        int envStart = _worldPacket.GetData().Length;
+        CharacterEnumLogMessages.EnumEnter(_melServer, _logSource, ModernVersion.ExpansionVersion, Characters.Count);
+        // GetWrittenLength keeps GetData's bit flush — which callers here sit mid-write of —
+        // without copying the whole packet just to read a length.
+        int envStart = _worldPacket.GetWrittenLength();
 
         _worldPacket.WriteBit(Success);
         _worldPacket.WriteBit(IsDeletedCharacters);
@@ -78,8 +86,7 @@ public sealed class EnumCharactersResult : ServerPacket
 
         if (ModernVersion.ExpansionVersion >= 3)
         {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                "[Trace] EnumCharactersResult.Write: branch=V3_4_3 (WPP layout, 7 bits + 5 UInt32s)");
+            CharacterEnumLogMessages.EnumBranchV343(_melServer, _logSource);
             // 3.4.3.54261 (WotLK Classic) envelope per WowPacketParser
             // WowPacketParserModule.V3_4_0_45166/Parsers/CharacterHandler.cs:402-460
             // (gated on ClientVersionBuild.V3_4_3_51505, before V3_4_4_59817 additions).
@@ -120,14 +127,12 @@ public sealed class EnumCharactersResult : ServerPacket
             foreach (var raceUnlock in RaceUnlockData)
                 raceUnlock.Write(_worldPacket);
 
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[Trace] EnumCharactersResult.Write: EXIT total={_worldPacket.GetData().Length}b (V3_4_3 path)");
+            CharacterEnumLogMessages.EnumExitV343(_melServer, _logSource, _worldPacket.GetWrittenLength());
 
             return;
         }
 
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            "[Trace] EnumCharactersResult.Write: branch=Legacy (V1_14/V2_5 layout)");
+        CharacterEnumLogMessages.EnumBranchLegacy(_melServer, _logSource);
         // Legacy modern (V1_14, V2_5) envelope.
         //_worldPacket.WriteBit(Success);
         //_worldPacket.WriteBit(IsDeletedCharacters);
@@ -157,17 +162,21 @@ public sealed class EnumCharactersResult : ServerPacket
 
     private void DumpEnvelope(int start)
     {
+        // Flush unconditionally so the wire is identical whether or not Trace is on; only the
+        // buffer copy and the hex / LINQ formatting are gated.
+        int len = _worldPacket.GetWrittenLength() - start;
+        if (!_melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            return;
+
         byte[] all = _worldPacket.GetData();
-        int len = all.Length - start;
         int dumpLen = Math.Min(40, len);
         string hex = BitConverter.ToString(all, start, dumpLen);
         string customSummary = Characters.Count > 0 && Characters[0].Customizations.Count > 0
             ? string.Join(",", Characters[0].Customizations.Select(c => $"{c.ChrCustomizationOptionID}/{c.ChrCustomizationChoiceID}"))
             : "(none)";
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            $"[CharEnumEnv] charsCount={Characters.Count} maxLevel={MaxCharacterLevel} raceCount={RaceUnlockData.Count} envBytes={len} envFirst40={hex}");
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            $"[CharEnumEnv] customizations[0]={customSummary}");
+        CharacterEnumLogMessages.EnvelopeSummary(_melServer, _logSource, Characters.Count, MaxCharacterLevel,
+            RaceUnlockData.Count, len, hex);
+        CharacterEnumLogMessages.EnvelopeCustomizations(_melServer, _logSource, customSummary);
     }
 
     public bool Success;
@@ -197,7 +206,7 @@ public sealed class EnumCharactersResult : ServerPacket
     {
         public void Write(WorldPacket data)
         {
-            int startSize = data.GetData().Length;
+            int startSize = data.GetWrittenLength();
 
             if (ModernVersion.ExpansionVersion >= 3)
             {
@@ -210,19 +219,21 @@ public sealed class EnumCharactersResult : ServerPacket
 
             // Phase 5a diagnostic: hex-dump the per-character block so we can compare against
             // a known-good 3.4.3 capture. Drop after character-select renders correctly.
+            // Flush unconditionally so the wire does not depend on the log level; gate only
+            // the buffer copy and the hex formatting, which ran per character on every login.
+            int totalSize = data.GetWrittenLength() - startSize;
+            if (!_melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                return;
+
             byte[] all = data.GetData();
-            int totalSize = all.Length - startSize;
             int firstLen = Math.Min(40, totalSize);
             int lastLen = Math.Min(30, totalSize);
             string firstHex = BitConverter.ToString(all, startSize, firstLen);
             string lastHex = BitConverter.ToString(all, startSize + totalSize - lastLen, lastLen);
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[CharInfo] name={Name} race={RaceId} class={ClassId} level={ExperienceLevel} " +
-                $"visItems={VisualItems.Length} bytes={totalSize}");
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[CharInfo] first40={firstHex}");
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[CharInfo] last30={lastHex}");
+            CharacterEnumLogMessages.CharInfoSummary(_melServer, _logSource, Name, RaceId, ClassId,
+                ExperienceLevel, VisualItems.Length, totalSize);
+            CharacterEnumLogMessages.CharInfoFirst40(_melServer, _logSource, firstHex);
+            CharacterEnumLogMessages.CharInfoLast30(_melServer, _logSource, lastHex);
         }
 
         // 3.4.3.54261 (WotLK Classic) per-character body per WowPacketParser
@@ -231,9 +242,8 @@ public sealed class EnumCharactersResult : ServerPacket
         // TimerunningSeasonID, separate RestrictionsAndMails struct, etc.).
         private void Write_V3_4_3(WorldPacket data)
         {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[Trace] CharacterInfo.Write_V3_4_3: ENTER name='{Name}' guid={Guid} race={RaceId} class={ClassId} sex={SexId} " +
-                $"flags=0x{(uint)Flags:X8} flags2=0x{Flags2:X8} flags3=0x{Flags3:X8} flags4=0x{Flags4:X8}");
+            CharacterEnumLogMessages.CharInfoWriteV343Enter(_melServer, _logSource, Name, Guid.Low, Guid.High,
+                RaceId, ClassId, SexId, Flags, Flags2, Flags3, Flags4);
             data.WritePackedGuid128(Guid);
             data.WriteUInt64(GuildClubMemberID);
             data.WriteUInt8(ListPosition);
@@ -1062,12 +1072,19 @@ public class UpdateActionButtons : ServerPacket
     public List<int> ActionButtons = new();
     public byte Reason;
 
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    private static readonly string _logSource = "CharacterPackets".PadRight(15);
+
     public UpdateActionButtons() : base(Opcode.SMSG_UPDATE_ACTION_BUTTONS, ConnectionType.Instance) { }
 
     public override void Write()
     {
         int nonZero = 0;
-        var sample = new System.Text.StringBuilder();
+        // The sample builder allocated and formatted inside the write loop on every action-bar
+        // update, whatever the log level. Build it only when it will actually be emitted.
+        bool trace = _melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace);
+        var sample = trace ? new System.Text.StringBuilder() : null;
         for (int i = 0; i < PlayerConst.MaxActionButtonsModern; i++)
         {
             int legacy = i < ActionButtons.Count ? ActionButtons[i] : 0;
@@ -1079,15 +1096,15 @@ public class UpdateActionButtons : ServerPacket
             if (legacy != 0)
             {
                 nonZero++;
-                if (nonZero <= 5)
-                    sample.Append($" [{i}]act={action},type={type}");
+                if (trace && nonZero <= 5)
+                    sample!.Append($" [{i}]act={action},type={type}");
             }
         }
         _worldPacket.WriteUInt8(Reason);
 
-        Log.Print(LogType.Trace,
-            $"[ActionButtonsTrace] SMSG_UPDATE_ACTION_BUTTONS write: legacyCount={ActionButtons.Count} " +
-            $"nonZeroSlots={nonZero} paddedTo={PlayerConst.MaxActionButtonsModern} Reason={Reason} sample:{sample}");
+        if (trace)
+            CharacterEnumLogMessages.ActionButtonsWrite(_melServer, _logSource, ActionButtons.Count, nonZero,
+                PlayerConst.MaxActionButtonsModern, Reason, sample!.ToString());
     }
 }
 

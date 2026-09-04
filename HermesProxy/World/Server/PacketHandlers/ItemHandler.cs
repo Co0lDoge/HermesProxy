@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 
@@ -10,6 +11,13 @@ namespace HermesProxy.World.Server;
 
 public partial class WorldSocket
 {
+    // Server category, not the _melLog Packet one every other handler uses: these traces
+    // have always rendered under "S", and the test profile runs ServerLevel=Verbose with
+    // PacketLevel=Debug, so moving them to Packet would silently drop every line.
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServerItem =
+        Log.CreateMelLogger(Log.CategoryServer);
+    private static readonly string _logSourceItem = "ItemHandler".PadRight(15);
+
     // Handlers for CMSG opcodes coming from the modern client
     [PacketHandler(Opcode.CMSG_BUY_ITEM)]
     void HandleBuyItem(BuyItem item)
@@ -19,9 +27,9 @@ public partial class WorldSocket
         packet.WriteUInt32(item.Item.ItemID);
         uint quantity = item.Quantity / GetSession().GameState.GetItemBuyCount(item.Item.ItemID);
 
-        Log.Print(LogType.Trace,
-            $"[VendorTrace] CMSG_BUY_ITEM forward: vendor={item.VendorGUID} itemID={item.Item.ItemID} " +
-            $"quantity={quantity} (rawQty={item.Quantity}) MuID={item.MuID} Slot={item.Slot} BagSlot={item.BagSlot} ItemType={item.ItemType}");
+        ItemLogMessages.VendorBuyItemForward(_melServerItem, _logSourceItem,
+            item.VendorGUID.Low, item.VendorGUID.High, item.Item.ItemID, quantity,
+            item.Quantity, (uint)item.MuID, (uint)item.Slot, (uint)item.BagSlot, (uint)item.ItemType);
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
         {
@@ -84,9 +92,7 @@ public partial class WorldSocket
         // HermesProxy-WOTLK Server/WorldSocket.cs:HandleSwapInvItem.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
         {
-            Log.Print(LogType.Trace,
-                $"[InventoryTrace] CMSG_SWAP_INV_ITEM forward (V3_4_3): " +
-                $"raw(Slot2={item.Slot2},Slot1={item.Slot1}) → legacy src={slot2} dst={slot1}");
+            ItemLogMessages.SwapInvItemForwardV343(_melServerItem, _logSourceItem, item.Slot2, item.Slot1, slot2, slot1);
             packet.WriteUInt8(slot2);
             packet.WriteUInt8(slot1);
         }
@@ -136,9 +142,8 @@ public partial class WorldSocket
         packet.WriteUInt8(srcSlot);
         packet.WriteUInt8(dstBag);
 
-        Log.Print(LogType.Trace,
-            $"[InventoryTrace] CMSG_AUTO_STORE_BAG_ITEM forward: " +
-            $"raw(A={item.ContainerSlotA},{item.SlotA} B={item.ContainerSlotB}) → legacy bag={srcBag} slot={srcSlot} dst={dstBag}");
+        ItemLogMessages.AutoStoreBagItemForward(_melServerItem, _logSourceItem,
+            item.ContainerSlotA, item.SlotA, item.ContainerSlotB, srcBag, srcSlot, dstBag);
 
         SendPacketToServer(packet);
     }
@@ -154,9 +159,8 @@ public partial class WorldSocket
         packet.WriteUInt8(containerSlot);
         packet.WriteUInt8(slot);
 
-        Log.Print(LogType.Trace,
-            $"[InventoryTrace] {item.GetUniversalOpcode()} forward: " +
-            $"raw(PackSlot={item.PackSlot},Slot={item.Slot}) → legacy bag={containerSlot} slot={slot}");
+        ItemLogMessages.AutoEquipForward(_melServerItem, _logSourceItem, item.GetUniversalOpcode(),
+            item.PackSlot, item.Slot, containerSlot, slot);
 
         SendPacketToServer(packet);
     }

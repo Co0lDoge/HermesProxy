@@ -23,6 +23,7 @@ using Framework.IO;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
 
@@ -659,15 +660,17 @@ class ReadItemResultOK : ServerPacket, ISpanWritable
 
 public class InventoryChangeFailure : ServerPacket, ISpanWritable
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    // Matches the column the [CallerFilePath] form used to render, so existing greps still work.
+    private static readonly string _logSource = "ItemPackets".PadRight(15);
+
     public InventoryChangeFailure() : base(Opcode.SMSG_INVENTORY_CHANGE_FAILURE) { }
 
     public override void Write()
     {
-        Log.Print(LogType.Trace,
-            $"[InventoryTrace] SMSG_INVENTORY_CHANGE_FAILURE write: BagResult={BagResult} ({(int)BagResult}) " +
-            $"Item[0]={Item[0]} Item[1]={Item[1]} ContainerBSlot={ContainerBSlot} " +
-            $"SrcContainer={SrcContainer} SrcSlot={SrcSlot} DstContainer={DstContainer} " +
-            $"Level={Level} LimitCategory={LimitCategory}");
+        ItemLogMessages.InventoryChangeFailureWrite(_melServer, _logSource, "write", BagResult, (int)BagResult,
+            Item[0].Low, Item[1].Low, ContainerBSlot, Level, LimitCategory);
 
         // BagResult width is version-dependent: V3_4_3 reads it as Int32, while
         // 1.14.x / 2.5.x read a single byte. Writing the wrong width shifts every
@@ -707,9 +710,8 @@ public class InventoryChangeFailure : ServerPacket, ISpanWritable
 
     public int WriteToSpan(Span<byte> buffer)
     {
-        Log.Print(LogType.Trace,
-            $"[InventoryTrace] SMSG_INVENTORY_CHANGE_FAILURE span-write: BagResult={BagResult} ({(int)BagResult}) " +
-            $"Item[0]={Item[0]} Item[1]={Item[1]} ContainerBSlot={ContainerBSlot}");
+        ItemLogMessages.InventoryChangeFailureWrite(_melServer, _logSource, "span-write", BagResult, (int)BagResult,
+            Item[0].Low, Item[1].Low, ContainerBSlot, Level, LimitCategory);
 
         var writer = new SpanPacketWriter(buffer);
         if (ModernVersion.ExpansionVersion >= 3)

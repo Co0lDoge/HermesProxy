@@ -56,7 +56,17 @@ jobs:
             # --abbrev=0` returns the lower of two tags pointing at the
             # same commit (this once produced v4.3.8 → auto_bump=v4.3.9,
             # which collided with the already-published v4.3.9 release).
-            latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+            # Exact vMAJOR.MINOR.PATCH only. PreRelease.yml publishes tags shaped
+            # v<floor>-<branch-slug>-<sha7>, which this glob also matches. While the
+            # floor sat below the newest release those sorted underneath it and did no
+            # harm; the moment the floor is raised above it (4.3.0 -> 4.4.0) a
+            # v4.4.0-feature-... tag sorts FIRST and the patch parse below dies on a
+            # non-numeric component ("value too great for base"). The step then exits
+            # mid-script under set -e, tag= is never written, and every build job
+            # silently receives an empty -p:Version=, failing inside GetAssemblyVersion.
+            latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
+                     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                     | sort -V | tail -1 || true)
             latest="${latest:-v0.0.0}"
             # Strip 'v' prefix and normalize to major.minor.patch
             version="${latest#v}"
@@ -81,6 +91,12 @@ jobs:
             winner=$(printf "%s\n%s\n" "$auto_bump" "$floor" | sort -V | tail -1)
             tag="v${winner}"
             echo "Latest tag: $latest → auto=$auto_bump, floor(GitVersion.yml)=$floor → $tag"
+          fi
+          # Never hand an empty version downstream: without this the build jobs get
+          # -p:Version= and fail deep inside the SDK rather than here.
+          if [ -z "$tag" ]; then
+            echo "::error::Version computation produced an empty tag - refusing to build."
+            exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 

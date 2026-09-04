@@ -286,16 +286,30 @@ before the builder ever runs.
 - `AreaTrigger` / `Conversation` / `SceneObject` — enums exist, nothing wired, likely dead for a
   WotLK backend
 
-## Known gaps for the 5.5 engine (2.5.6)
+## What a 5.5-engine port needs from here
 
-Capabilities a 5.5-engine port needs that are **not** in the generator yet:
+Less generator work than it looks, because the seam rule puts most of it in the hand-written
+builder. Checked against the code rather than assumed:
 
-- **`HasAny*FieldSet` is visibility-blind.** It answers "is any field set", where the 5.5 model
-  needs "is any field set *within the declared groups*". An empty group that still declares its
-  bit is the contract violation described above.
-- **Fragment-wrapped update masks.** `MaskMode` covers flat and blocks. On 5.5 those sit inside a
-  per-fragment mask plus a `u32 updateTypeFlag`. The envelope is hand-written per version, but the
-  generator must not emit a bare blocks mask for a section that lives under a fragment.
-- **Empty-delta form.** `EmitUpdateBlocks` early-outs with `if (blocksMask == 0) return;`. On 5.5,
-  writing a zero mask tears `CGObject` down — the empty update has its own well-formed shape, so
-  the early-out needs to become a per-section emission mode.
+- **The values-update envelope is not generator work.** On 5.5 the update carries `u8 IsOwned`,
+  `u8 HasFragmentUpdates`, a changed-fragment mask (one bit per updateable fragment, two if it is
+  indirect), and then a `u32` type flag — and inside that, the per-section blocks the generator
+  already emits, unchanged. The `changedMask` V3_4_3's `WriteValuesUpdate` already writes **is**
+  that `u32` type flag, same values (Object 0x1, Item 0x2, Container 0x4, Unit 0x20, Player 0x40,
+  ActivePlayer 0x80, GameObject 0x100, DynamicObject 0x200, Corpse 0x400). The envelope around it
+  is what differs, and that belongs in each version's builder.
+- **The empty-delta rule lives in that envelope too.** 5.5 requires a non-zero changed-fragment
+  mask plus a type flag even when nothing changed; writing a zero mask tears `CGObject` down, and
+  the next update then calls a lazy constructor that is NULL for it. The generator's per-section
+  `if (blocksMask == 0) return;` is a different thing and is not implicated — it fires *after* the
+  section's blocks mask is written and flushed, so a section reached with nothing set still emits a
+  well-formed empty mask.
+- **`HasAny{Section}FieldSet` is an update-path predicate** over `UpdateFields`, and visibility is a
+  create-path concept. They do not interact.
+
+What is genuinely unknown is which shapes the attribute vocabulary cannot express once real 2.5.6
+descriptors are written against it. Two candidates are already visible in the reference material:
+an inline count-prefixed pair array (`PlayerData.QuestLogExtraMap` — a `u32` count then that many
+`{questID, slotIndex}` pairs) and nested-struct array elements at a fixed stride (`VisibleItem`, 23
+bytes). Both are expressible today through `CustomWriter` hooks. Whether they are common enough on
+5.5 to earn first-class attributes is a question the port answers — not one to guess at now.

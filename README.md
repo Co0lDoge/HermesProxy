@@ -10,7 +10,7 @@ There are 4 major components to the application:
 
 ## Supported Versions
 
-HermesProxy translates between modern WoW Classic clients and legacy private server emulators. **WotLK Classic (3.4.x → 3.3.5a) support is experimental** — see [wotlk.md](wotlk.md) for the current status and known limitations.
+HermesProxy translates between modern WoW Classic clients and legacy private server emulators. **WotLK Classic (3.4.3 → 3.3.5a) support is in beta** — playable end to end, with rough edges tracked in [wotlk.md](wotlk.md).
 
 ### Modern Client Versions (What You Play With)
 
@@ -23,7 +23,7 @@ These are the Blizzard WoW Classic client versions you can use:
 | 1.14.2  | Classic Era    | 41858 - 42597     |                          |
 | 2.5.2   | TBC Classic    | 39570 - 41510     |                          |
 | 2.5.3   | TBC Classic    | 41402 - 42598     |                          |
-| 3.4.3   | WotLK Classic  | 51505 - 54261     | Experimental — see [wotlk.md](wotlk.md) |
+| 3.4.3   | WotLK Classic  | 54261             | Beta — `V3_4_3_54261` is the only supported build |
 
 ### Legacy Server Versions (What Emulators Run)
 
@@ -35,7 +35,17 @@ These are the private server versions HermesProxy can connect to:
 | 1.12.2  | Vanilla   | 6005  | CMaNGOS, VMaNGOS, etc.   |
 | 1.12.3  | Vanilla   | 6141  | CMaNGOS, VMaNGOS, etc.   |
 | 2.4.3   | TBC       | 8606  | CMaNGOS, etc.            |
-| 3.3.5a  | WotLK     | 12340 | [TrinityCore](https://www.ownedcore.com/forums/world-of-warcraft/world-of-warcraft-emulator-servers/wow-emu-general-releases/966706-repack-trinitycore-npcbots-eluna-extras-335a-solo-lan-2022-a.html), AzerothCore, CMaNGOS |
+| 3.3.5a  | WotLK     | 12340 | [TrinityCore](https://github.com/TrinityCore/TrinityCore/tree/3.3.5), [AzerothCore](https://github.com/azerothcore/azerothcore-wotlk), CMaNGOS |
+
+#### WotLK backend coverage
+
+The 3.4.3 work was developed and playtested against these cores, in this order of confidence:
+
+| Core | Status | Notes |
+|---|---|---|
+| TrinityCore 3.3.5a | Primary | Most tested — current upstream `3.3.5` branch. The reference backend for nearly every 3.4.3 fix. |
+| AzerothCore | Secondary | Broadly working. Corpse handling is the known weak spot — see [#190](https://github.com/Xian55/HermesProxy/issues/190). |
+| CMaNGOS WotLK | Partial | Logs in and plays, but Dungeon Finder ([#104](https://github.com/Xian55/HermesProxy/issues/104)) and MOTransports ([#101](https://github.com/Xian55/HermesProxy/issues/101)) are open. |
 
 ### Version Mapping
 
@@ -65,9 +75,10 @@ Stable Downloads: [Releases](https://github.com/Xian55/HermesProxy/releases)
 
 Note: Keep `Optimize Network for Speed` **enabled** (it's under `System` -> `Network`), otherwise you will get kicked every now and then.
 
-## Known Issues
+## Known Issues and Limitations
 
-See [docs/known-issues.md](docs/known-issues.md) for current client/server quirks and their workarounds.
+- [docs/known-issues.md](docs/known-issues.md) — current client/server quirks and their workarounds, per client family. WotLK Classic players should read the 3.4.3 section before reporting a bug; [wotlk.md](wotlk.md) carries the full audited status.
+- [docs/known-limitations.md](docs/known-limitations.md) — what HermesProxy structurally **cannot** do. Read this first if you are trying to connect to a public server. **Warden-protected servers do not work, and that includes Warmane.**
 
 ## Chat Commands
 
@@ -137,7 +148,7 @@ Primary config is `appsettings.json` (loaded from the working directory, require
 
 | Key                | Default                            | Description                                                                                |
 |--------------------|------------------------------------|--------------------------------------------------------------------------------------------|
-| `ClientBuild`      | `V2_5_2_40892`                     | `ClientVersionBuild` enum value: `V1_14_0_40618`, `V1_14_1_41794`, `V1_14_2_42597`, `V2_5_2_40892`, `V2_5_3_42328`, `V3_4_3_54261` (experimental). |
+| `ClientBuild`      | `V2_5_2_40892`                     | `ClientVersionBuild` enum value: `V1_14_0_40618`, `V1_14_1_41794`, `V1_14_2_42597`, `V2_5_2_40892`, `V2_5_3_42328`, `V3_4_3_54261` (beta). |
 | `SeedHex`          | `179D3DC3235629D07113A9B3867F97A7` | 32-character hex string (16 bytes).                                                        |
 | `ReportedOS`       | `OSX`                              | OS identifier sent to the legacy server (`OSX`, `Win`, etc.).                              |
 | `ReportedPlatform` | `x86`                              | Platform identifier sent to legacy server (`x86`, `x64`).                                  |

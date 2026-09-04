@@ -669,11 +669,14 @@ public class InventoryChangeFailure : ServerPacket, ISpanWritable
             $"SrcContainer={SrcContainer} SrcSlot={SrcSlot} DstContainer={DstContainer} " +
             $"Level={Level} LimitCategory={LimitCategory}");
 
-        // V3_4_3 (and WotLK 3.3.5a) expect BagResult as Int32. Writing as Int8
-        // shifts every subsequent field 3 bytes earlier, so Item[0]/[1] and
-        // ContainerBSlot read as garbage — the inventory UI then leaves the
-        // dragged slot greyed out (equip/swap appears to silently fail).
-        _worldPacket.WriteInt32((int)BagResult);
+        // BagResult width is version-dependent: V3_4_3 reads it as Int32, while
+        // 1.14.x / 2.5.x read a single byte. Writing the wrong width shifts every
+        // subsequent field, so Item[0]/[1] and ContainerBSlot decode as garbage and
+        // the inventory UI leaves the slot greyed out until the player relogs.
+        if (ModernVersion.ExpansionVersion >= 3)
+            _worldPacket.WriteInt32((int)BagResult);
+        else
+            _worldPacket.WriteInt8((sbyte)BagResult);
         _worldPacket.WritePackedGuid128(Item[0]);
         _worldPacket.WritePackedGuid128(Item[1]);
         _worldPacket.WriteUInt8(ContainerBSlot); // bag type subclass, used with EQUIP_ERR_EVENT_AUTOEQUIP_BIND_CONFIRM and EQUIP_ERR_WRONG_BAG_TYPE_2
@@ -697,7 +700,7 @@ public class InventoryChangeFailure : ServerPacket, ISpanWritable
         }
     }
 
-    // Fixed: int32 + 2 GUIDs + byte = 5 + 36 = 41
+    // Fixed: int32 (worst case; 1.14/2.5 write 1 byte) + 2 GUIDs + byte = 5 + 36 = 41
     // Max additional (EventAutoEquipBindConfirm): 2 GUIDs + int = 40
     public int MaxSize => 5 + PackedGuidHelper.MaxPackedGuid128Size * 2 +
                           PackedGuidHelper.MaxPackedGuid128Size * 2 + 4;
@@ -709,7 +712,10 @@ public class InventoryChangeFailure : ServerPacket, ISpanWritable
             $"Item[0]={Item[0]} Item[1]={Item[1]} ContainerBSlot={ContainerBSlot}");
 
         var writer = new SpanPacketWriter(buffer);
-        writer.WriteInt32((int)BagResult);
+        if (ModernVersion.ExpansionVersion >= 3)
+            writer.WriteInt32((int)BagResult);
+        else
+            writer.WriteInt8((sbyte)BagResult);
         writer.WritePackedGuid128(Item[0].Low, Item[0].High);
         writer.WritePackedGuid128(Item[1].Low, Item[1].High);
         writer.WriteUInt8(ContainerBSlot);

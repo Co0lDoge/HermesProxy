@@ -3,241 +3,311 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 
 namespace Framework.Metrics;
 
 /// <summary>
-/// Thread-safe metrics collector for measuring proxy-introduced latency per opcode.
-/// Tracks min, max, average, and percentiles (p50, p95, p99) for packet processing times.
+/// Thread-safe per-opcode collector for handler latency and managed allocation, plus
+/// process-wide GC deltas. Enabled by <c>--metrics</c>. Callers gate the timestamp and
+/// <see cref="GC.GetAllocatedBytesForCurrentThread"/> reads behind the same flag, so the
+/// disabled path pays nothing.
 /// </summary>
 public sealed class ProxyMetrics
 {
     private const int MaxSamplesPerOpcode = 1000;
 
-    // Conversion factor from ticks to milliseconds (cached for performance)
-    private static readonly double TicksToMs = 1000.0 / Stopwatch.Frequency;
-
-    // Per-opcode latency samples (circular buffer)
-    private readonly ConcurrentDictionary<int, LatencySamples> _clientToServerLatency = new();
-    private readonly ConcurrentDictionary<int, LatencySamples> _serverToClientLatency = new();
+    private readonly ConcurrentDictionary<int, OpcodeSamples> _clientToServer = new();
+    private readonly ConcurrentDictionary<int, OpcodeSamples> _serverToClient = new();
 
     private readonly DateTime _startTime = DateTime.UtcNow;
 
-    /// <summary>
-    /// Record latency for a packet processed from modern client and forwarded to legacy server.
-    /// </summary>
-    /// <param name="opcode">The universal opcode</param>
-    /// <param name="elapsedTicks">Elapsed ticks from Stopwatch.GetTimestamp()</param>
-    public void RecordClientToServerLatency(Enum opcode, long elapsedTicks)
-    {
-        RecordClientToServerLatency(Convert.ToInt32(opcode), elapsedTicks * TicksToMs);
-    }
+    private long _clientToServerPackets;
+    private long _serverToClientPackets;
+
+    // Read and replaced only by the periodic summary caller; see CaptureGcDelta. Null until
+    // the first capture so constructing the (always-present) Server.Metrics instance makes no
+    // GC API call when --metrics is off.
+    private GcSnapshot? _lastGcSnapshot;
+    private readonly long _constructedTimestamp = Stopwatch.GetTimestamp();
+    private long _lastSummaryTimestamp = Stopwatch.GetTimestamp();
+    private long _lastSummaryClientToServer;
+    private long _lastSummaryServerToClient;
 
     /// <summary>
-    /// Record latency for a packet processed from legacy server and forwarded to modern client.
+    /// Record one handled modern-client packet. The generic constraint keeps the enum
+    /// unboxed; the previous <see cref="Enum"/>-typed overload boxed on every packet.
     /// </summary>
-    /// <param name="opcode">The universal opcode</param>
-    /// <param name="elapsedTicks">Elapsed ticks from Stopwatch.GetTimestamp()</param>
-    public void RecordServerToClientLatency(Enum opcode, long elapsedTicks)
+    public void RecordClientToServer<TOpcode>(TOpcode opcode, double milliseconds, long allocatedBytes)
+        where TOpcode : unmanaged, Enum
+        => RecordClientToServer(EnumToInt(opcode), milliseconds, allocatedBytes);
+
+    /// <summary>Record one handled legacy-server packet.</summary>
+    public void RecordServerToClient<TOpcode>(TOpcode opcode, double milliseconds, long allocatedBytes)
+        where TOpcode : unmanaged, Enum
+        => RecordServerToClient(EnumToInt(opcode), milliseconds, allocatedBytes);
+
+    internal void RecordClientToServer(int opcode, double milliseconds, long allocatedBytes)
     {
-        RecordServerToClientLatency(Convert.ToInt32(opcode), elapsedTicks * TicksToMs);
+        Interlocked.Increment(ref _clientToServerPackets);
+        _clientToServer.GetOrAdd(opcode, static _ => new OpcodeSamples(MaxSamplesPerOpcode))
+            .Add(milliseconds, allocatedBytes);
     }
 
-    /// <summary>
-    /// Record latency in milliseconds for a packet processed from modern client.
-    /// Internal overload for testing and direct ms values.
-    /// </summary>
+    internal void RecordServerToClient(int opcode, double milliseconds, long allocatedBytes)
+    {
+        Interlocked.Increment(ref _serverToClientPackets);
+        _serverToClient.GetOrAdd(opcode, static _ => new OpcodeSamples(MaxSamplesPerOpcode))
+            .Add(milliseconds, allocatedBytes);
+    }
+
+    /// <summary>Latency-only overload kept for tests and callers that have no allocation figure.</summary>
     internal void RecordClientToServerLatency(int opcode, double milliseconds)
-    {
-        var samples = _clientToServerLatency.GetOrAdd(opcode, _ => new LatencySamples(MaxSamplesPerOpcode));
-        samples.Add(milliseconds);
-    }
+        => RecordClientToServer(opcode, milliseconds, 0);
 
-    /// <summary>
-    /// Record latency in milliseconds for a packet processed from legacy server.
-    /// Internal overload for testing and direct ms values.
-    /// </summary>
+    /// <summary>Latency-only overload kept for tests and callers that have no allocation figure.</summary>
     internal void RecordServerToClientLatency(int opcode, double milliseconds)
-    {
-        var samples = _serverToClientLatency.GetOrAdd(opcode, _ => new LatencySamples(MaxSamplesPerOpcode));
-        samples.Add(milliseconds);
-    }
+        => RecordServerToClient(opcode, milliseconds, 0);
 
-    /// <summary>
-    /// Get latency statistics for client-to-server packets by opcode.
-    /// </summary>
-    public Dictionary<int, LatencyStats> GetClientToServerStats()
-    {
-        return _clientToServerLatency.ToDictionary(
-            kvp => kvp.Key,
-            kvp => kvp.Value.GetStats()
-        );
-    }
+    public Dictionary<int, OpcodeStats> GetClientToServerStats()
+        => _clientToServer.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.GetStats());
 
-    /// <summary>
-    /// Get latency statistics for server-to-client packets by opcode.
-    /// </summary>
-    public Dictionary<int, LatencyStats> GetServerToClientStats()
-    {
-        return _serverToClientLatency.ToDictionary(
-            kvp => kvp.Key,
-            kvp => kvp.Value.GetStats()
-        );
-    }
+    public Dictionary<int, OpcodeStats> GetServerToClientStats()
+        => _serverToClient.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.GetStats());
 
-    /// <summary>
-    /// Get latency stats for a specific client-to-server opcode.
-    /// </summary>
-    public LatencyStats? GetClientToServerStats(int opcode)
-    {
-        return _clientToServerLatency.TryGetValue(opcode, out var samples) ? samples.GetStats() : null;
-    }
+    public OpcodeStats? GetClientToServerStats(int opcode)
+        => _clientToServer.TryGetValue(opcode, out var samples) ? samples.GetStats() : null;
 
-    /// <summary>
-    /// Get latency stats for a specific server-to-client opcode.
-    /// </summary>
-    public LatencyStats? GetServerToClientStats(int opcode)
-    {
-        return _serverToClientLatency.TryGetValue(opcode, out var samples) ? samples.GetStats() : null;
-    }
+    public OpcodeStats? GetServerToClientStats(int opcode)
+        => _serverToClient.TryGetValue(opcode, out var samples) ? samples.GetStats() : null;
 
     public TimeSpan Uptime => DateTime.UtcNow - _startTime;
 
-    public int ClientToServerOpcodeCount => _clientToServerLatency.Count;
-    public int ServerToClientOpcodeCount => _serverToClientLatency.Count;
+    public int ClientToServerOpcodeCount => _clientToServer.Count;
+    public int ServerToClientOpcodeCount => _serverToClient.Count;
 
-    /// <summary>
-    /// Reset all metrics.
-    /// </summary>
+    public long ClientToServerPacketCount => Interlocked.Read(ref _clientToServerPackets);
+    public long ServerToClientPacketCount => Interlocked.Read(ref _serverToClientPackets);
+
     public void Reset()
     {
-        _clientToServerLatency.Clear();
-        _serverToClientLatency.Clear();
+        _clientToServer.Clear();
+        _serverToClient.Clear();
+        Interlocked.Exchange(ref _clientToServerPackets, 0);
+        Interlocked.Exchange(ref _serverToClientPackets, 0);
+        _lastSummaryClientToServer = 0;
+        _lastSummaryServerToClient = 0;
+        _lastSummaryTimestamp = Stopwatch.GetTimestamp();
+        _lastGcSnapshot = null;
     }
 
     /// <summary>
-    /// Get a formatted summary of the top N slowest opcodes.
+    /// GC and allocation change since the previous call, then re-arms. The first call reports
+    /// everything since this instance was constructed (collection counts and total allocated
+    /// bytes are cumulative from process start, so the baseline is simply zero). Intended for
+    /// one periodic caller (the hosted-service summary loop); concurrent callers would each
+    /// see a partial interval.
     /// </summary>
-    /// <param name="topN">Number of top opcodes to show</param>
-    /// <param name="opcodeResolver">Optional function to resolve opcode int to human-readable name</param>
-    public string GetSummary(int topN = 10, Func<int, string>? opcodeResolver = null)
+    public GcDelta CaptureGcDelta()
     {
-        opcodeResolver ??= (opcode => $"0x{opcode:X4}");
+        var now = GcSnapshot.Capture();
+        var previous = _lastGcSnapshot ?? new GcSnapshot(_constructedTimestamp, 0, 0, 0, 0, 0, 0);
+        var delta = GcDelta.Between(previous, now);
+        _lastGcSnapshot = now;
+        return delta;
+    }
 
-        var c2sStats = GetClientToServerStats()
-            .OrderByDescending(x => x.Value.P99)
-            .Take(topN)
-            .ToList();
+    /// <summary>
+    /// Formatted summary: packet rates since the previous summary, the GC delta when
+    /// supplied, then per direction the top-N opcodes by p99 latency (with allocation
+    /// columns) and the top-N by total allocated bytes.
+    /// </summary>
+    public string GetSummary(int topN = 10, Func<int, string>? opcodeResolver = null, GcDelta? gc = null)
+    {
+        opcodeResolver ??= static opcode => $"0x{opcode:X4}";
 
-        var s2cStats = GetServerToClientStats()
-            .OrderByDescending(x => x.Value.P99)
-            .Take(topN)
-            .ToList();
+        long nowTimestamp = Stopwatch.GetTimestamp();
+        double intervalSeconds = Stopwatch.GetElapsedTime(_lastSummaryTimestamp, nowTimestamp).TotalSeconds;
+        long c2sTotal = ClientToServerPacketCount;
+        long s2cTotal = ServerToClientPacketCount;
+        double c2sRate = intervalSeconds > 0 ? (c2sTotal - _lastSummaryClientToServer) / intervalSeconds : 0;
+        double s2cRate = intervalSeconds > 0 ? (s2cTotal - _lastSummaryServerToClient) / intervalSeconds : 0;
+        _lastSummaryTimestamp = nowTimestamp;
+        _lastSummaryClientToServer = c2sTotal;
+        _lastSummaryServerToClient = s2cTotal;
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Proxy Latency Metrics (Uptime: {Uptime:hh\\:mm\\:ss})");
+        var c2sStats = GetClientToServerStats();
+        var s2cStats = GetServerToClientStats();
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"Proxy Metrics (Uptime: {Uptime:hh\\:mm\\:ss}) | C->S {c2sTotal} pkts ({c2sRate:F1}/s) | S->C {s2cTotal} pkts ({s2cRate:F1}/s)");
+        if (gc is { } delta)
+            sb.AppendLine(delta.ToSummaryLine());
         sb.AppendLine();
 
-        if (c2sStats.Count > 0)
-        {
-            sb.AppendLine("Client -> Server (top by p99):");
-            sb.AppendLine($"  {"Opcode",-40} {"Count",8} {"Min",9} {"Avg",9} {"P50",9} {"P95",9} {"P99",9} {"Max",9}");
-            sb.AppendLine($"  {new string('-', 40)} {new string('-', 8)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)}");
-            foreach (var (opcode, stats) in c2sStats)
-            {
-                string opcodeName = opcodeResolver(opcode);
-                if (opcodeName.Length > 40) opcodeName = opcodeName[..37] + "...";
-                sb.AppendLine($"  {opcodeName,-40} {stats.Count,8} {stats.Min,8:F3}ms {stats.Average,8:F3}ms {stats.P50,8:F3}ms {stats.P95,8:F3}ms {stats.P99,8:F3}ms {stats.Max,8:F3}ms");
-            }
-            sb.AppendLine();
-        }
-
-        if (s2cStats.Count > 0)
-        {
-            sb.AppendLine("Server -> Client (top by p99):");
-            sb.AppendLine($"  {"Opcode",-40} {"Count",8} {"Min",9} {"Avg",9} {"P50",9} {"P95",9} {"P99",9} {"Max",9}");
-            sb.AppendLine($"  {new string('-', 40)} {new string('-', 8)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)}");
-            foreach (var (opcode, stats) in s2cStats)
-            {
-                string opcodeName = opcodeResolver(opcode);
-                if (opcodeName.Length > 40) opcodeName = opcodeName[..37] + "...";
-                sb.AppendLine($"  {opcodeName,-40} {stats.Count,8} {stats.Min,8:F3}ms {stats.Average,8:F3}ms {stats.P50,8:F3}ms {stats.P95,8:F3}ms {stats.P99,8:F3}ms {stats.Max,8:F3}ms");
-            }
-        }
+        AppendLatencyTable(sb, "Client -> Server", c2sStats, topN, opcodeResolver);
+        AppendAllocationTable(sb, "Client -> Server", c2sStats, topN, opcodeResolver);
+        AppendLatencyTable(sb, "Server -> Client", s2cStats, topN, opcodeResolver);
+        AppendAllocationTable(sb, "Server -> Client", s2cStats, topN, opcodeResolver);
 
         return sb.ToString();
+    }
+
+    private static void AppendLatencyTable(StringBuilder sb, string direction, Dictionary<int, OpcodeStats> stats, int topN, Func<int, string> resolver)
+    {
+        var rows = stats.OrderByDescending(x => x.Value.Latency.P99).Take(topN).ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"{direction} (top {rows.Count} by p99 latency):");
+        sb.AppendLine($"  {"Opcode",-40} {"Window",7} {"Total",9} {"Min",9} {"Avg",9} {"P50",9} {"P95",9} {"P99",9} {"Max",9} | {"AvgB",7} {"MaxB",8} {"TotalKB",9}");
+        sb.AppendLine($"  {new string('-', 40)} {new string('-', 7)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} {new string('-', 9)} | {new string('-', 7)} {new string('-', 8)} {new string('-', 9)}");
+        foreach (var (opcode, s) in rows)
+        {
+            var l = s.Latency;
+            var a = s.Allocation;
+            sb.AppendLine($"  {Truncate(resolver(opcode), 40),-40} {l.Count,7} {l.TotalCount,9} {l.Min,8:F3}ms {l.Average,8:F3}ms {l.P50,8:F3}ms {l.P95,8:F3}ms {l.P99,8:F3}ms {l.Max,8:F3}ms | {a.Average,7:F0} {a.Max,8:F0} {a.TotalSum / 1024.0,9:F1}");
+        }
+        sb.AppendLine();
+    }
+
+    private static void AppendAllocationTable(StringBuilder sb, string direction, Dictionary<int, OpcodeStats> stats, int topN, Func<int, string> resolver)
+    {
+        double directionTotal = stats.Sum(x => x.Value.Allocation.TotalSum);
+        var rows = stats.Where(x => x.Value.Allocation.TotalSum > 0)
+                        .OrderByDescending(x => x.Value.Allocation.TotalSum)
+                        .Take(topN)
+                        .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"{direction} (top {rows.Count} by allocated bytes, {directionTotal / 1024.0 / 1024.0:F2} MB total):");
+        sb.AppendLine($"  {"Opcode",-40} {"Total",9} {"AvgB",8} {"P99B",8} {"MaxB",8} {"TotalKB",10} {"Share",7}");
+        sb.AppendLine($"  {new string('-', 40)} {new string('-', 9)} {new string('-', 8)} {new string('-', 8)} {new string('-', 8)} {new string('-', 10)} {new string('-', 7)}");
+        foreach (var (opcode, s) in rows)
+        {
+            var a = s.Allocation;
+            double share = directionTotal > 0 ? a.TotalSum / directionTotal * 100.0 : 0;
+            sb.AppendLine($"  {Truncate(resolver(opcode), 40),-40} {a.TotalCount,9} {a.Average,8:F0} {a.P99,8:F0} {a.Max,8:F0} {a.TotalSum / 1024.0,10:F1} {share,6:F1}%");
+        }
+        sb.AppendLine();
+    }
+
+    private static string Truncate(string s, int max) => s.Length > max ? s[..(max - 3)] + "..." : s;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int EnumToInt<T>(T value) where T : unmanaged, Enum
+    {
+        if (Unsafe.SizeOf<T>() == 1)
+            return Unsafe.As<T, byte>(ref value);
+        if (Unsafe.SizeOf<T>() == 2)
+            return Unsafe.As<T, ushort>(ref value);
+        if (Unsafe.SizeOf<T>() == 4)
+            return Unsafe.As<T, int>(ref value);
+        return (int)Unsafe.As<T, long>(ref value);
     }
 }
 
 /// <summary>
-/// Thread-safe circular buffer for latency samples.
+/// Latency and allocation windows for one opcode, guarded by one lock so a sample lands in
+/// both or neither.
 /// </summary>
-public sealed class LatencySamples
+public sealed class OpcodeSamples
+{
+    private readonly SampleWindow _latency;
+    private readonly SampleWindow _allocation;
+    private readonly Lock _lock = new();
+
+    public OpcodeSamples(int maxSamples)
+    {
+        _latency = new SampleWindow(maxSamples);
+        _allocation = new SampleWindow(maxSamples);
+    }
+
+    public void Add(double milliseconds, long allocatedBytes)
+    {
+        lock (_lock)
+        {
+            _latency.Add(milliseconds);
+            _allocation.Add(allocatedBytes);
+        }
+    }
+
+    public OpcodeStats GetStats()
+    {
+        lock (_lock)
+        {
+            return new OpcodeStats(_latency.GetStats(), _allocation.GetStats());
+        }
+    }
+}
+
+/// <summary>
+/// Circular sample buffer with running min/max and lifetime totals. Not synchronised;
+/// <see cref="OpcodeSamples"/> owns the lock.
+/// </summary>
+public sealed class SampleWindow
 {
     private readonly double[] _samples;
-    private readonly Lock _lock = new();
     private int _count;
     private int _index;
     private double _sum;
     private double _min = double.MaxValue;
     private double _max = double.MinValue;
+    private long _totalCount;
+    private double _totalSum;
 
-    public LatencySamples(int maxSamples)
+    public SampleWindow(int maxSamples)
     {
         _samples = new double[maxSamples];
     }
 
-    public void Add(double milliseconds)
+    public void Add(double value)
     {
-        lock (_lock)
+        if (_count < _samples.Length)
         {
-            // Update running stats
-            if (_count < _samples.Length)
-            {
-                _sum += milliseconds;
-                _count++;
-            }
-            else
-            {
-                // Remove old value from sum when overwriting
-                _sum -= _samples[_index];
-                _sum += milliseconds;
-            }
-
-            _samples[_index] = milliseconds;
-            _index = (_index + 1) % _samples.Length;
-
-            if (milliseconds < _min) _min = milliseconds;
-            if (milliseconds > _max) _max = milliseconds;
+            _sum += value;
+            _count++;
         }
+        else
+        {
+            _sum -= _samples[_index];
+            _sum += value;
+        }
+
+        _samples[_index] = value;
+        _index = (_index + 1) % _samples.Length;
+
+        if (value < _min) _min = value;
+        if (value > _max) _max = value;
+
+        _totalCount++;
+        _totalSum += value;
     }
 
-    public LatencyStats GetStats()
+    public SampleStats GetStats()
     {
-        lock (_lock)
+        if (_count == 0)
+            return default;
+
+        var sorted = new double[_count];
+        Array.Copy(_samples, sorted, _count);
+        Array.Sort(sorted);
+
+        return new SampleStats
         {
-            if (_count == 0)
-            {
-                return new LatencyStats();
-            }
-
-            // Copy samples for percentile calculation
-            var samplesCopy = new double[_count];
-            Array.Copy(_samples, samplesCopy, _count);
-            Array.Sort(samplesCopy);
-
-            return new LatencyStats
-            {
-                Count = _count,
-                Min = _min,
-                Max = _max,
-                Average = _sum / _count,
-                P50 = GetPercentile(samplesCopy, 0.50),
-                P95 = GetPercentile(samplesCopy, 0.95),
-                P99 = GetPercentile(samplesCopy, 0.99)
-            };
-        }
+            Count = _count,
+            TotalCount = _totalCount,
+            TotalSum = _totalSum,
+            Min = _min,
+            Max = _max,
+            Average = _sum / _count,
+            P50 = GetPercentile(sorted, 0.50),
+            P95 = GetPercentile(sorted, 0.95),
+            P99 = GetPercentile(sorted, 0.99),
+        };
     }
 
     private static double GetPercentile(double[] sortedSamples, double percentile)
@@ -251,27 +321,83 @@ public sealed class LatencySamples
 
         if (lower == upper) return sortedSamples[lower];
 
-        // Linear interpolation
         double fraction = index - lower;
         return sortedSamples[lower] + (sortedSamples[upper] - sortedSamples[lower]) * fraction;
     }
 }
 
 /// <summary>
-/// Latency statistics for a single opcode.
+/// Windowed percentiles over the most recent samples plus lifetime count and sum.
 /// </summary>
-public struct LatencyStats
+public struct SampleStats
 {
+    /// <summary>Samples currently in the window (capped).</summary>
     public int Count;
+    /// <summary>Samples ever recorded.</summary>
+    public long TotalCount;
+    /// <summary>Sum of every sample ever recorded.</summary>
+    public double TotalSum;
     public double Min;
     public double Max;
+    /// <summary>Mean over the window.</summary>
     public double Average;
     public double P50;
     public double P95;
     public double P99;
 
     public override string ToString()
+        => $"Count={Count}, Total={TotalCount}, Min={Min:F3}, Avg={Average:F3}, P50={P50:F3}, P95={P95:F3}, P99={P99:F3}, Max={Max:F3}";
+}
+
+public readonly record struct OpcodeStats(SampleStats Latency, SampleStats Allocation);
+
+/// <summary>Point-in-time GC counters.</summary>
+public readonly record struct GcSnapshot(
+    long Timestamp,
+    int Gen0,
+    int Gen1,
+    int Gen2,
+    long TotalAllocatedBytes,
+    double PauseTimePercentage,
+    long HeapSizeBytes)
+{
+    public static GcSnapshot Capture()
     {
-        return $"Count={Count}, Min={Min:F3}ms, Avg={Average:F3}ms, P50={P50:F3}ms, P95={P95:F3}ms, P99={P99:F3}ms, Max={Max:F3}ms";
+        var info = GC.GetGCMemoryInfo();
+        return new GcSnapshot(
+            Stopwatch.GetTimestamp(),
+            GC.CollectionCount(0),
+            GC.CollectionCount(1),
+            GC.CollectionCount(2),
+            GC.GetTotalAllocatedBytes(precise: true),
+            info.PauseTimePercentage,
+            info.HeapSizeBytes);
     }
+}
+
+/// <summary>Change between two <see cref="GcSnapshot"/>s.</summary>
+public readonly record struct GcDelta(
+    TimeSpan Elapsed,
+    int Gen0,
+    int Gen1,
+    int Gen2,
+    long AllocatedBytes,
+    double PauseTimePercentage,
+    long HeapSizeBytes)
+{
+    public static GcDelta Between(GcSnapshot from, GcSnapshot to)
+        => new(
+            Stopwatch.GetElapsedTime(from.Timestamp, to.Timestamp),
+            to.Gen0 - from.Gen0,
+            to.Gen1 - from.Gen1,
+            to.Gen2 - from.Gen2,
+            to.TotalAllocatedBytes - from.TotalAllocatedBytes,
+            to.PauseTimePercentage,
+            to.HeapSizeBytes);
+
+    public double AllocatedMegabytesPerSecond
+        => Elapsed.TotalSeconds > 0 ? AllocatedBytes / 1024.0 / 1024.0 / Elapsed.TotalSeconds : 0;
+
+    public string ToSummaryLine()
+        => $"GC over {Elapsed.TotalSeconds:F0}s: gen0 +{Gen0} gen1 +{Gen1} gen2 +{Gen2} | allocated {AllocatedBytes / 1024.0 / 1024.0:F1} MB ({AllocatedMegabytesPerSecond:F2} MB/s) | heap {HeapSizeBytes / 1024.0 / 1024.0:F1} MB | pause {PauseTimePercentage:F2}%";
 }

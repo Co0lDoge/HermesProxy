@@ -91,6 +91,10 @@ class ChangeRealmTicketResponse : ServerPacket
     {
         _worldPacket.WriteUInt32(Token);
         _worldPacket.WriteBit(Allow);
+        _worldPacket.FlushBits();
+        if (!Allow)
+            return;
+
         _worldPacket.WriteUInt32(Ticket.GetSize());
         _worldPacket.WriteBytes(Ticket);
     }

@@ -1,9 +1,13 @@
-﻿using HermesProxy.Enums;
+﻿using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace HermesProxy.World.Client;
 
@@ -32,6 +36,12 @@ public partial class WorldClient
         GroupDecline party = new GroupDecline();
         party.Name = packet.ReadCString();
         SendPacketToClient(party);
+    }
+
+    [PacketHandler(Opcode.SMSG_GROUP_DESTROYED)]
+    void HandleGroupDestroyed(WorldPacket packet)
+    {
+        SendPacketToClient(new GroupDestroyed());
     }
 
     [PacketHandler(Opcode.SMSG_PARTY_INVITE)]
@@ -155,6 +165,8 @@ public partial class WorldClient
             party.LeaderGUID = WowGuid128.Empty;
             party.MyIndex = -1;
             GetSession().GameState.CurrentGroups[party.PartyIndex] = null;
+            if (GetSession().GameState.CurrentGroups[0] == null && GetSession().GameState.CurrentGroups[1] == null)
+                GetSession().GameState.GroupAssignedRoles.Clear();
 
             if (!GetSession().GameState.WeWantToLeaveGroup)
                 SendPacketToClient(new GroupUninvite()); // Send kick message
@@ -170,23 +182,102 @@ public partial class WorldClient
         GetSession().GameState.LastMasterLootSentTarget = default;
         PartyUpdate party = new PartyUpdate();
         party.SequenceNum = GetSession().GameState.GroupUpdateCounter++;
-        bool isRaid = packet.ReadBool();
-        bool isBattleground = packet.ReadBool();
+        // Wire format on 2.x/3.3.x is a single byte of flags, not two bools.
+        // TC/CMaNGOS agree: BG/FakeRaid=0x01, Raid=0x02, Lfg=0x08.
+        byte groupType = packet.ReadUInt8();
+        bool isBattleground = (groupType & 0x01) != 0;
+        bool isRaid = (groupType & 0x02) != 0;
+        bool isLfg = (groupType & 0x08) != 0;
         byte ownSubGroup = packet.ReadUInt8();
         byte ownGroupFlags = packet.ReadUInt8();
+        byte ownRoles = 0;
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+            ownRoles = packet.ReadUInt8(); // own LFG roles
+        byte lfgDungeonStatus = 0;
+        uint lfgDungeonId = 0;
+        if (isLfg)
+        {
+            // AC/TC 3.3.5a Group::BuildGroupList: "2 == finished dungeon, else 0", then
+            // GetDungeon(guid, asId: true) — a BARE dungeon ID, not a full LFG slot.
+            lfgDungeonStatus = packet.ReadUInt8();
+            lfgDungeonId = packet.ReadUInt32();
+        }
         party.PartyIndex = (byte)(isBattleground ? 1 : 0);
         party.PartyGUID = packet.ReadGuid().To128(GetSession().GameState);
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+            packet.ReadUInt32(); // group counter
         if (party.PartyIndex != 0)
             party.PartyFlags |= GroupFlags.FakeRaid;
+
+        if (isLfg)
+        {
+            // Legacy signals "this party is in an LFG dungeon" purely through the group type
+            // flags and this trailing block; the LFG status packets never say it. Dropping it
+            // left the modern client with no idea it was inside a dungeon, so the minimap eye
+            // only ever offered "Leave Queue" and reported the queue as paused — no
+            // "Teleport out of Dungeon" / "Teleport to Dungeon" entry, which is what a native
+            // 3.3.5a client shows. Field semantics mirror TC 3.4.3 Group::SendUpdateToPlayer.
+            // TC 3.4.3 Group::ConvertToLFG sets BOTH flags together and moves the group into
+            // the instance category:
+            //   m_groupFlags   |= GROUP_FLAG_LFG | GROUP_FLAG_LFG_RESTRICTED
+            //   m_groupCategory = GROUP_CATEGORY_INSTANCE
+            // PartyIndex IS that category (HOME = 0, INSTANCE = 1). Announcing an LFG dungeon
+            // group as a home group left the client's "Leave Instance Group" entry with no
+            // instance-category group to act on, so clicking it sent nothing at all. Legacy
+            // only exposes the restricted bit sometimes (AC persists groupType 8, not 12), so
+            // set it unconditionally for LFG groups the way the modern server does.
+            party.PartyFlags |= GroupFlags.Lfg | GroupFlags.LfgRestricted;
+            party.PartyIndex = 1; // GROUP_CATEGORY_INSTANCE
+
+            uint lfgSlot = GetSession().GameState.GetLfgSlotForDungeon(lfgDungeonId);
+            party.LfgInfos = new PartyLFGInfo
+            {
+                Slot = lfgSlot,
+                MyFlags = lfgDungeonStatus, // 2 == dungeon completed, matching TC's own mapping
+                MyRandomSlot = lfgSlot,
+                BootCount = 0,
+                Aborted = false,
+                MyPartialClear = 0,
+                MyGearDiff = 0.0f,
+                MyStrangerCount = 0,
+                MyKickVoteCount = 0,
+                MyFirstReward = false,
+            };
+        }
 
         var uniqueMembers = new HashSet<WowGuid128>();
         uint membersCount = packet.ReadUInt32();
         if (membersCount > 0)
         {
+            // A legacy group can MOVE between party categories mid-life — a premade party sits
+            // in the home category and jumps to the instance category the moment it converts to
+            // LFG. The client tracks the two categories independently, so announcing the group
+            // under its new index while leaving the old one alive left a phantom party behind
+            // that nothing could ever remove: "Leave Party" produced CMSG_GROUP_DISBAND, the
+            // server had no group left to disband and answered nothing, and the client stayed
+            // stuck in a group that no longer existed. Tear the old category down first.
+            byte previousIndex = GetSession().GameState.LastAnnouncedPartyIndex;
+            if (previousIndex != party.PartyIndex && GetSession().GameState.CurrentGroups[previousIndex] != null)
+            {
+                PartyUpdate migrated = new PartyUpdate();
+                migrated.SequenceNum = GetSession().GameState.GroupUpdateCounter++;
+                migrated.PartyIndex = previousIndex;
+                migrated.PartyFlags |= GroupFlags.Destroyed;
+                migrated.PartyGUID = WowGuid128.Empty;
+                migrated.LeaderGUID = WowGuid128.Empty;
+                migrated.MyIndex = -1;
+                GetSession().GameState.CurrentGroups[previousIndex] = null;
+                SendPacketToClient(migrated);
+            }
+
             if (isRaid)
                 party.PartyFlags |= GroupFlags.Raid;
 
-            if (party.PartyIndex != 0)
+            // Only battlegrounds are a PvP group. LFG dungeon groups also sit in the instance
+            // category (PartyIndex 1) but are still GROUP_TYPE_NORMAL — TC 3.4.3 sends
+            // `PartyType = IsCreated() ? GROUP_TYPE_NORMAL : GROUP_TYPE_NONE` irrespective of
+            // category, so this has to key off the BG flag rather than the index.
+            if (isBattleground)
                 party.PartyType = GroupType.PvP;
             else
                 party.PartyType = GroupType.Normal;
@@ -197,6 +288,7 @@ public partial class WorldClient
             player.Subgroup = ownSubGroup;
             player.Flags = (GroupMemberFlags)ownGroupFlags;
             player.Status = GroupMemberOnlineStatus.Online;
+            player.RolesAssigned = ResolveAssignedRole(player.GUID, ownRoles);
             party.PlayerList.Add(player);
 
             bool allAssist = true;
@@ -208,6 +300,10 @@ public partial class WorldClient
                 member.Status = (GroupMemberOnlineStatus)packet.ReadUInt8();
                 member.Subgroup = packet.ReadUInt8();
                 member.Flags = (GroupMemberFlags)packet.ReadUInt8();
+                byte memberRoles = 0;
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+                    memberRoles = packet.ReadUInt8(); // member LFG roles
+                member.RolesAssigned = ResolveAssignedRole(member.GUID, memberRoles);
                 member.ClassId = GetSession().GameState.GetUnitClass(member.GUID);
                 if (!member.Flags.HasAnyFlag(GroupMemberFlags.Assistant))
                     allAssist = false;
@@ -239,28 +335,116 @@ public partial class WorldClient
             int difficultyId = packet.ReadUInt8();
             party.DifficultySettings.DungeonDifficultyID = ((DifficultyLegacy)difficultyId).CastEnum<DifficultyModern>();
 
-            if (ModernVersion.ExpansionVersion > 1)
+            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+            {
+                byte acRaid = packet.ReadUInt8();
+                // Native puts the active raid difficulty in RaidDifficultyID as 3-6 and leaves
+                // LegacyRaidDifficultyID at its default; the client's picker reads the former.
+                // The Classic ids (175/176/193/194) belong to a different difficulty family and
+                // match no row in the WotLK raid dropdown.
+                party.DifficultySettings.RaidDifficultyID = RaidDifficulties.ToLegacyId(acRaid);
+                party.DifficultySettings.LegacyRaidDifficultyID = DifficultyModern.Raid10N;
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+                    packet.ReadUInt8(); // 3.3 dynamic heroic bit
+            }
+            else if (ModernVersion.ExpansionVersion > 1)
                 party.DifficultySettings.RaidDifficultyID = DifficultyModern.Raid25N;
             else
                 party.DifficultySettings.RaidDifficultyID = DifficultyModern.Raid40;
 
             GetSession().GameState.WeWantToLeaveGroup = false;
+            GetSession().GameState.LastAnnouncedPartyIndex = party.PartyIndex;
+            var previousGroup = GetSession().GameState.CurrentGroups[party.PartyIndex];
             GetSession().GameState.CurrentGroups[party.PartyIndex] = party;
+            PruneAssignedRoles(party.PlayerList);
+
+            if (previousGroup == null || previousGroup.PartyGUID != party.PartyGUID)
+                RequestRaidTargetIconList();
         }
         else
         {
+            // A disbanded group arrives with its type flags already cleared, so the LFG/BG bits
+            // that placed it in the instance category are gone and PartyIndex computes to 0.
+            // Addressing the destroy to the home category would leave the client's instance
+            // group alive forever — the minimap LFG eye stayed up, stuck on "paused", after
+            // "Leave Instance Group" had genuinely removed the group server-side.
+            party.PartyIndex = GetSession().GameState.LastAnnouncedPartyIndex;
+            GetSession().GameState.LastAnnouncedPartyIndex = 0;
+
             party.PartyFlags |= GroupFlags.Destroyed;
             if (party.PartyIndex  == 0)
                 party.PartyGUID = WowGuid128.Empty;
             party.LeaderGUID = WowGuid128.Empty;
             party.MyIndex = -1;
             GetSession().GameState.CurrentGroups[party.PartyIndex] = null;
+            if (GetSession().GameState.CurrentGroups[0] == null && GetSession().GameState.CurrentGroups[1] == null)
+                GetSession().GameState.GroupAssignedRoles.Clear();
 
             if (!GetSession().GameState.WeWantToLeaveGroup)
                 SendPacketToClient(new GroupUninvite()); // Send kick message
         }
 
         SendPacketToClient(party);
+
+        // Legacy never announces the END of an LFG association. Disbanding an LFG group emits
+        // only SMSG_GROUP_LIST, and LFGMgr::LeaveLfg has no LFG_STATE_DUNGEON case at all, so
+        // the client keeps the last LFG status it received — the minimap eye stayed up on
+        // "paused" long after the group was gone server-side. The group dropping its LFG flag
+        // is the only signal available, and it is an honest one: unlike a teleport-out (where
+        // the association legitimately survives and the eye SHOULD stay), here it really has
+        // ended, and a modern server would send REMOVED_FROM_QUEUE of its own accord.
+        bool wasLfg = GetSession().GameState.LastGroupWasLfg;
+        GetSession().GameState.LastGroupWasLfg = isLfg;
+        if (wasLfg && !isLfg)
+            SendLfgAssociationEnded();
+    }
+
+    /// <summary>
+    /// Tells the modern client its LFG association is over, mirroring what TC 3.4.3 emits from
+    /// SendLfgUpdateStatus for LFG_UPDATETYPE_REMOVED_FROM_QUEUE.
+    /// </summary>
+    private void SendLfgAssociationEnded()
+    {
+        Log.Print(LogType.Debug, "LFG[diag]: group dropped its LFG flag, synthesising REMOVED_FROM_QUEUE");
+
+        // The client tracks party-scoped and player-scoped LFG state separately, so a removal
+        // has to be announced for BOTH or the half that was not told keeps the minimap eye
+        // alive. Legacy servers do exactly this: on REMOVED_FROM_QUEUE, AC sends
+        // SendLfgUpdateParty followed by SendLfgUpdatePlayer (LFGMgr.cpp 939 / 953) and TC 3.4.3
+        // calls SendLfgUpdateStatus with party=true then party=false (LFGMgr.cpp 676 / 687).
+        //
+        // Sending only the party variant looked like it worked because leaving from INSIDE a
+        // dungeon is followed by a teleport, and the world transfer reloads client state and
+        // clears the eye as a side effect. Leaving from outside produces no teleport, and the
+        // stale player-scoped state was then plainly visible.
+        SendLfgAssociationEnded(isParty: true);
+        SendLfgAssociationEnded(isParty: false);
+
+        // Both removals must carry the ticket the client has been seeing, so only forget it
+        // afterwards — the next queue then mints a fresh one, as TC does per JoinLfg.
+        GetSession().GameState.ResetLfgTicket();
+    }
+
+    private void SendLfgAssociationEnded(bool isParty)
+    {
+        bool isV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+
+        DFUpdateStatus status = new DFUpdateStatus();
+        status.Ticket = MakeLfgTicket();
+        status.RequestedRoles = GetSession().GameState.LfgRequestedRoles;
+        status.SubType = isV343 ? LfgUpdateTypes.ModernQueueDungeon : (byte)0;
+        status.Reason = isV343 ? LfgUpdateTypes.ModernRemovedFromQueue : (byte)0;
+        status.NotifyUI = true;
+        status.IsParty = isParty;
+        status.Joined = false;
+        status.LfgJoined = false;
+        status.Queued = false;
+
+        Log.Print(LogType.Debug,
+            $"LFG[diag]: DFUpdateStatus(removed) subType={status.SubType} reason={status.Reason} " +
+            $"requestedRoles=0x{status.RequestedRoles:X2} isParty={status.IsParty}");
+
+        SendPacketToClient(status);
     }
 
     [PacketHandler(Opcode.SMSG_GROUP_UNINVITE)]
@@ -289,6 +473,9 @@ public partial class WorldClient
             ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
             ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
             SendPacketToClient(ready);
+
+            GetSession().GameState.GroupReadyCheckResponses = 0;
+            ArmReadyCheckDeadline(ready.Duration);
         }
         else
         {
@@ -302,6 +489,7 @@ public partial class WorldClient
             if (GetSession().GameState.GroupReadyCheckResponses >= GetSession().GameState.GetCurrentGroupSize())
             {
                 GetSession().GameState.GroupReadyCheckResponses = 0;
+                StopReadyCheckDeadline();
                 ReadyCheckCompleted completed = new ReadyCheckCompleted();
                 completed.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
                 completed.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
@@ -318,6 +506,11 @@ public partial class WorldClient
         ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
         ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacketToClient(ready);
+
+        // A check that ends without a full set of answers used to leave the counter
+        // non-zero, so the next one completed early.
+        GetSession().GameState.GroupReadyCheckResponses = 0;
+        ArmReadyCheckDeadline(ready.Duration);
     }
 
     [PacketHandler(Opcode.MSG_RAID_READY_CHECK_CONFIRM, ClientVersionBuild.V2_0_1_6180)]
@@ -333,6 +526,7 @@ public partial class WorldClient
         if (GetSession().GameState.GroupReadyCheckResponses >= GetSession().GameState.GetCurrentGroupSize())
         {
             GetSession().GameState.GroupReadyCheckResponses = 0;
+            StopReadyCheckDeadline();
             ReadyCheckCompleted completed = new ReadyCheckCompleted();
             completed.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
             completed.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
@@ -343,10 +537,93 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_RAID_READY_CHECK_FINISHED, ClientVersionBuild.V2_0_1_6180)]
     void HandleRaidReadyCheckFinished(WorldPacket packet)
     {
+        GetSession().GameState.GroupReadyCheckResponses = 0;
+        StopReadyCheckDeadline();
+
         ReadyCheckCompleted ready = new ReadyCheckCompleted();
         ready.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
         ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacketToClient(ready);
+    }
+
+    // The modern client waits for the server to end a ready check once the Duration it
+    // was given lapses. Legacy 3.3.5a has no server-side timer: MSG_RAID_READY_CHECK_FINISHED
+    // travels *up* from the leader's own client, which the modern client never sends, so
+    // the legacy server never broadcasts it and a check nobody answers stays pending
+    // forever. Synthesize the deadline here instead.
+    // Armed on the packet thread, disposed from either that thread or the timer's own
+    // callback, so every swap goes through Interlocked - a plain read-then-dispose can
+    // drop a timer another thread has just armed.
+    private System.Threading.Timer? _readyCheckTimer;
+
+    private void ArmReadyCheckDeadline(ulong durationMs)
+    {
+        // Fire on the duration boundary, the way a native server ends the check
+        // (Group::UpdateReadyCheck, READYCHECK_DURATION = 35000). Landing late means the
+        // client has already torn its ready-check frame down and the completion arrives
+        // with nothing left to close.
+        long dueMs = (long)durationMs;
+        var timer = new System.Threading.Timer(OnReadyCheckDeadline, dueMs, dueMs, System.Threading.Timeout.Infinite);
+        System.Threading.Interlocked.Exchange(ref _readyCheckTimer, timer)?.Dispose();
+    }
+
+    private void StopReadyCheckDeadline()
+    {
+        System.Threading.Interlocked.Exchange(ref _readyCheckTimer, null)?.Dispose();
+    }
+
+    private void OnReadyCheckDeadline(object? state)
+    {
+        StopReadyCheckDeadline();
+
+        // An escaped exception on a timer thread has no handler above it and would take
+        // the whole proxy down, so nothing in here is allowed to propagate.
+        try
+        {
+            if (_closing || !IsConnected())
+                return;
+
+            var gameState = GetSession().GameState;
+            uint responses = gameState.GroupReadyCheckResponses;
+            uint expected = gameState.GetCurrentGroupSize();
+            gameState.GroupReadyCheckResponses = 0;
+
+            // Everyone answered in time - the response counter already completed the check.
+            if (responses >= expected)
+                return;
+
+            WowGuid128 partyGuid = gameState.GetCurrentGroupGuid();
+
+            // The group broke up while the check was running; there is nothing to complete.
+            if (partyGuid == null || partyGuid.IsEmpty())
+                return;
+
+            WorldClientLogMessages.ReadyCheckDeadlineLapsed(_melLog, _sourceFile, _netDirNone, (long)state!, responses, expected);
+
+            ReadyCheckCompleted completed = new ReadyCheckCompleted();
+            completed.PartyIndex = gameState.GetCurrentPartyIndex();
+            completed.PartyGUID = partyGuid;
+            SendPacketToClient(completed);
+        }
+        catch (Exception ex)
+        {
+            WorldClientLogMessages.ReadyCheckDeadlineFailed(_melLog, _sourceFile, _netDirNone, ex);
+        }
+    }
+
+    // Legacy only sends the full icon list when a client asks for it - Group::SendTargetIconList
+    // has exactly one caller, the icon == 0xFF branch of HandleRaidTargetUpdateOpcode. The 3.3.5a
+    // client sent that request itself on joining a group; the modern client never does, because a
+    // modern server pushes SMSG_SEND_RAID_TARGET_UPDATE_ALL unsolicited. Without this, someone
+    // joining a group that already carries marks sees none of them.
+    private void RequestRaidTargetIconList()
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        WorldPacket packet = new WorldPacket(Opcode.MSG_RAID_TARGET_UPDATE);
+        packet.WriteUInt8(0xFF);
+        SendPacket(packet);
     }
 
     [PacketHandler(Opcode.MSG_RAID_TARGET_UPDATE)]
@@ -438,9 +715,10 @@ public partial class WorldClient
 
         if (updateFlags.HasFlag(GroupUpdateFlagVanilla.Position))
         {
-            state.Position = new PartyMemberPartialState.Vector3_UInt16();
-            state.Position.X = packet.ReadInt16();
-            state.Position.Y = packet.ReadInt16();
+            PartyMemberPartialState.Vector3_UInt16 position = default;
+            position.X = packet.ReadInt16();
+            position.Y = packet.ReadInt16();
+            state.Position = position;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagVanilla.Auras))
@@ -609,137 +887,286 @@ public partial class WorldClient
             }
         }
 
+        // The GUID and the update mask are the first two fields and neither allocates
+        // (WowGuid128 is a readonly record struct). Decide the throttle from them so a
+        // rate-limited update costs a dictionary probe instead of a packet object, an
+        // aura list and a WorldPacket that are immediately discarded. Measured on a
+        // 15v15 AzerothCore battleground: 95.6% of updates are dropped, at ~470 bytes
+        // each, which is 74% of everything this handler allocated.
+        WowGuid128 affectedGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
+
+        const string Op = nameof(Opcode.SMSG_PARTY_MEMBER_PARTIAL_STATE);
+        if (!packet.CanRead(4))
+        {
+            WarnTruncated(Op, packet, "updateFlags", 4);
+            return;
+        }
+
+        GroupUpdateFlagTBC updateFlags = (GroupUpdateFlagTBC)packet.ReadUInt32();
+
+        if (ShouldThrottlePartyMemberState(affectedGuid, updateFlags))
+            return;
+
+        // NPCBot / Playerbot truncates: it sets `mask = GROUP_UPDATE_FULL` (0x7FFFF) but only
+        // writes the leading subset of fields (typically through POSITION). Trusting the mask
+        // would over-read the buffer. The parser checks CanRead before each conditional field
+        // and returns the partial state filled up to the truncation point so the modern client
+        // still gets HP / power / position updates instead of nothing.
+        PartyMemberPartialState state = ParsePartyMemberPartialState(packet, affectedGuid, updateFlags);
+        SendPacketToClient(state);
+    }
+
+    // Bot-filled battlegrounds re-send position/health for every raid member on every step.
+    // Forward those at most once per PartyMemberStateMinIntervalMs per member; anything
+    // carrying state the frame cannot infer (status, level, spec, zone, auras, vehicle seat,
+    // power type) or a death goes straight through, so nothing the player needs is delayed.
+    // Fields a raid frame cannot infer between updates. Anything outside this set — status,
+    // level, zone, auras, pet, vehicle seat — must reach the client promptly, so only updates
+    // whose mask falls entirely inside it are candidates for rate limiting.
+    private const GroupUpdateFlagTBC HighFrequencyFlags =
+        GroupUpdateFlagTBC.CurrentHealth | GroupUpdateFlagTBC.MaxHealth |
+        GroupUpdateFlagTBC.PowerType | GroupUpdateFlagTBC.CurrentPower | GroupUpdateFlagTBC.MaxPower |
+        GroupUpdateFlagTBC.Position;
+
+    // Bot-filled battlegrounds re-send health, power and position for every raid member on
+    // every step: 356 updates per second sustained on a 15v15, of which the client needs
+    // about 4%. Decided from the update mask alone so a dropped update never allocates.
+    private bool ShouldThrottlePartyMemberState(WowGuid128 affectedGuid, GroupUpdateFlagTBC updateFlags)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return false;
+
+        int minIntervalMs = GetSession().ThrottlingOptions.PartyMemberStateMinIntervalMs;
+        if (minIntervalMs <= 0)
+            return false;
+
+        if ((updateFlags & ~HighFrequencyFlags) != 0)
+            return false;
+
+        long nowMs = Environment.TickCount64;
+        // Single hash lookup: the ref is the slot, so the "seen before" check and the
+        // timestamp write share one probe instead of TryGetValue + indexer set.
+        ref long lastMs = ref CollectionsMarshal.GetValueRefOrAddDefault(
+            GetSession().GameState.LastPartyMemberStateTickMs, affectedGuid, out bool existed);
+
+        if (existed && nowMs - lastMs < minIntervalMs)
+            return true;
+
+        lastMs = nowMs;
+        return false;
+    }
+
+    // NPCBot/Playerbot wire bug: bot sets `mask = GROUP_UPDATE_FULL (0x7FFFF)` claiming all 19
+    // group-update flags but only writes the leading subset of fields (typically through
+    // POSITION). To avoid trusting the mask blindly, every conditional field read below first
+    // checks `packet.CanRead(N)` and bails cleanly through `WarnTruncated` when the payload
+    // runs out — the partial state already populated is what gets forwarded to the client.
+    // Rate-limited warn (first 3 per process) preserves diagnostic value without spamming.
+    private static int s_partyMemberDumpBudget = 3;
+
+    private static bool WarnTruncated(string opcodeName, WorldPacket packet, string field, int needed)
+    {
+        int remaining = System.Threading.Interlocked.Decrement(ref s_partyMemberDumpBudget);
+        if (remaining >= 0)
+        {
+            byte[] all = packet.GetData();
+            int len = (int)packet.GetSize();
+            int dumpLen = Math.Min(160, len);
+            string hex = BitConverter.ToString(all, 0, dumpLen);
+            Log.Print(LogType.Warn,
+                $"{opcodeName} truncated at field={field}: need {needed} bytes, have {packet.Remaining()} (size={len}). Forwarding partial state. hex={hex}");
+        }
+        return false;
+    }
+
+    // The GUID and update mask are read by the caller so the throttle can drop an update
+    // without allocating anything; both are passed in rather than re-read here.
+    private PartyMemberPartialState ParsePartyMemberPartialState(
+        WorldPacket packet, WowGuid128 affectedGuid, GroupUpdateFlagTBC updateFlags)
+    {
         PartyMemberPartialState state = new PartyMemberPartialState();
-        state.AffectedGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
-        var updateFlags = (GroupUpdateFlagTBC)packet.ReadUInt32();
+        const string Op = nameof(Opcode.SMSG_PARTY_MEMBER_PARTIAL_STATE);
+        state.AffectedGUID = affectedGuid;
+
+        bool wotlk = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056);
+        int hpSize = wotlk ? 4 : 2;
+        int auraEntrySize = wotlk ? 5 : 3; // uint32 spellid + uint8 flags  vs  uint16 spellid + uint8 flags
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Status))
-            state.StatusFlags = packet.ReadUInt16();// GroupMemberOnlineStatus
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Status), 2, state);
+            state.StatusFlags = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.CurrentHealth))
-            state.CurrentHealth = packet.ReadUInt16();
+        {
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.CurrentHealth), hpSize, state);
+            state.CurrentHealth = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.MaxHealth))
-            state.MaxHealth = packet.ReadUInt16();
+        {
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.MaxHealth), hpSize, state);
+            state.MaxHealth = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PowerType))
+        {
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PowerType), 1, state);
             state.PowerType = packet.ReadUInt8();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.CurrentPower))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.CurrentPower), 2, state);
             state.CurrentPower = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.MaxPower))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.MaxPower), 2, state);
             state.MaxPower = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Level))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Level), 2, state);
             state.Level = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Zone))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Zone), 2, state);
             state.ZoneID = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Position))
         {
-            state.Position = new PartyMemberPartialState.Vector3_UInt16();
-            state.Position.X = packet.ReadInt16();
-            state.Position.Y = packet.ReadInt16();
+            if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Position), 4, state);
+            PartyMemberPartialState.Vector3_UInt16 position = default;
+            position.X = packet.ReadInt16();
+            position.Y = packet.ReadInt16();
+            state.Position = position;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Auras))
         {
-            if (state.Auras == null)
-                state.Auras = new List<PartyMemberAuraStates>();
-
-            var auraMask = packet.ReadUInt64();
-
-            for (byte i = 0; i < LegacyVersion.GetAuraSlotsCount(); ++i)
-            {
-                if ((auraMask & (1ul << i)) == 0)
-                    continue;
-
-                PartyMemberAuraStates aura = new PartyMemberAuraStates();
-                aura.SpellId = packet.ReadUInt16();
-                packet.ReadUInt8(); // unk
-                if (aura.SpellId != 0)
-                {
-                    aura.ActiveFlags = 1;
-                    aura.AuraFlags = (ushort)AuraFlagsModern.Positive;
-                }
-                state.Auras.Add(aura);
-            }
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Auras), 8, state);
+            state.Auras ??= new List<PartyMemberAuraStates>();
+            if (!TryReadPartyMemberAuras(packet, state.Auras, auraEntrySize, Op, nameof(GroupUpdateFlagTBC.Auras))) return state;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetGuid))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetGuid), 8, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.NewPetGuid = packet.ReadGuid().To128(GetSession().GameState);
         }
 
-
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetName))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            // CString is variable-size; bail if at least the terminator byte isn't there.
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetName), 1, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.NewPetName = packet.ReadCString();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetModelId))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetModelId), 2, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.DisplayID = packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetCurrentHealth))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            state.Pet.Health = packet.ReadUInt16();
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetCurrentHealth), hpSize, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.Health = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetMaxHealth))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            state.Pet.MaxHealth = packet.ReadUInt16();
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetMaxHealth), hpSize, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.MaxHealth = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetPowerType))
-            packet.ReadUInt8(); // Pet Power Type
+        {
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetPowerType), 1, state);
+            packet.ReadUInt8();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetCurrentPower))
-            packet.ReadInt16(); // Pet Current Power
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetCurrentPower), 2, state);
+            packet.ReadInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetMaxPower))
-            packet.ReadInt16(); // Pet Max Power
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetMaxPower), 2, state);
+            packet.ReadInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetAuras))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            if (state.Pet.Auras == null)
-                state.Pet.Auras = new List<PartyMemberAuraStates>();
-
-            var auraMask = packet.ReadUInt64();
-
-            for (byte i = 0; i < LegacyVersion.GetAuraSlotsCount(); ++i)
-            {
-                if ((auraMask & (1ul << i)) == 0)
-                    continue;
-
-                PartyMemberAuraStates aura = new PartyMemberAuraStates();
-                aura.SpellId = packet.ReadUInt16();
-                packet.ReadUInt8(); // unk
-                if (aura.SpellId != 0)
-                {
-                    aura.ActiveFlags = 1;
-                    aura.AuraFlags = (ushort)AuraFlagsModern.Positive;
-                }
-                state.Pet.Auras.Add(aura);
-            }
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetAuras), 8, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.Auras ??= new List<PartyMemberAuraStates>();
+            if (!TryReadPartyMemberAuras(packet, state.Pet.Auras, auraEntrySize, Op, nameof(GroupUpdateFlagTBC.PetAuras))) return state;
         }
 
-        SendPacketToClient(state);
+        if (wotlk && updateFlags.HasFlag(GroupUpdateFlagTBC.VehicleSeat))
+        {
+            if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.VehicleSeat), 4, state);
+            state.VehicleSeatRecID = packet.ReadUInt32();
+        }
+
+        return state;
+    }
+
+    // Wrapper that returns the partially-populated state after warning. Lets callers do
+    // `return WarnTruncatedReturn(...)` in one line instead of WarnTruncated + return state.
+    private static T WarnTruncatedReturn<T>(string opcodeName, WorldPacket packet, string field, int needed, T state)
+    {
+        WarnTruncated(opcodeName, packet, field, needed);
+        return state;
+    }
+
+    // Consumes one player/pet aura section as written by 3.0+ legacy servers:
+    //   uint64 visible-aura mask, then for each set bit:
+    //     uint16 (pre-3.0) / uint32 (WotLK+) spell id
+    //     uint8  flags / type
+    // Returns false (with warn) if the per-entry payload runs short of what the mask claims.
+    // Older code iterated a hard-coded GetAuraSlotsCount which on WotLK underreads bits 56-63.
+    private static bool TryReadPartyMemberAuras(WorldPacket packet, List<PartyMemberAuraStates> output, int entrySize, string opcodeName, string field)
+    {
+        ulong auraMask = packet.ReadUInt64();
+        bool wotlk = entrySize == 5;
+        while (auraMask != 0)
+        {
+            // Pop the lowest set bit so the loop runs exactly once per aura entry written.
+            auraMask &= auraMask - 1;
+
+            if (!packet.CanRead(entrySize))
+            {
+                WarnTruncated(opcodeName, packet, field + "Entry", entrySize);
+                return false;
+            }
+
+            PartyMemberAuraStates aura = new PartyMemberAuraStates();
+            aura.SpellId = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
+            packet.ReadUInt8(); // aura flags / charge byte (unused by modern packet)
+            if (aura.SpellId != 0)
+            {
+                aura.ActiveFlags = 1;
+                aura.AuraFlags = (ushort)AuraFlagsModern.Positive;
+            }
+            output.Add(aura);
+        }
+        return true;
     }
 
     [PacketHandler(Opcode.SMSG_PARTY_MEMBER_FULL_STATE, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
@@ -967,7 +1394,15 @@ public partial class WorldClient
             }
         }
 
+        PartyMemberFullState state = ParsePartyMemberFullStateTbc(packet);
+        SendPacketToClient(state);
+    }
+
+    private PartyMemberFullState ParsePartyMemberFullStateTbc(WorldPacket packet)
+    {
         PartyMemberFullState state = new PartyMemberFullState();
+        const string Op = nameof(Opcode.SMSG_PARTY_MEMBER_PARTIAL_STATE);
+
         if (GetSession().GameState.IsInBattleground())
         {
             state.PartyType[0] = 0;
@@ -979,135 +1414,154 @@ public partial class WorldClient
             state.PartyType[1] = 0;
         }
 
+        bool wotlk = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056);
+        int hpSize = wotlk ? 4 : 2;
+        int auraEntrySize = wotlk ? 5 : 3;
+
+        // 3.0+ legacy server prefixes the packet with a "for enemy / group type" byte.
+        if (wotlk)
+        {
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(PartyMemberFullState.ForEnemy), 1, state);
+            packet.ReadUInt8(); // ForEnemy flag (not forwarded)
+        }
+
         state.MemberGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
-        var updateFlags = (GroupUpdateFlagTBC)packet.ReadUInt32();
+
+        GroupUpdateFlagTBC updateFlags;
+        if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(updateFlags), 4, state);
+        updateFlags = (GroupUpdateFlagTBC)packet.ReadUInt32();
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Status))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Status), 2, state);
             state.StatusFlags = (GroupMemberOnlineStatus)packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.CurrentHealth))
-            state.CurrentHealth = packet.ReadUInt16();
+        {
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.CurrentHealth), hpSize, state);
+            state.CurrentHealth = wotlk ? (int)packet.ReadUInt32() : packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.MaxHealth))
-            state.MaxHealth = packet.ReadUInt16();
+        {
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.MaxHealth), hpSize, state);
+            state.MaxHealth = wotlk ? (int)packet.ReadUInt32() : packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PowerType))
+        {
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PowerType), 1, state);
             state.PowerType = packet.ReadUInt8();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.CurrentPower))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.CurrentPower), 2, state);
             state.CurrentPower = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.MaxPower))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.MaxPower), 2, state);
             state.MaxPower = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Level))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Level), 2, state);
             state.Level = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Zone))
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Zone), 2, state);
             state.ZoneID = packet.ReadUInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Position))
         {
+            if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Position), 4, state);
             state.PositionX = packet.ReadInt16();
             state.PositionY = packet.ReadInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.Auras))
         {
-            if (state.Auras == null)
-                state.Auras = new List<PartyMemberAuraStates>();
-
-            var auraMask = packet.ReadUInt64();
-
-            for (byte i = 0; i < LegacyVersion.GetAuraSlotsCount(); ++i)
-            {
-                if ((auraMask & (1ul << i)) == 0)
-                    continue;
-
-                PartyMemberAuraStates aura = new PartyMemberAuraStates();
-                aura.SpellId = packet.ReadUInt16();
-                packet.ReadUInt8(); // unk
-                if (aura.SpellId != 0)
-                {
-                    aura.ActiveFlags = 1;
-                    aura.AuraFlags = (ushort)AuraFlagsModern.Positive;
-                }
-                state.Auras.Add(aura);
-            }
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.Auras), 8, state);
+            state.Auras ??= new List<PartyMemberAuraStates>();
+            if (!TryReadPartyMemberAuras(packet, state.Auras, auraEntrySize, Op, nameof(GroupUpdateFlagTBC.Auras))) return state;
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetGuid))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetGuid), 8, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.NewPetGuid = packet.ReadGuid().To128(GetSession().GameState);
         }
 
-
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetName))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetName), 1, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.NewPetName = packet.ReadCString();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetModelId))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetModelId), 2, state);
+            state.Pet ??= new PartyMemberPetStats();
             state.Pet.DisplayID = packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetCurrentHealth))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            state.Pet.Health = packet.ReadUInt16();
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetCurrentHealth), hpSize, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.Health = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetMaxHealth))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            state.Pet.MaxHealth = packet.ReadUInt16();
+            if (!packet.CanRead(hpSize)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetMaxHealth), hpSize, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.MaxHealth = wotlk ? packet.ReadUInt32() : packet.ReadUInt16();
         }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetPowerType))
-            packet.ReadUInt8(); // Pet Power Type
+        {
+            if (!packet.CanRead(1)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetPowerType), 1, state);
+            packet.ReadUInt8();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetCurrentPower))
-            packet.ReadInt16(); // Pet Current Power
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetCurrentPower), 2, state);
+            packet.ReadInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetMaxPower))
-            packet.ReadInt16(); // Pet Max Power
+        {
+            if (!packet.CanRead(2)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetMaxPower), 2, state);
+            packet.ReadInt16();
+        }
 
         if (updateFlags.HasFlag(GroupUpdateFlagTBC.PetAuras))
         {
-            if (state.Pet == null)
-                state.Pet = new PartyMemberPetStats();
-            if (state.Pet.Auras == null)
-                state.Pet.Auras = new List<PartyMemberAuraStates>();
-
-            var auraMask = packet.ReadUInt64();
-
-            for (byte i = 0; i < LegacyVersion.GetAuraSlotsCount(); ++i)
-            {
-                if ((auraMask & (1ul << i)) == 0)
-                    continue;
-
-                PartyMemberAuraStates aura = new PartyMemberAuraStates();
-                aura.SpellId = packet.ReadUInt16();
-                packet.ReadUInt8(); // unk
-                if (aura.SpellId != 0)
-                {
-                    aura.ActiveFlags = 1;
-                    aura.AuraFlags = (ushort)AuraFlagsModern.Positive;
-                }
-                state.Pet.Auras.Add(aura);
-            }
+            if (!packet.CanRead(8)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.PetAuras), 8, state);
+            state.Pet ??= new PartyMemberPetStats();
+            state.Pet.Auras ??= new List<PartyMemberAuraStates>();
+            if (!TryReadPartyMemberAuras(packet, state.Pet.Auras, auraEntrySize, Op, nameof(GroupUpdateFlagTBC.PetAuras))) return state;
         }
 
-        SendPacketToClient(state);
+        // WotLK trailing uint32 vehicle/mount seat id (see HandlePartyMemberStatsTbc).
+        if (wotlk && updateFlags.HasFlag(GroupUpdateFlagTBC.VehicleSeat))
+        {
+            if (!packet.CanRead(4)) return WarnTruncatedReturn(Op, packet, nameof(GroupUpdateFlagTBC.VehicleSeat), 4, state);
+            state.VehicleSeat = (int)packet.ReadUInt32();
+        }
+
+        return state;
     }
 
     [PacketHandler(Opcode.MSG_MINIMAP_PING)]
@@ -1129,5 +1583,44 @@ public partial class WorldClient
         roll.Roller = packet.ReadGuid().To128(GetSession().GameState);
         roll.RollerWowAccount = GetSession().GetGameAccountGuidForPlayer(roll.Roller);
         SendPacketToClient(roll);
+    }
+
+    byte ResolveAssignedRole(WowGuid128 guid, byte serverRole)
+    {
+        if (GetSession().GameState.GroupAssignedRoles.TryGetValue(guid, out var assigned))
+            return assigned;
+        return serverRole;
+    }
+
+    void PruneAssignedRoles(List<PartyPlayerInfo> members)
+    {
+        var assigned = GetSession().GameState.GroupAssignedRoles;
+        if (assigned.Count == 0)
+            return;
+
+        var keep = new HashSet<WowGuid128>();
+        foreach (var member in members)
+            keep.Add(member.GUID);
+
+        var otherIndex = GetSession().GameState.LastAnnouncedPartyIndex == 0 ? 1 : 0;
+        var other = GetSession().GameState.CurrentGroups[otherIndex];
+        if (other != null)
+        {
+            foreach (var member in other.PlayerList)
+                keep.Add(member.GUID);
+        }
+
+        List<WowGuid128>? drop = null;
+        foreach (var guid in assigned.Keys)
+        {
+            if (keep.Contains(guid))
+                continue;
+            drop ??= new List<WowGuid128>();
+            drop.Add(guid);
+        }
+        if (drop == null)
+            return;
+        foreach (var guid in drop)
+            assigned.Remove(guid);
     }
 }

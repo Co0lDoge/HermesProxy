@@ -519,8 +519,15 @@ debug.*
 # Launch profiles
 HermesProxy/profiles/*.json
 
-# Local regression-test driver
+# Local regression-test drivers
 test-loop2.ps1
+second-client.ps1
+
+# Screenshots captured by the test driver
+HermesProxy/screenlogs/
 
 # Local deploy scripts
 deploy_local/
+### Local dev environment (not committed)
+.dotnet/
+.env

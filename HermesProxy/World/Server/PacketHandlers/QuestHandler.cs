@@ -2,10 +2,12 @@
 using Framework.Logging;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace HermesProxy.World.Server;
 
@@ -25,6 +27,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST)]
     void HandleQuestGiverAcceptQuest(QuestGiverAcceptQuest quest)
     {
+        GetSession().GameState.CloseQuestDetails();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_ACCEPT_QUEST);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -82,13 +85,155 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_HELLO)]
     void HandleQuestGiverHello(QuestGiverHello hello)
     {
+        GetSession().GameState.CloseQuestDetails();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_HELLO);
         packet.WriteGuid(hello.QuestGiverGUID.To64());
+        SendPacketToServer(packet);
+    }
+    [PacketHandler(Opcode.CMSG_QUEST_GIVER_CLOSE_QUEST)]
+    void HandleQuestGiverCloseQuest(QuestGiverCloseQuest close)
+    {
+        if (ModernVersion.Build != HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        var state = GetSession().GameState;
+        // First CLOSE_QUEST after OfferReward is leaving the item list
+        if (state.JustSentOfferReward)
+        {
+            state.JustSentOfferReward = false;
+            WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, close.QuestID, "swallow-offer");
+            return;
+        }
+
+        if (state.AwaitingQuestRewardId == close.QuestID)
+        {
+            if (state.JustSentRequestItems)
+            {
+                state.JustSentRequestItems = false;
+                WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, close.QuestID, "swallow-request-items");
+                return;
+            }
+
+            ReturnQuestFrameToGossip((uint)close.QuestID, state.AwaitingQuestGiver, "close-request-items");
+            return;
+        }
+
+        state.CloseQuestDetails();
+    }
+
+    [PacketHandler(Opcode.CMSG_CLOSE_INTERACTION)]
+    void HandleCloseInteraction(CloseInteraction close)
+    {
+        var state = GetSession().GameState;
+        if (state.AwaitingQuestRewardId != 0)
+        {
+            if (ModernVersion.Build != HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
+                return;
+
+            if (state.JustSentRequestItems)
+            {
+                state.JustSentRequestItems = false;
+                WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, (int)state.AwaitingQuestRewardId, "swallow-request-items");
+                return;
+            }
+
+            ReturnQuestFrameToGossip(state.AwaitingQuestRewardId, state.AwaitingQuestGiver, "cancel-request-items");
+            return;
+        }
+
+        if (!state.QuestDetailsOpen)
+            return;
+
+        int questId = (int)(state.LastQuestDetails?.QuestID ?? 0);
+
+        // GossipFrame hid under QuestFrame. Leave details up
+        if (state.JustLeftGossipForDetails)
+        {
+            state.JustLeftGossipForDetails = false;
+            WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, "swallow-left-gossip");
+            return;
+        }
+
+        state.CloseQuestDetails();
+        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, questId, "release-details");
+        _ = close;
+    }
+
+    // 3.4.3 Decline is TALK_TO_GOSSIP, not a cancel opcode. Dismiss the
+    // parchment, then put back this NPC's cached list only.
+    void ReturnDetailsToGossip(string action)
+    {
+        var state = GetSession().GameState;
+        int questId = (int)(state.LastQuestDetails?.QuestID ?? 0);
+        WowGuid128 npc = state.LastQuestDetails?.QuestGiverGUID ?? default;
+        ReturnQuestFrameToGossip((uint)questId, npc, action);
+    }
+
+    void ReturnQuestFrameToGossip(uint questId, WowGuid128 npc, string action)
+    {
+        var state = GetSession().GameState;
+        var gossip = state.LastGossip;
+        var list = state.LastQuestList;
+        state.CloseQuestDetails();
+        state.ClearQuestRewardWait();
+
+        SendPacket(new QuestGiverInvalidQuest
+        {
+            Reason = QuestFailedReasons.None,
+            SendErrorMessage = false
+        });
+
+        if (gossip != null && npc != default && gossip.GossipGUID == npc)
+            SendPacket(gossip);
+        else if (list != null && npc != default && list.QuestGiverGUID == npc)
+            SendPacket(list);
+
+        WorldSocketLogMessages.QuestClose(_melLog, _sourceFile, _netDirRecv, (int)questId, action);
+    }
+
+
+
+    [PacketHandler(Opcode.CMSG_QUEST_POI_QUERY)]
+    void HandleQuestPOIQuery(QuestPOIQuery query)
+    {
+        // Both legacy 3.3.5a and modern V3_4_3 use the same wire shape:
+        // int32 count, int32[] questIds. Forward only the populated prefix.
+        // Note: SMSG_QUEST_COMPLETION_NPC_RESPONSE is synthesized by the legacy
+        // SMSG_QUEST_POI_QUERY_RESPONSE handler — there it's emitted right after
+        // the POI translation, matching CypherCore's order and using
+        // SendPacketToClient (auto-routes by ConnectionType.Instance).
+        foreach (int questId in query.MissingQuestPOIs)
+        {
+            if (GameData.GetQuestTemplate((uint)questId) != null)
+                continue;
+            WorldPacket info = new WorldPacket(Opcode.CMSG_QUERY_QUEST_INFO);
+            info.WriteUInt32((uint)questId);
+            SendPacketToServer(info);
+        }
+
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_POI_QUERY);
+        packet.WriteInt32(query.MissingQuestPOIs.Length);
+        foreach (int questId in query.MissingQuestPOIs)
+            packet.WriteInt32(questId);
         SendPacketToServer(packet);
     }
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD)]
     void HandleQuestGiverRequestReward(QuestGiverRequestReward quest)
     {
+        var state = GetSession().GameState;
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261)
+        {
+            var last = state.LastRequestItems;
+            if (last != null && last.QuestID == quest.QuestID && last.StatusFlags != QuestGiverRequestItems.StatusComplete)
+            {
+                SendPacket(last);
+                return;
+            }
+
+            if (state.AwaitingQuestRewardId == quest.QuestID)
+                state.AwaitingQuestRewardId = 0;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
@@ -134,7 +279,15 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_COMPLETE_QUEST)]
     void HandleQuestGiverCompleteQuest(QuestGiverCompleteQuest quest)
     {
-        WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_COMPLETE_QUEST);
+        Opcode opcode = Opcode.CMSG_QUEST_GIVER_COMPLETE_QUEST;
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261
+            && GetSession().GameState.AwaitingQuestRewardId == quest.QuestID)
+        {
+            opcode = Opcode.CMSG_QUEST_GIVER_REQUEST_REWARD;
+            GetSession().GameState.AwaitingQuestRewardId = 0;
+        }
+
+        WorldPacket packet = new WorldPacket(opcode);
         packet.WriteGuid(quest.QuestGiverGUID.To64());
         packet.WriteUInt32(quest.QuestID);
         SendPacketToServer(packet);
@@ -156,8 +309,27 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_QUEST_PUSH_RESULT)]
     void HandleQuestPushResult(QuestPushResultResponse quest)
     {
+        // MSG_QUEST_PUSH_RESULT is one of the few opcodes where the 3.3.5a cores disagree
+        // on the layout, so this is deliberately shaped to satisfy all of them at once
+        // rather than branching on the backend:
+        //
+        //   TrinityCore  Handlers/QuestHandler.cpp     guid >> questId >> msg   (13 bytes)
+        //   AzerothCore  Packets/QuestPackets.cpp:98   guid >> QuestId >> msg   (13 bytes)
+        //   cMaNGOS      Quests/QuestHandler.cpp:651   guid >> msg              ( 9 bytes)
+        //
+        // Sending only guid + msg makes TrinityCore and AzerothCore underflow on questId and
+        // abandon the handler before ClearQuestSharingInfo() / SetDivider(), so the recipient
+        // stays flagged as sharing a quest and every later share comes back "is busy" until
+        // they relog. Sending the real questId instead breaks cMaNGOS, which would read msg
+        // from that field's low byte.
+        //
+        // Both TrinityCore and AzerothCore parse questId and then never use it -- their
+        // handlers only touch the guid and the message -- so putting the result in the
+        // questId slot is harmless there, and little-endian puts it exactly where cMaNGOS
+        // looks for msg. One packet, all three cores.
         WorldPacket packet = new WorldPacket(Opcode.MSG_QUEST_PUSH_RESULT);
         packet.WriteGuid(quest.SenderGUID.To64());
+        packet.WriteUInt32((byte)quest.Result);
         packet.WriteUInt8((byte)quest.Result);
         SendPacketToServer(packet);
     }

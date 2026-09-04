@@ -73,20 +73,27 @@ class AvailableHotfixes : ServerPacket
     public override void Write()
     {
         _worldPacket.WriteUInt32(VirtualRealmAddress);
-        if (IncludeRecords)
+
+        // Hotfixes are an override channel: only advertise records that actually differ
+        // from the client's baked-in DB2. Shipping the full ~600k Item/Spell index produces
+        // a ~5 MB packet the client never even logs ("ClientAvailableHotfixes" line missing),
+        // suggesting a parse-abort. A single pass over the (large) store — the previous code
+        // walked all of GameData.Hotfixes twice, once to count and once to write.
+        var advertised = new System.Collections.Generic.List<HotfixRecord>();
+        foreach (var hotfix in GameData.Hotfixes.Values)
         {
-            _worldPacket.WriteInt32(GameData.Hotfixes.Count);
-            foreach (var hotfix in GameData.Hotfixes)
-                hotfix.Value.WriteAvailable(_worldPacket);
+            if (TableFilter != null && !TableFilter.Contains(hotfix.TableHash))
+                continue;
+            advertised.Add(hotfix);
         }
-        else
-        {
-            _worldPacket.WriteInt32(0);
-        }
+
+        _worldPacket.WriteInt32(advertised.Count);
+        foreach (var hotfix in advertised)
+            hotfix.WriteAvailable(_worldPacket);
     }
 
     public uint VirtualRealmAddress;
-    public bool IncludeRecords = true;
+    public HashSet<DB2Hash>? TableFilter;
 }
 
 class HotfixRequest : ClientPacket

@@ -20,11 +20,12 @@ public readonly record struct WowGuid128(ulong Low, ulong High)
     {
         HighGuidType.Player => Create(HighGuidType703.Player, guid.GetCounter()),
         HighGuidType.Item => Create(HighGuidType703.Item, guid.GetCounter()),
-        HighGuidType.Transport or HighGuidType.MOTransport => TransportCreate(guid.GetCounter(), guid.GetEntry()),
+        HighGuidType.Transport => TransportCreate(guid.GetCounter(), guid.GetEntry()),
+        HighGuidType.MOTransport => TransportCreate(guid.GetCounter() | MoTransportCounterFlag, guid.GetEntry()),
         HighGuidType.RaidGroup => Create(HighGuidType703.RaidGroup, guid.GetCounter()),
         HighGuidType.GameObject => Create(HighGuidType703.GameObject, gamestate.GetObjectSpawnCounter(guid), guid.GetEntry(), guid.GetCounter()),
         HighGuidType.Creature => Create(HighGuidType703.Creature, gamestate.GetObjectSpawnCounter(guid), guid.GetEntry(), guid.GetCounter()),
-        HighGuidType.Pet => Create(HighGuidType703.Pet, 0, guid.GetEntry(), guid.GetCounter()),
+        HighGuidType.Pet => Create(HighGuidType703.Pet, 0, gamestate.GetPetRealEntryFromLegacy(guid) ?? guid.GetEntry(), guid.GetCounter()),
         HighGuidType.Vehicle => Create(HighGuidType703.Vehicle, 0, guid.GetEntry(), guid.GetCounter()),
         HighGuidType.DynamicObject => Create(HighGuidType703.DynamicObject, 0, guid.GetEntry(), guid.GetCounter()),
         HighGuidType.Corpse => Create(HighGuidType703.Corpse, 0, guid.GetEntry(), guid.GetCounter()),
@@ -93,15 +94,36 @@ public readonly record struct WowGuid128(ulong Low, ulong High)
         return new WowGuid128(counter, (ulong)type << 58);
     }
 
+    // The transport 128-bit layout is: type @ bits 58-63, counter @ bits 38-57 (20 bits),
+    // entry @ bits 0-31. The counter MUST be masked to 20 bits before the shift — a
+    // legacy MOTransport guid's GetCounter() returns the full low 32 bits
+    // (WowGuid64Extensions, HasEntry=false), and an unmasked `counter << 38` lets counter
+    // bits 20-25 spill into the type field (bits 58-63), corrupting Transport(6) into an
+    // undefined HighGuidType703 (e.g. 0x36). HighGuid703's ctor then threw and killed the
+    // WorldClient receive loop → client disconnect. cMaNGOS MOTransport guids carry large
+    // low values; TC's don't, which is why this only reproduced on cMaNGOS (issue #101).
+    const ulong TransportCounterMask = 0xFFFFF; // 20 bits
+
+    // Legacy Transport (gameobject type 11: elevators, trams) and MOTransport (type 15:
+    // zeppelins, boats) are two separate spawn tables on the legacy server, each numbering
+    // its rows from 1, and neither embeds the gameobject entry in its guid — so both arrive
+    // here with entry 0 and a small counter. Collapsing them into one modern Transport guid
+    // made them collide: the Undercity zeppelin (transports row 6) and an Undercity elevator
+    // (spawn counter 6) both produced 0x1800018000000000, and whichever create landed second
+    // replaced the first in the client's world model. Reserving the top counter bit for
+    // MOTransport keeps the two namespaces apart, and gives WowGuid64.Create a reliable way
+    // to tell them apart on the way back (it used to test entry != 0, which is never true).
+    public const ulong MoTransportCounterFlag = 0x80000; // bit 19 of the 20-bit counter
+
     static WowGuid128 TransportCreate(ulong counter, uint entry)
     {
-        return new WowGuid128(0, (ulong)HighGuidType703.Transport << 58 | (counter << 38) | entry);
+        return new WowGuid128(0, (ulong)HighGuidType703.Transport << 58 | ((counter & TransportCounterMask) << 38) | entry);
     }
 
     static WowGuid128 RealmSpecificCreate(HighGuidType703 type, ulong counter)
     {
         if (type == HighGuidType703.Transport)
-            return new WowGuid128(0, (ulong)type << 58 | (counter << 38));
+            return new WowGuid128(0, (ulong)type << 58 | ((counter & TransportCounterMask) << 38));
         else
             return new WowGuid128(counter, (ulong)type << 58 | (ulong)1 /*realmId*/ << 42);
     }

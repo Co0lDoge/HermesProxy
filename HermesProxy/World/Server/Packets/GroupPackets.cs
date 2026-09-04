@@ -19,6 +19,7 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -135,7 +136,18 @@ class PartyInvite : ServerPacket
         _worldPacket.WritePackedGuid128(InviterGUID);
         _worldPacket.WritePackedGuid128(InviterBNetAccountId);
         _worldPacket.WriteUInt16(Unk1);
-        _worldPacket.WriteUInt32(ProposedRoles);
+
+        // WotLK Classic narrowed ProposedRoles to a single byte. V1_14 and V2_5 still read the
+        // full uint32 -- WowPacketParser reads it as a byte in its V3_4_0/V4_4_0 modules and as
+        // an int32 in every earlier one, and CypherCore ClassicWOTLK writes a byte. Sending four
+        // bytes to a 3.4.3 client shifts everything after it, and since InviterName is declared
+        // by the 6-bit length prefix above but written last, the client reads the name from the
+        // wrong offset and renders it empty. Issue #199.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            _worldPacket.WriteUInt8((byte)ProposedRoles);
+        else
+            _worldPacket.WriteUInt32(ProposedRoles);
+
         _worldPacket.WriteInt32(LfgSlots.Count);
         _worldPacket.WriteInt32(LfgCompletedMask);
 
@@ -171,6 +183,21 @@ class PartyInviteResponse : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: 3 header bits first, then optional bytes.
+            // /reload emits this packet with all flags=0 (size=1) as a state flush.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            Accept = _worldPacket.HasBit();
+            bool hasRolesDesiredV343 = _worldPacket.HasBit();
+
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            if (hasRolesDesiredV343)
+                RolesDesired = _worldPacket.ReadUInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
 
         Accept = _worldPacket.HasBit();
@@ -198,6 +225,8 @@ public class PartyUpdate : ServerPacket
         _worldPacket.WritePackedGuid128(PartyGUID);
         _worldPacket.WriteInt32(SequenceNum);
         _worldPacket.WritePackedGuid128(LeaderGUID);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            _worldPacket.WriteUInt8(LeaderFactionGroup);
         _worldPacket.WriteInt32(PlayerList.Count);
         _worldPacket.WriteBit(LfgInfos != null);
         _worldPacket.WriteBit(LootSettings != null);
@@ -223,6 +252,7 @@ public class PartyUpdate : ServerPacket
 
     public WowGuid128 PartyGUID;
     public WowGuid128 LeaderGUID;
+    public byte LeaderFactionGroup;
 
     public int MyIndex;
     public int SequenceNum;
@@ -232,6 +262,26 @@ public class PartyUpdate : ServerPacket
     public PartyLFGInfo LfgInfos = null!;
     public PartyLootSettings LootSettings = null!;
     public PartyDifficultySettings DifficultySettings = null!;
+
+    // SendPacket writes then disposes the buffer. Clone before a second emit.
+    public PartyUpdate CloneUnwritten()
+    {
+        return new PartyUpdate
+        {
+            PartyFlags = PartyFlags,
+            PartyIndex = PartyIndex,
+            PartyType = PartyType,
+            PartyGUID = PartyGUID,
+            LeaderGUID = LeaderGUID,
+            LeaderFactionGroup = LeaderFactionGroup,
+            MyIndex = MyIndex,
+            SequenceNum = SequenceNum,
+            PlayerList = new List<PartyPlayerInfo>(PlayerList),
+            LfgInfos = LfgInfos,
+            LootSettings = LootSettings,
+            DifficultySettings = DifficultySettings,
+        };
+    }
 }
 
 public struct PartyPlayerInfo
@@ -240,14 +290,33 @@ public struct PartyPlayerInfo
     {
         data.WriteBits(Name.GetByteCount(), 6);
         data.WriteBits(VoiceStateID.GetByteCount() + 1, 6);
-        data.WriteBit(FromSocialQueue);
-        data.WriteBit(VoiceChatSilenced);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            bool isConnected = Connected || Status != GroupMemberOnlineStatus.Offline;
+            data.WriteBit(isConnected);
+            data.WriteBit(VoiceChatSilenced);
+            data.WriteBit(FromSocialQueue);
+        }
+        else
+        {
+            data.WriteBit(FromSocialQueue);
+            data.WriteBit(VoiceChatSilenced);
+        }
+
         data.WritePackedGuid128(GUID);
-        data.WriteUInt8((byte)Status);
+
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            data.WriteUInt8((byte)Status);
+
         data.WriteUInt8(Subgroup);
         data.WriteUInt8((byte)Flags);
         data.WriteUInt8(RolesAssigned);
         data.WriteUInt8((byte)ClassId);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            data.WriteUInt8(FactionGroup);
+
         data.WriteString(Name);
         if (!VoiceStateID.IsEmpty())
             data.WriteString(VoiceStateID);
@@ -261,8 +330,10 @@ public struct PartyPlayerInfo
     public byte Subgroup;
     public GroupMemberFlags Flags;
     public byte RolesAssigned;
+    public byte FactionGroup;
     public bool FromSocialQueue;
     public bool VoiceChatSilenced;
+    public bool Connected;
 }
 
 public class PartyLFGInfo
@@ -340,11 +411,23 @@ class PartyUninvite : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: bits first, then GUID, then optional PartyIndex byte.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            byte reasonLen = _worldPacket.ReadBits<byte>(8);
+            TargetGUID = _worldPacket.ReadPackedGuid128();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            Reason = _worldPacket.ReadString(reasonLen);
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
         TargetGUID = _worldPacket.ReadPackedGuid128();
 
-        byte reasonLen = _worldPacket.ReadBits<byte>(8);
-        Reason = _worldPacket.ReadString(reasonLen);
+        byte legacyReasonLen = _worldPacket.ReadBits<byte>(8);
+        Reason = _worldPacket.ReadString(legacyReasonLen);
     }
 
     public byte PartyIndex;
@@ -363,12 +446,35 @@ class GroupUninvite : ServerPacket, ISpanWritable
     public int WriteToSpan(Span<byte> buffer) => 0;
 }
 
+class GroupDestroyed : ServerPacket, ISpanWritable
+{
+    public GroupDestroyed() : base(Opcode.SMSG_GROUP_DESTROYED) { }
+
+    public override void Write() { }
+
+    public int MaxSize => 0;
+
+    public int WriteToSpan(Span<byte> buffer) => 0;
+}
+
 class SetAssistantLeader : ClientPacket
 {
     public SetAssistantLeader(WorldPacket packet) : base(packet) { }
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: 2 header bits, then GUID, then optional PartyIndex byte.
+            // Mirrors CypherCore WorldPackets::Party::SetAssistantLeader::Read.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            Apply = _worldPacket.HasBit();
+            TargetGUID = _worldPacket.ReadPackedGuid128();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
         TargetGUID = _worldPacket.ReadPackedGuid128();
         Apply = _worldPacket.HasBit();
@@ -385,6 +491,17 @@ class SetEveryoneIsAssistant : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: 2 header bits, then optional PartyIndex byte.
+            // Mirrors CypherCore WorldPackets::Party::SetEveryoneIsAssistant::Read.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            Apply = _worldPacket.HasBit();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
         Apply = _worldPacket.HasBit();
     }
@@ -405,6 +522,65 @@ class SetPartyLeader : ClientPacket
 
     public sbyte PartyIndex;
     public WowGuid128 TargetGUID;
+}
+
+public class SetRole : ClientPacket
+{
+    public SetRole(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            bool hasPartyIndex = _worldPacket.HasBit();
+            ChangedUnit = _worldPacket.ReadPackedGuid128();
+            Role = _worldPacket.ReadUInt8();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
+        PartyIndex = (byte)_worldPacket.ReadInt8();
+        ChangedUnit = _worldPacket.ReadPackedGuid128();
+        Role = (byte)_worldPacket.ReadInt32();
+    }
+
+    public byte PartyIndex;
+    public WowGuid128 ChangedUnit;
+    public byte Role;
+}
+
+public class RoleChangedInform : ServerPacket, ISpanWritable
+{
+    public RoleChangedInform() : base(Opcode.SMSG_ROLE_CHANGED_INFORM) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteUInt8(PartyIndex);
+        _worldPacket.WritePackedGuid128(From);
+        _worldPacket.WritePackedGuid128(ChangedUnit);
+        _worldPacket.WriteUInt8(OldRole);
+        _worldPacket.WriteUInt8(NewRole);
+    }
+
+    public int MaxSize => 1 + PackedGuidHelper.MaxPackedGuid128Size * 2 + 2;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WriteUInt8(PartyIndex);
+        writer.WritePackedGuid128(From.Low, From.High);
+        writer.WritePackedGuid128(ChangedUnit.Low, ChangedUnit.High);
+        writer.WriteUInt8(OldRole);
+        writer.WriteUInt8(NewRole);
+        return writer.Position;
+    }
+
+    public byte PartyIndex;
+    public WowGuid128 From;
+    public WowGuid128 ChangedUnit;
+    public byte OldRole;
+    public byte NewRole;
 }
 
 class GroupNewLeader : ServerPacket, ISpanWritable
@@ -452,6 +628,15 @@ class DoReadyCheck : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: a HasPartyIndex bit first, then the optional byte.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadInt8();
     }
 
@@ -494,6 +679,22 @@ class ReadyCheckResponseClient : ClientPacket
 
     public override void Read()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 wire layout: a HasPartyIndex bit, then IsReady, then the optional
+            // PartyIndex byte - the same bits-first shape as PartyInviteResponse above.
+            // Reading PartyIndex first consumed the bit byte and then took the MSB of the
+            // (always zero) index byte as IsReady, so every answer reached the group as
+            // "not ready". Observed bytes: Ready = C0 00, Not Ready = 80 00. WPP's
+            // V3_4_0 parser orders these bits the other way round, but it is registered
+            // at V3_4_4_59817 and does not hold for 54261.
+            bool hasPartyIndex = _worldPacket.HasBit();
+            IsReady = _worldPacket.HasBit();
+            if (hasPartyIndex)
+                PartyIndex = _worldPacket.ReadUInt8();
+            return;
+        }
+
         PartyIndex = _worldPacket.ReadUInt8();
         IsReady = _worldPacket.HasBit();
     }
@@ -739,9 +940,9 @@ class PartyMemberPartialState : ServerPacket
         _worldPacket.WriteBit(ZoneID.HasValue);
         _worldPacket.WriteBit(WmoGroupID.HasValue);
         _worldPacket.WriteBit(WmoDoodadPlacementID.HasValue);
-        _worldPacket.WriteBit(Position != null);
+        _worldPacket.WriteBit(Position.HasValue);
         _worldPacket.WriteBit(VehicleSeatRecID.HasValue);
-        _worldPacket.WriteBit(Auras.Count > 0);
+        _worldPacket.WriteBit(Auras is { Count: > 0 });
         _worldPacket.WriteBit(Pet != null);
         _worldPacket.WriteBit(Phase != null);
         _worldPacket.WriteBit(Unk901_2 != null);
@@ -781,15 +982,15 @@ class PartyMemberPartialState : ServerPacket
             _worldPacket.WriteUInt16(WmoGroupID.Value);
         if (WmoDoodadPlacementID.HasValue)
             _worldPacket.WriteUInt32(WmoDoodadPlacementID.Value);
-        if (Position != null)
+        if (Position.HasValue)
         {
-            _worldPacket.WriteInt16(Position.X);
-            _worldPacket.WriteInt16(Position.Y);
-            _worldPacket.WriteInt16(Position.Z);
+            _worldPacket.WriteInt16(Position.Value.X);
+            _worldPacket.WriteInt16(Position.Value.Y);
+            _worldPacket.WriteInt16(Position.Value.Z);
         }
         if (VehicleSeatRecID.HasValue)
             _worldPacket.WriteUInt32(VehicleSeatRecID.Value);
-        if (Auras.Count > 0)
+        if (Auras is { Count: > 0 })
         {
             _worldPacket.WriteInt32(Auras.Count);
             foreach (var aura in Auras)
@@ -819,9 +1020,12 @@ class PartyMemberPartialState : ServerPacket
     public ushort? ZoneID;
     public ushort? WmoGroupID;
     public uint? WmoDoodadPlacementID;
-    public Vector3_UInt16 Position = null!;
+    public Vector3_UInt16? Position;
     public uint? VehicleSeatRecID;
-    public List<PartyMemberAuraStates> Auras = new();
+    // Left null until a packet actually carries auras. The parse paths already guard with
+    // `??= new`, so the old `= new()` initializer only ever allocated a list that stayed
+    // empty on the ~95% of updates that carry position/health alone.
+    public List<PartyMemberAuraStates>? Auras;
     public PartyMemberPetStats Pet = null!;
     public PartyMemberPhaseStates Phase = null!;
     public UnkStruct901_2 Unk901_2 = null!;
@@ -831,7 +1035,11 @@ class PartyMemberPartialState : ServerPacket
         public byte PartyType1;
         public byte PartyType2;
     }
-    public class Vector3_UInt16
+    /// Struct, not a class: one of these is built for nearly every partial state (position is
+    /// the flag AzerothCore sets on every player tick), so a heap object here was a per-packet
+    /// allocation on the hottest path in the proxy. Held as Vector3_UInt16? — a nullable value
+    /// type, so the "is present" gate costs no allocation either.
+    public struct Vector3_UInt16
     {
         public short X;
         public short Y;

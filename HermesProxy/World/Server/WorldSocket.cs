@@ -91,6 +91,63 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     private readonly string _externalAddress;
     private readonly int _instancePort;
 
+    // [ActionBarTrace] Ring-buffered SMSG history for diagnosing client
+    // disconnect-with-reason-7 events (the V3_4_3 client emits this when it
+    // rejects a server packet but doesn't tell us which one). On every
+    // SendPacket we append a one-line summary; on CMSG_LOG_DISCONNECT we
+    // dump the buffer. The ring is also gated by an "active watch window"
+    // set by paths suspected of triggering crashes (e.g. CMSG_SET_ACTION_BUTTON)
+    // — when the window is open we additionally Trace-log every send so the
+    // raw flow is in the file.
+    // 512 captures ~4 seconds of history at the observed peak burst rate (~125 SMSG/sec
+    // in dense scripted events like DK quest 12800). Needed because the user-reported
+    // sudden RAM jump → freeze → reason=7 disconnect path puts several seconds between
+    // the trigger packet and the disconnect dump; smaller windows aged the suspect out.
+    private const int RecentSentCap = 512;
+    private const int RecentSentHexPreviewBytes = 48; // first ~48 bytes of each packet body in the reason=7 dump
+
+    /// One captured send. Kept as a struct in a preallocated ring so the capture costs
+    /// no allocation: the old Queue&lt;string&gt; formatted a timestamp + 143-char hex string
+    /// for every outbound packet (~500 bytes each, held alive by the 512-entry cap), which
+    /// showed up as steady gen1/gen2 pressure under battleground packet rates. The bytes
+    /// live in a flat companion buffer; formatting happens only when a dump is requested.
+    private struct SentPacketRecord
+    {
+        public long TimestampTicksUtc;
+        public Opcode UniversalOpcode;
+        public ushort RawOpcode;
+        public int Size;
+        public byte PreviewLength;
+    }
+
+    private readonly SentPacketRecord[] _recentSent = new SentPacketRecord[RecentSentCap];
+    private readonly byte[] _recentSentPreview = new byte[RecentSentCap * RecentSentHexPreviewBytes];
+    private int _recentSentHead;   // next slot to write
+    private int _recentSentCount;  // filled slots, capped at RecentSentCap
+    private long _actionButtonWatchUntilTicks;
+
+    /// Renders one ring slot in the same shape the old string entries used.
+    private string FormatRecentSent(int index)
+    {
+        ref SentPacketRecord record = ref _recentSent[index];
+        // Dump path only, so the copy here is free of consequence; BitConverter keeps the
+        // original dashed "0A-1B-2C" shape the reason=7 dumps have always used.
+        string hex = record.PreviewLength > 0
+            ? BitConverter.ToString(_recentSentPreview, index * RecentSentHexPreviewBytes, record.PreviewLength)
+            : "(empty)";
+
+        string timestamp = new DateTime(record.TimestampTicksUtc, DateTimeKind.Utc).ToLocalTime().ToString("HH:mm:ss.fff");
+        return record.Size > record.PreviewLength
+            ? $"{timestamp} {record.UniversalOpcode}({record.RawOpcode}) sz={record.Size} hex[{record.PreviewLength}/{record.Size}]={hex}…"
+            : $"{timestamp} {record.UniversalOpcode}({record.RawOpcode}) sz={record.Size} hex={hex}";
+    }
+
+    public void MarkActionButtonWatchWindow()
+    {
+        // Open / extend a 10-second watch window starting now.
+        _actionButtonWatchUntilTicks = DateTime.UtcNow.AddSeconds(10).Ticks;
+    }
+
     public WorldSocket(Socket socket, IOptions<ProxyNetworkOptions> networkOptions) : base(socket)
     {
         _externalAddress = networkOptions.Value.ExternalAddress;
@@ -234,8 +291,20 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                     break; // Couldn't receive the whole data this time.
             }
 
-            // just received fresh new payload
-            ReadDataHandlerResult result = ReadData();
+            // just received fresh new payload. ReadData's own switch handles the auth /
+            // connect-to / encrypted-mode cases inline, i.e. outside HandlePacket's guard,
+            // and this runs on a socket completion callback where an escaping exception
+            // takes the whole process down. Contain it here too.
+            ReadDataHandlerResult result;
+            try
+            {
+                result = ReadData();
+            }
+            catch (Exception e)
+            {
+                Log.Print(LogType.Error, $"C>P S | Unhandled exception while reading a client packet [conn={_connectType}]{Environment.NewLine}{e}");
+                result = ReadDataHandlerResult.Error;
+            }
             _headerBuffer.Reset();
             if (result != ReadDataHandlerResult.Ok)
             {
@@ -274,7 +343,10 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
         Opcode opcode = packet.GetUniversalOpcode(true);
 
-        WorldSocketLogMessages.PacketReceived(_melLog, _sourceFile, _netDirRecv, opcode, packet.GetOpcode());
+        if (NoisyOpcodes.IsNoisy(opcode))
+            WorldSocketLogMessages.PacketReceivedNoisy(_melLog, _sourceFile, _netDirRecv, opcode, packet.GetOpcode());
+        else
+            WorldSocketLogMessages.PacketReceived(_melLog, _sourceFile, _netDirRecv, opcode, packet.GetOpcode());
 
         if (opcode != Opcode.CMSG_HOTFIX_REQUEST && !header.IsValidSize())
         {
@@ -307,12 +379,28 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             case Opcode.CMSG_LOG_DISCONNECT:
                 uint reason = packet.ReadUInt32();
                 Log.Print(LogType.Server, $"Client disconnected with reason {reason}.");
+
+                // [ActionBarTrace] Dump the recent SMSG history. Reason 7 is
+                // "client rejected a server packet"; the offending packet is
+                // almost always within the last ~30 sends. The dump only fires
+                // on the disconnect path, so it doesn't add per-packet cost.
+                if (reason == 7 && _recentSentCount > 0)
+                {
+                    Log.Print(LogType.Trace,
+                        $"[ActionBarTrace] reason=7 — last {_recentSentCount} SMSG packets sent to this client (oldest first):");
+                    int oldest = (_recentSentHead - _recentSentCount + RecentSentCap) % RecentSentCap;
+                    for (int n = 0; n < _recentSentCount; n++)
+                        Log.Print(LogType.Trace, $"[ActionBarTrace]   #{n + 1,2} {FormatRecentSent((oldest + n) % RecentSentCap)}");
+                }
                 if (_connectType == ConnectionType.Realm)
                 {
-                    if (GetSession().AuthClient != null)
-                        GetSession().AuthClient.Disconnect();
-                    if (GetSession().WorldClient != null)
-                        GetSession().WorldClient!.Disconnect();
+                    // Change-realm sends this then a new AUTH_SESSION. Keep
+                    // AuthClient (SRP key) so the next WorldClient can log in.
+                    // Drop the stale RealmSocket pointer so early AC packets
+                    // queue instead of writing to this closing connection.
+                    GetSession().WorldClient?.Disconnect();
+                    if (GetSession().RealmSocket == this)
+                        GetSession().RealmSocket = null!;
                 }
                 if (GetSession().ModernSniff != null)
                 {
@@ -348,21 +436,66 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         Opcode universalOpcode = packet.GetUniversalOpcode(isModern: true);
         var handler = GetHandler(universalOpcode);
-        if (handler != null)
+        if (handler == null)
+        {
+            WorldSocketLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+            return;
+        }
+
+        // A throwing handler used to escape all the way to AppDomain.UnhandledException and
+        // abort the whole proxy, taking the session with it. The packet is already fully
+        // read out of the socket buffer at this point, so swallowing here cannot desync the
+        // stream. Worst case one client packet is dropped and the session keeps running.
+        try
         {
             if (HermesProxy.Server.MetricsEnabled)
             {
+                // Handlers run synchronously on this thread, so the per-thread allocation
+                // counter brackets exactly this packet's parse + translate + send.
                 long startTimestamp = Stopwatch.GetTimestamp();
+                long allocBefore = GC.GetAllocatedBytesForCurrentThread();
                 handler.Invoke(this, packet);
-                HermesProxy.Server.Metrics.RecordClientToServerLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+                long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+                HermesProxy.Server.Metrics.RecordClientToServer(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, allocated);
             }
             else
             {
                 handler.Invoke(this, packet);
             }
         }
-        else
-            WorldSocketLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+        catch (Exception e)
+        {
+            LogHandlerException(universalOpcode, packet, e);
+
+            // Without this the client sits on the entering-world screen forever with no
+            // error, which is harder to diagnose than the crash this guard replaced.
+            if (universalOpcode == Opcode.CMSG_PLAYER_LOGIN)
+                AbortLogin(LoginFailureReason.NoWorld);
+        }
+    }
+
+    private void LogHandlerException(Opcode universalOpcode, WorldPacket packet, Exception e)
+    {
+        string account = _globalSession != null ? GetSession().Username : "<no session>";
+
+        // An opcode with no per-build mapping is a known translation gap, not a defect in
+        // the handler. Log it as a one-liner so real failures keep their stack traces.
+        if (e is UnmappedOpcodeException unmapped)
+        {
+            Log.Print(LogType.Warn,
+                $"C>P S | Handling {universalOpcode} ({packet.GetOpcode()}) for account '{account}': {unmapped.Message}");
+            return;
+        }
+
+        // GetSize is the real payload length; GetData can hand back a larger ArrayPool rental.
+        byte[] raw = packet.GetData();
+        int size = (int)packet.GetSize();
+        int hexLen = Math.Min(64, Math.Min(size, raw.Length));
+        string hex = hexLen > 0 ? BitConverter.ToString(raw, 0, hexLen) : "<empty>";
+        Log.Print(LogType.Error,
+            $"C>P S | Unhandled exception in handler for {universalOpcode} ({packet.GetOpcode()}) " +
+            $"[conn={_connectType} account='{account}' size={size}]{Environment.NewLine}" +
+            $"head={hex}{Environment.NewLine}{e}");
     }
 
     private void SendPacketToServer(WorldPacket packet, Opcode delayUntilOpcode = Opcode.MSG_NULL_ACTION)
@@ -384,13 +517,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         if (!IsOpen())
         {
             Log.PrintNet(LogType.Error, LogNetDir.P2C, $"Can't send {packet.GetUniversalOpcode()}, socket is closed!");
-            if (GetSession() != null)
+            var session = GetSession();
+            if (session != null)
             {
-                if (GetSession().RealmSocket == this)
-                    GetSession().RealmSocket = null!;
-                else if (GetSession().InstanceSocket == this)
-                    GetSession().InstanceSocket = null!;
-                GetSession().OnDisconnect();
+                if (session.RealmSocket == this)
+                    session.RealmSocket = null!;
+                else if (session.InstanceSocket == this)
+                    session.InstanceSocket = null!;
             }
             return;
         }
@@ -405,46 +538,95 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             Opcode universalOpcode = packet.GetUniversalOpcode();
             ushort opcode = (ushort)packet.GetOpcode();
 
-            WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
+            if (NoisyOpcodes.IsNoisy(universalOpcode))
+                WorldSocketLogMessages.PacketSentNoisy(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
+            else
+                WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
 
-            ByteBuffer buffer = new();
+            // [ActionBarTrace] Append to ring buffer + verbose Trace inside the
+            // active watch window. Ring buffer is capped — drop the oldest entry
+            // when full so the dump on CMSG_LOG_DISCONNECT shows just the most
+            // recent activity. Hex preview captures the leading bytes of each
+            // packet body so reason=7 dumps reveal *what* (not just which opcode)
+            // was sent — needed when we don't have a known-good wire-format
+            // reference to compare against.
+            long nowTicksUtc = DateTime.UtcNow.Ticks;
+            int hexBytes = Math.Min(data.Length, RecentSentHexPreviewBytes);
+            int slot = _recentSentHead;
+            ref SentPacketRecord record = ref _recentSent[slot];
+            record.TimestampTicksUtc = nowTicksUtc;
+            record.UniversalOpcode = universalOpcode;
+            record.RawOpcode = opcode;
+            record.Size = data.Length;
+            record.PreviewLength = (byte)hexBytes;
+            if (hexBytes > 0)
+                data.AsSpan(0, hexBytes).CopyTo(_recentSentPreview.AsSpan(slot * RecentSentHexPreviewBytes, hexBytes));
+
+            _recentSentHead = (_recentSentHead + 1) % RecentSentCap;
+            if (_recentSentCount < RecentSentCap)
+                _recentSentCount++;
+
+            if (nowTicksUtc < _actionButtonWatchUntilTicks)
+                Log.Print(LogType.Trace, $"[ActionBarTrace] inWatchWindow → {FormatRecentSent(slot)}");
+
+            // Trace-level enrichment for the modern V3_4_3 SMSG_UPDATE_OBJECT envelope.
+            // Layout: u32 NumObjUpdates, u16 MapID, then per-update body. Read the first
+            // 6 bytes directly from the encoded buffer to surface count/map without re-
+            // parsing — useful for diagnosing loading-screen / world-entry desync.
+            if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT && data.Length >= 6)
+            {
+                uint numObjUpdates = (uint)(data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24));
+                ushort mapId = (ushort)(data[4] | (data[5] << 8));
+                Log.Print(LogType.Trace,
+                    $"[UpdateObjectTrace][C<P] SMSG_UPDATE_OBJECT bytes={data.Length} NumObjUpdates={numObjUpdates} MapID={mapId}");
+            }
 
             int packetSize = data.Length;
-            if (packetSize > 0x400 && _worldCrypt.IsInitialized)
+            // V3_4_3 has no SMSG_COMPRESSED_PACKET opcode mapping (only
+            // SMSG_COMPRESSED_UPDATE_OBJECT exists), so wrapping a >1KB packet via
+            // SMSG_COMPRESSED_PACKET produces an opcode-zero packet the client silently
+            // drops. Skip per-packet compression for V3_4_3; let the raw packet go out.
+            // Confirmed via WoW's own Hotfix.log: 14KB SMSG_AVAILABLE_HOTFIXES never
+            // resulted in a "ClientAvailableHotfixes" log entry while a smaller (<1KB)
+            // count=0 version of the same opcode always logged it.
+            ushort compressedOpcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
+            if (packetSize > 0x400 && _worldCrypt.IsInitialized && compressedOpcode != 0)
             {
-                buffer.WriteInt32(packetSize + 2);
+                using ByteBuffer compressed = new();
+                compressed.WriteInt32(packetSize + 2);
                 Span<byte> opcodeBytes = stackalloc byte[2];
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
-                buffer.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
+                compressed.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
 
                 byte[] compressedData;
                 uint compressedSize = CompressPacket(data, opcode, out compressedData);
-                buffer.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
-                buffer.WriteBytes(compressedData, compressedSize);
+                compressed.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
+                compressed.WriteBytes(compressedData, compressedSize);
 
                 packetSize = (int)(compressedSize + 12);
-                opcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
-                System.Diagnostics.Trace.Assert(opcode != 0);
+                opcode = compressedOpcode;
 
-                data = buffer.GetData();
+                data = compressed.GetData();
             }
 
-            buffer = new ByteBuffer();
-            buffer.WriteUInt16(opcode);
-            buffer.WriteBytes(data);
-            packetSize += 2 /*opcode*/;
+            using (ByteBuffer body = new())
+            {
+                body.WriteUInt16(opcode);
+                body.WriteBytes(data);
+                packetSize += 2 /*opcode*/;
 
-            data = buffer.GetData();
+                data = body.GetData();
+            }
 
             PacketHeader header = new();
             header.Size = packetSize;
             _worldCrypt.Encrypt(data, header.Tag);
 
-            ByteBuffer byteBuffer = new();
-            header.Write(byteBuffer);
-            byteBuffer.WriteBytes(data);
+            using ByteBuffer framed = new();
+            header.Write(framed);
+            framed.WriteBytes(data);
 
-            AsyncWrite(byteBuffer.GetData());
+            AsyncWrite(framed.GetData());
         }
     }
 
@@ -494,7 +676,19 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     void HandleAuthSession(AuthSession authSession)
     {
-        _globalSession = BnetSessionTicketStorage.SessionsByName[authSession.RealmJoinTicket];
+        // A stale or replayed realm-join ticket (client retry after a proxy restart, say)
+        // must not take the process down with a KeyNotFoundException. This runs outside
+        // HandlePacket's guard, straight off the socket completion callback.
+        if (!BnetSessionTicketStorage.SessionsByName.TryGetValue(authSession.RealmJoinTicket, out var session))
+        {
+            Log.Print(LogType.Error,
+                $"WorldSocket.HandleAuthSession: No BNet session for realm join ticket '{authSession.RealmJoinTicket}' from {GetRemoteIpAddress()}. Closing socket.");
+            SendAuthResponseError(BattlenetRpcErrorCode.Denied);
+            CloseSocket();
+            return;
+        }
+
+        _globalSession = session;
         _bnetRpc = new BnetServices.ServiceManager("WorldSocket", this, _globalSession);
         HandleAuthSessionCallback(authSession);
     }
@@ -642,7 +836,17 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         ConnectToKey key = new();
         _key = key.Raw = authSession.Key;
 
-        _globalSession = BnetSessionTicketStorage.SessionsByKey[_key];
+        if (!BnetSessionTicketStorage.SessionsByKey.TryGetValue(_key, out var session))
+        {
+            Log.Print(LogType.Error,
+                $"WorldSocket.HandleAuthContinuedSession: No BNet session for instance connect key 0x{_key:X16} from {GetRemoteIpAddress()}. Closing socket.");
+            SendAuthResponseError(BattlenetRpcErrorCode.Denied);
+            CloseSocket();
+            return;
+        }
+
+        _globalSession = session;
+        Log.Print(LogType.Server, $"[Login] instance socket authenticated for account '{GetSession().Username}', key=0x{_key:X16}");
 
         uint accountId = key.AccountId;
         string login = GetSession().AccountInfo.Login;
@@ -753,7 +957,15 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         _worldCrypt.Initialize(_encryptKey);
         if (_connectType == ConnectionType.Realm)
         {
-            SendAuthResponse(BattlenetRpcErrorCode.Ok, GetSession().WorldClient!.GetQueuePosition());
+            var worldClient = GetSession().WorldClient;
+            if (worldClient == null)
+            {
+                Log.Print(LogType.Error, "HandleEnterEncryptedModeAck: WorldClient is gone, aborting realm login");
+                CloseSocket();
+                return;
+            }
+
+            SendAuthResponse(BattlenetRpcErrorCode.Ok, worldClient.GetQueuePosition());
             SendSetTimeZoneInformation();
             SendFeatureSystemStatusGlueScreen();
             SendClientCacheVersion(0);
@@ -908,6 +1120,18 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 race.Classes.Add(new ClassAvailability(8, 0, 0));
                 race.Classes.Add(new ClassAvailability(7, 0, 0));
                 availableRaces.Add(race);
+            }
+
+            // Death Knight is gated by SMSG_AUTH_RESPONSE.AvailableClasses, NOT by
+            // EnumCharactersResult — the V3_4_3 create-character UI only offers classes
+            // listed here. Per CypherCore parse, DK appears under every WotLK race with
+            // ActiveExpansionLevel=2, AccountExpansionLevel=0, MinActiveExpansionLevel=2.
+            // The level-55-on-account requirement is enforced separately via
+            // EnumCharactersResult.MaxCharacterLevel (already populated correctly).
+            if (ModernVersion.ExpansionVersion >= 3 && LegacyVersion.ExpansionVersion >= 3)
+            {
+                foreach (var r in availableRaces)
+                    r.Classes.Add(new ClassAvailability(6, 2, 0) { MinActiveExpansionLevel = 2 });
             }
 
             response.SuccessInfo.AvailableClasses = availableRaces;
@@ -1067,13 +1291,21 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         AvailableHotfixes hotfixes = new AvailableHotfixes();
         hotfixes.VirtualRealmAddress = GetSession().RealmId.GetAddress();
-        // V3_4_3 ships ~700k real WotLK hotfix records; enumerating them all in
-        // SMSG_AVAILABLE_HOTFIXES yields a multi-MB packet that stalls the client
-        // at the glue-screen loading bar (character preview never renders). Suppress
-        // the record list and let the client lazy-fetch via CMSG_DB_QUERY_BULK /
-        // CMSG_HOTFIX_REQUEST — both paths return real data via HotfixHandler.
+        // V3_4_3: advertise only tables where we actually override the client's own data.
+        // Hotfixes are an override channel — a record identical to the baked-in DB2 costs a
+        // round trip and changes nothing.
+        //
+        // ChrCustomizationChoice (1064 rows) and ChrCustomizationOption (190) used to be
+        // advertised here. Both were verified byte-identical to the client's 3.4.3.54261
+        // DB2s (1064/1064 and 190/190, zero differing, zero new), i.e. 1254 wasted records
+        // per login. Neither store is read anywhere else in the proxy.
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
-            hotfixes.IncludeRecords = false;
+        {
+            hotfixes.TableFilter = new HashSet<DB2Hash>
+            {
+                DB2Hash.AreaTrigger,
+            };
+        }
         SendPacket(hotfixes);
     }
 
@@ -1098,7 +1330,15 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     public void SendAccountDataTimes()
     {
-        System.Diagnostics.Trace.Assert(_connectType == ConnectionType.Realm);
+        // Was a Trace.Assert. Account data belongs on the realm socket; if this ever runs
+        // on the instance socket the packet would go to the wrong connection, but that is
+        // still not worth aborting the process from a socket callback.
+        if (_connectType != ConnectionType.Realm)
+        {
+            Log.Print(LogType.Error,
+                $"SendAccountDataTimes called on a {_connectType} socket, expected {ConnectionType.Realm}. Skipping.");
+            return;
+        }
 
         WowGuid128 guid = GetSession().GameState.CurrentPlayerGuid;
         GetSession().AccountDataMgr.LoadAllData(guid);
@@ -1112,7 +1352,41 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         for (int i = 0; i < count; i++)
             accountData.AccountTimes[i] = GetSession().AccountDataMgr.Data[i] != null ? GetSession().AccountDataMgr.Data[i].Timestamp : 0;
 
+        // Do NOT bump the type-0 timestamp to force a re-request. That was added to
+        // deliver synthesised bottomLeftActionBar / rightActionBar CVars, but this
+        // client never uses them — the type-0 blob it uploads contains
+        // alwaysShowActionBars and lockActionBars and none of those four. Forcing a
+        // re-fetch makes the client drop its local cache and apply the config blob
+        // late, after the action bars have already been built, which leaves
+        // "Always Show Action Bars" ticked but not applied until it is re-toggled.
+        // The setting round-trips on its own: the blob carries it, and the login
+        // CreateObject already carries MultiActionBars (bit 0x10 = alwaysShow).
+
+        // [ActionBarTrace] Show which slots have a non-zero timestamp — those tell
+        // the client "I have data for this AccountDataType, ask me for it".
+        var nonZero = new System.Text.StringBuilder();
+        for (int i = 0; i < count; i++)
+        {
+            if (accountData.AccountTimes[i] != 0)
+            {
+                if (nonZero.Length > 0) nonZero.Append(", ");
+                nonZero.Append($"{i}({(AccountDataType)i})={accountData.AccountTimes[i]}");
+            }
+        }
+        Log.Print(LogType.Trace,
+            $"[ActionBarTrace] SendAccountDataTimes guid={guid} count={count} nonZeroSlots=[{(nonZero.Length == 0 ? "<all zero>" : nonZero.ToString())}]");
+
         SendPacket(accountData);
+
+        // Note: do NOT push any unsolicited SMSG_UPDATE_ACCOUNT_DATA from here.
+        // - Phase 3 tried pushing every populated slot (1/2/4/7) and regressed
+        //   the V3_4_3 client (CMSG_LOG_DISCONNECT reason=7 after combat).
+        // - Phase 4/6 tried pushing only synthesised type-0 CVars and the
+        //   client's own CMSG_REQUEST_ACCOUNT_DATA(type=0) response then
+        //   overwrote our push (the request response wins).
+        // Phase 7 moved the action-bar CVar synthesis into the request-response
+        // path (ClientConfigHandler.HandleRequestAccountData type=0). See that
+        // handler for the V3_4_3 augmentation.
     }
 
     public void SendRpcMessage(uint serviceId, OriginalHash service, uint methodId, uint token, BattlenetRpcErrorCode status, IMessage? message)

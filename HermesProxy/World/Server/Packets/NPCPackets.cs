@@ -19,6 +19,8 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -46,6 +48,20 @@ public class GossipMessagePkt : ServerPacket
 
     public override void Write()
     {
+        // V3_4_3 (WotLK Classic) uses a distinct on-the-wire shape: TextID is at
+        // the END of the packet (not after FriendshipFactionID), per-option fields
+        // include a duplicated OptionIndex + an extra reserved Int32 + an extra
+        // trailing bit, and there are two leading bits before the options array.
+        // Without this, the V3_4_3 client mis-parses the bit cascade and the quest
+        // list reads `ConditionalQuestText` as garbage → 5 TB allocation OOM
+        // (observed crash: ?AUConditionalQuestText@@, line -6). Layout mirrors
+        // HermesProxy-WOTLK's GossipMessagePkt.WriteWotLK exactly.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            WriteWotLK();
+            return;
+        }
+
         _worldPacket.WritePackedGuid128(GossipGUID);
         _worldPacket.WriteInt32(GossipID);
         _worldPacket.WriteInt32(FriendshipFactionID);
@@ -80,6 +96,48 @@ public class GossipMessagePkt : ServerPacket
 
         foreach (ClientGossipQuest text in GossipQuests)
             text.Write(_worldPacket);
+    }
+
+    private void WriteWotLK()
+    {
+        _worldPacket.WritePackedGuid128(GossipGUID);
+        _worldPacket.WriteInt32(GossipID);
+        _worldPacket.WriteInt32(FriendshipFactionID);
+        _worldPacket.WriteUInt32((uint)GossipOptions.Count);
+        _worldPacket.WriteUInt32((uint)GossipQuests.Count);
+        _worldPacket.WriteBit(true);
+        _worldPacket.WriteBit(false);
+        _worldPacket.FlushBits();
+
+        foreach (ClientGossipOption options in GossipOptions)
+        {
+            _worldPacket.WriteInt32(options.OptionIndex);
+            _worldPacket.WriteUInt8(options.OptionIcon);
+            _worldPacket.WriteInt8((sbyte)options.OptionFlags);
+            _worldPacket.WriteInt32(options.OptionCost);
+            _worldPacket.WriteUInt32(options.Language);
+            _worldPacket.WriteInt32(0);
+            _worldPacket.WriteInt32(options.OptionIndex);
+            _worldPacket.WriteBits(options.Text.GetByteCount(), 12);
+            _worldPacket.WriteBits(options.Confirm.GetByteCount(), 12);
+            _worldPacket.WriteBits((byte)options.Status, 2);
+            _worldPacket.WriteBit(options.SpellID.HasValue);
+            _worldPacket.WriteBit(false);
+            _worldPacket.FlushBits();
+
+            options.Treasure.Write(_worldPacket);
+
+            _worldPacket.WriteString(options.Text);
+            _worldPacket.WriteString(options.Confirm);
+
+            if (options.SpellID.HasValue)
+                _worldPacket.WriteInt32(options.SpellID.Value);
+        }
+
+        _worldPacket.WriteInt32(TextID);
+
+        foreach (ClientGossipQuest quest in GossipQuests)
+            quest.WriteWotLK(_worldPacket);
     }
 
     public List<ClientGossipOption> GossipOptions = new();
@@ -158,6 +216,26 @@ public class ClientGossipQuest
 
         data.WriteString(QuestTitle);
     }
+
+    // V3_4_3.54261 wire layout (WPP V3_4_0 ReadGossipQuestTextData range
+    // V3_4_3_51505 → V3_4_4_59817). Two bits before the bits9 title length:
+    // Repeatable and Important. Newer V3_4_4+ adds Unused1102, QuestFlags[2],
+    // ResetByScheduler/Meta — those are NOT present in build 54261.
+    public void WriteWotLK(WorldPacket data)
+    {
+        data.WriteInt32((int)QuestID);
+        data.WriteInt32((int)ContentTuningID);
+        data.WriteInt32(QuestType);
+        data.WriteInt32(QuestLevel);
+        data.WriteInt32(QuestMaxLevel);     // QuestMaxScalingLevel
+        data.WriteInt32((int)QuestFlags);
+        data.WriteInt32((int)QuestFlagsEx);
+        data.WriteBit(Repeatable);
+        data.WriteBit(false);               // Important
+        data.WriteBits(QuestTitle.GetByteCount(), 9);
+        data.FlushBits();
+        data.WriteString(QuestTitle);
+    }
 }
 
 public class GossipSelectOption : ClientPacket
@@ -186,7 +264,8 @@ public class GossipComplete : ServerPacket, ISpanWritable
 
     public override void Write()
     {
-        if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            || ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
         {
             _worldPacket.WriteBit(SuppressSound);
             _worldPacket.FlushBits();
@@ -199,7 +278,8 @@ public class GossipComplete : ServerPacket, ISpanWritable
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
-        if (ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            || ModernVersion.AddedInVersion(9, 2, 0, 1, 14, 2, 2, 5, 3))
         {
             writer.WriteBit(SuppressSound);
             writer.FlushBits();
@@ -216,15 +296,32 @@ public class BinderConfirm : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 wire-opcode 10378 is SMSG_NPC_INTERACTION_OPEN_RESULT
+        // (Guid + Int32 InteractionType + bit Success). Same shape as
+        // ShowBank / SpiritHealerConfirm. WPP V3_4_3_51666 has no
+        // SMSG_BINDER_CONFIRM; type Binder (20) opens the innkeeper dialog.
         _worldPacket.WritePackedGuid128(Guid);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteInt32((int)PlayerInteractionType.Binder);
+            _worldPacket.WriteBit(true);
+            _worldPacket.FlushBits();
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size
+        + (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 5 : 0);
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(Guid.Low, Guid.High);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteInt32((int)PlayerInteractionType.Binder);
+            writer.WriteBit(true);
+            writer.FlushBits();
+        }
         return writer.Position;
     }
 
@@ -237,12 +334,26 @@ public class VendorInventory : ServerPacket
 
     public override void Write()
     {
+        Log.Print(LogType.Trace,
+            $"[VendorTrace] SMSG_VENDOR_INVENTORY write: VendorGUID={VendorGUID} " +
+            $"Reason={Reason} Items.Count={Items.Count} layoutPath={(ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? "WotLK" : "Vanilla")}");
+
         _worldPacket.WritePackedGuid128(VendorGUID);
         _worldPacket.WriteUInt8(Reason);
         _worldPacket.WriteInt32(Items.Count);
 
-        foreach (VendorItem item in Items)
+        for (int i = 0; i < Items.Count; i++)
+        {
+            VendorItem item = Items[i];
+            if (i < 3 || i == Items.Count - 1)
+            {
+                Log.Print(LogType.Trace,
+                    $"[VendorTrace] item[{i}]: Slot={item.Slot} ItemID={item.Item.ItemID} MuID={item.MuID} " +
+                    $"Type={item.Type} Quantity={item.Quantity} Price={item.Price} StackCount={item.StackCount} " +
+                    $"ExtCost={item.ExtendedCostID} Durability={item.Durability}");
+            }
             item.Write(_worldPacket);
+        }
     }
 
     public byte Reason = 0;
@@ -254,6 +365,16 @@ public class VendorItem
 {
     public void Write(WorldPacket data)
     {
+        // V3_4_3 reorders the vendor item record and inserts a MuID slot index.
+        // Without this layout the client mis-parses the field stream and the
+        // vendor window renders empty / corrupted. Layout mirrors
+        // HermesProxy-WOTLK Server/Packets/VendorItem.cs:WriteWotLK exactly.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            WriteWotLK(data);
+            return;
+        }
+
         data.WriteInt32(Slot);
         data.WriteInt32(Type);
         data.WriteInt32(Quantity);
@@ -268,6 +389,23 @@ public class VendorItem
         data.FlushBits();
     }
 
+    private void WriteWotLK(WorldPacket data)
+    {
+        data.WriteUInt64(Price);
+        data.WriteUInt32(MuID);
+        data.WriteInt32(Type);
+        data.WriteInt32(Durability);
+        data.WriteInt32((int)StackCount);
+        data.WriteInt32(Quantity);
+        data.WriteInt32(ExtendedCostID);
+        data.WriteInt32(PlayerConditionFailed);
+        data.WriteBit(false);
+        data.WriteBit(DoNotFilterOnVendor);
+        data.WriteBit(Refundable);
+        data.FlushBits();
+        Item.Write(data);
+    }
+
     public int Slot;
     public int Type = 1;
     public ItemInstance Item = new();
@@ -279,6 +417,7 @@ public class VendorItem
     public int PlayerConditionFailed;
     public bool DoNotFilterOnVendor;
     public bool Refundable;
+    public uint MuID;
 }
 
 public class ShowBank : ServerPacket, ISpanWritable
@@ -287,15 +426,31 @@ public class ShowBank : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 wire-opcode 10378 is actually SMSG_NPC_INTERACTION_OPEN_RESULT
+        // (Guid + Int32 InteractionType + bit Success). Without the type+success
+        // tail the client reads InteractionType=None and the bank UI never opens.
         _worldPacket.WritePackedGuid128(Guid);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteInt32((int)PlayerInteractionType.Banker);
+            _worldPacket.WriteBit(true);
+            _worldPacket.FlushBits();
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size
+        + (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 5 : 0);
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(Guid.Low, Guid.High);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteInt32((int)PlayerInteractionType.Banker);
+            writer.WriteBit(true);
+            writer.FlushBits();
+        }
         return writer.Position;
     }
 
@@ -491,6 +646,25 @@ class GossipPOI : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 client uses a flat layout: Flags is a full uint32 in field position 2,
+        // not a 14-bit field at the end (retail layout). Mismatch shifts the whole packet
+        // and the client silently drops the POI. Matches TC 3.4.3 GossipPOI::Write.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteUInt32(Id);
+            _worldPacket.WriteUInt32(Flags);
+            _worldPacket.WriteFloat(Pos.X);
+            _worldPacket.WriteFloat(Pos.Y);
+            _worldPacket.WriteFloat(Pos.Z);
+            _worldPacket.WriteUInt32(Icon);
+            _worldPacket.WriteUInt32(Importance);
+            _worldPacket.WriteUInt32(Unknown905);
+            _worldPacket.WriteBits(Name.GetByteCount(), 6);
+            _worldPacket.FlushBits();
+            _worldPacket.WriteString(Name);
+            return;
+        }
+
         _worldPacket.WriteUInt32(Id);
         _worldPacket.WriteFloat(Pos.X);
         _worldPacket.WriteFloat(Pos.Y);
@@ -506,8 +680,8 @@ class GossipPOI : ServerPacket, ISpanWritable
 
     // Cap for POI name - limited by 6 bits = 64 bytes max
     private const int MaxNameBytes = 64;
-    // 4 uint(16) + 3 floats(12) + 3 bytes for bits + name
-    public int MaxSize => 16 + 12 + 3 + MaxNameBytes;
+    // Worst case (V3_4_3 flat layout): 8 uint(32) + 1 byte for flushed 6-bit name length + name
+    public int MaxSize => 32 + 1 + MaxNameBytes;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -516,6 +690,24 @@ class GossipPOI : ServerPacket, ISpanWritable
             return -1;
 
         var writer = new SpanPacketWriter(buffer);
+
+        // See Write() — V3_4_3 emits Flags as a full uint32 in position 2 (flat layout).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteUInt32(Id);
+            writer.WriteUInt32(Flags);
+            writer.WriteFloat(Pos.X);
+            writer.WriteFloat(Pos.Y);
+            writer.WriteFloat(Pos.Z);
+            writer.WriteUInt32(Icon);
+            writer.WriteUInt32(Importance);
+            writer.WriteUInt32(Unknown905);
+            writer.WriteBits((uint)nameBytes, 6);
+            writer.FlushBits();
+            writer.WriteString(Name);
+            return writer.Position;
+        }
+
         writer.WriteUInt32(Id);
         writer.WriteFloat(Pos.X);
         writer.WriteFloat(Pos.Y);
@@ -545,15 +737,33 @@ public class SpiritHealerConfirm : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 reuses wire opcode 10378 (SMSG_NPC_INTERACTION_OPEN_RESULT):
+        // Guid + Int32 InteractionType + bit Success. Without the type=SpiritHealer
+        // + success tail the client reads InteractionType=None and never shows the
+        // "resurrect with sickness" confirm dialog, so legacy res-via-gossip silently
+        // dies (the confirm previously translated to MSG_NULL_ACTION and was dropped).
         _worldPacket.WritePackedGuid128(Guid);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteInt32((int)PlayerInteractionType.SpiritHealer);
+            _worldPacket.WriteBit(true);
+            _worldPacket.FlushBits();
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size
+        + (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 5 : 0);
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(Guid.Low, Guid.High);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteInt32((int)PlayerInteractionType.SpiritHealer);
+            writer.WriteBit(true);
+            writer.FlushBits();
+        }
         return writer.Position;
     }
 

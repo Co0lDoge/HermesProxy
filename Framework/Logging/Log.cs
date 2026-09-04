@@ -49,6 +49,12 @@ public static class Log
     public const string CategoryStorage = "Storage";
     public const string CategoryPacket = "Packet";
 
+    // Per-process session token (yyyyMMdd_HHmmss of process start). Embedded in the rolling
+    // log filename (`hermes-<StartupStamp>.log`) and reused by SniffFile so that .pkt captures
+    // share the same token as the log file — enables exact-match correlation between
+    // hermes-*.log and PacketsLog/*.pkt instead of fuzzy unix-time proximity matching.
+    public static readonly string StartupStamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
     // Console template uses the ANSI-pre-colored category letter so each category keeps its own color
     // (Server=Blue, Network=Green, Storage=Cyan, Packet=Magenta). The level letter is colored by the
     // custom theme below. The message text stays the terminal's default color.
@@ -185,11 +191,15 @@ public static class Log
                     {
                         // If the directory can't be created we still want console logging to work.
                     }
+                    // Each application start gets its own log file (hermes-<yyyyMMdd_HHmmss>.log)
+                    // so successive runs don't append into a shared daily file. RollingInterval is
+                    // Infinite because the timestamp in the filename already gives us per-run
+                    // separation; retainedFileCountLimit caps disk usage at the latest 30 runs.
                     // File sink has no additional filter — it captures whatever passes the
                     // per-category switches, which is typically the more verbose view.
                     a.File(
-                        path: Path.Combine(directory, "hermes-.log"),
-                        rollingInterval: RollingInterval.Day,
+                        path: Path.Combine(directory, $"hermes-{StartupStamp}.log"),
+                        rollingInterval: RollingInterval.Infinite,
                         retainedFileCountLimit: 30,
                         outputTemplate: FileOutputTemplate,
                         shared: false);
@@ -349,6 +359,41 @@ public static class Log
         [CallerFilePath] string path = "")
     {
         Print(LogType.Error, err.ToString(), method, path);
+    }
+
+    /// <summary>
+    /// Cheap caller-side gate to skip building log payloads (string interpolation, hex dumps,
+    /// expensive ToString()s) when the corresponding sink minimum level filters the line out.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsEnabled(LogType type, [CallerFilePath] string path = "")
+    {
+        var (logger, level) = Route(type, path);
+        return logger.IsEnabled(level);
+    }
+
+    /// <summary>
+    /// Inlinable fast-path gate for verbose Trace sites. Equivalent to
+    /// <c>IsEnabled(LogType.Trace)</c> but avoids the <c>[CallerFilePath]</c>
+    /// allocation and the <c>Route()</c> switch — collapses to two
+    /// <see cref="LoggingLevelSwitch.MinimumLevel"/> field reads + two int compares,
+    /// so the JIT can fully inline the gate at call sites. Reads both the global
+    /// and Server switches because Serilog enforces both filters; auto-tracks any
+    /// runtime level change via <see cref="Configure"/>.
+    /// </summary>
+    public static bool IsTraceEnabled
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _globalSwitch.MinimumLevel <= LogEventLevel.Verbose
+            && _serverSwitch.MinimumLevel <= LogEventLevel.Verbose;
+    }
+
+    /// <summary>Same shape as <see cref="IsTraceEnabled"/> for Debug-level sites.</summary>
+    public static bool IsDebugEnabled
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _globalSwitch.MinimumLevel <= LogEventLevel.Debug
+            && _serverSwitch.MinimumLevel <= LogEventLevel.Debug;
     }
 
     private static (ILogger logger, LogEventLevel level) Route(LogType type, string path)

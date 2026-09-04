@@ -52,6 +52,7 @@ public partial class WorldClient
 
     Socket _clientSocket = null!;
     bool? _isSuccessful;
+    bool _closing;
     uint _queuePosition;
     string _username = null!;
     Realm _realm = null!;
@@ -78,6 +79,41 @@ public partial class WorldClient
     }
 
     public GlobalSessionData Session => _globalSession;
+
+    // Writes a legacy packet to the per-session legacy .pkt sniff (the cMangos↔HermesProxy stream).
+    // SMSG (isFromClient=false) bodies have no opcode prefix — pass through directly. CMSG
+    // (isFromClient=true) bodies also have no prefix in our WorldPacket abstraction, but
+    // SniffFile.WritePacket expects a 2-byte prefix to strip on the client path; we prepend two
+    // zero bytes so it strips them and writes the original body intact.
+    private void WriteLegacySniff(WorldPacket packet, bool isFromClient)
+    {
+        var session = _globalSession;
+        if (session == null)
+            return;
+
+        var sniff = session.LegacySniff;
+        if (sniff == null)
+        {
+            sniff = new SniffFile("legacy", (ushort)LegacyVersion.Build);
+            sniff.WriteHeader();
+            session.LegacySniff = sniff;
+            Log.Print(LogType.Trace, $"Opened legacy sniff file: {sniff.FilePath}");
+        }
+
+        ReadOnlySpan<byte> body = packet.GetData();
+        uint opcode = packet.GetOpcode();
+
+        if (isFromClient)
+        {
+            byte[] prefixed = new byte[body.Length + 2];
+            body.CopyTo(prefixed.AsSpan(2));
+            sniff.WritePacket(opcode, true, prefixed);
+        }
+        else
+        {
+            sniff.WritePacket(opcode, false, body);
+        }
+    }
 
     public bool ConnectToWorldServer(Realm realm, GlobalSessionData globalSession)
     {
@@ -141,16 +177,21 @@ public partial class WorldClient
 
     public void Disconnect()
     {
+        _closing = true;
         StopKeepAliveTimer();
+        StopReadyCheckDeadline();
+
+        // Unhook before closing so the receive loop does not treat this as an
+        // unexpected drop and call OnDisconnect (that nulls AuthClient, which
+        // change-realm still needs for the next CMSG_AUTH_SESSION).
+        if (GetSession().WorldClient == this)
+            GetSession().WorldClient = null;
 
         if (!IsConnected())
             return;
 
         _clientSocket.Shutdown(SocketShutdown.Both);
         _clientSocket.Disconnect(false);
-
-        if (GetSession().WorldClient == this)
-            GetSession().WorldClient = null;
     }
 
     public bool IsConnected()
@@ -208,7 +249,7 @@ public partial class WorldClient
         return true;
     }
 
-    private readonly byte[] _headerBuffer = new byte[LegacyServerPacketHeader.StructSize];
+    private readonly byte[] _headerBuffer = new byte[LegacyServerPacketHeader.LargeStructSize];
 
     private void HandleDisconnect(string reason)
     {
@@ -216,12 +257,14 @@ public partial class WorldClient
         if (_isSuccessful == null)
         {
             _isSuccessful = false;
+            return;
         }
-        else
-        {
-            Disconnect();
-            GetSession().OnDisconnect();
-        }
+
+        if (_closing || GetSession().WorldClient != this)
+            return;
+
+        Disconnect();
+        GetSession().OnDisconnect();
     }
 
     private async Task ReceiveLoop()
@@ -230,7 +273,9 @@ public partial class WorldClient
         {
             while (true)
             {
-                if (!await ReceiveBufferFully(_headerBuffer.AsMemory()))
+                // Explicit length: _headerBuffer is sized for the 5-byte large form, so an
+                // unbounded AsMemory() would read one byte too many on every ordinary packet.
+                if (!await ReceiveBufferFully(_headerBuffer.AsMemory(0, LegacyServerPacketHeader.StructSize)))
                 {
                     HandleDisconnect("header");
                     return;
@@ -239,32 +284,68 @@ public partial class WorldClient
                 if (_worldCrypt != null)
                     _worldCrypt.Decrypt(_headerBuffer.AsSpan(0, LegacyServerPacketHeader.StructSize));
 
+                // WotLK cores stretch the size field to 3 bytes for payloads over 0x7FFF and
+                // mark it with 0x80 on the first byte, so the header is 5 bytes rather than 4.
+                // The extra byte has to be pulled and decrypted in stream order: the crypt is
+                // an RC4 keystream, and skipping a byte desyncs every packet that follows, not
+                // just this one. Vanilla and TBC never set the marker (see LegacyServerPacketHeader),
+                // so leave their framing alone rather than trusting a stray high bit.
+                bool largeHeader = LegacyVersion.ExpansionVersion >= 3
+                                   && LegacyServerPacketHeader.IsLargePacket(_headerBuffer[0]);
+
+                if (largeHeader)
+                {
+                    if (!await ReceiveBufferFully(_headerBuffer.AsMemory(LegacyServerPacketHeader.StructSize, 1)))
+                    {
+                        HandleDisconnect("header");
+                        return;
+                    }
+
+                    if (_worldCrypt != null)
+                        _worldCrypt.DecryptLargeHeaderByte(_headerBuffer.AsSpan(LegacyServerPacketHeader.StructSize, 1));
+                }
+
                 LegacyServerPacketHeader header = new();
-                header.Read(_headerBuffer);
-                ushort packetSize = header.Size;
+                header.Read(_headerBuffer, largeHeader);
+                uint packetSize = header.Size;
+
+                if (largeHeader)
+                    WorldClientLogMessages.LargeHeaderReceived(_melLog, _sourceFile, _netDirRecv, packetSize, header.Opcode);
 
                 if (packetSize == 0)
                 {
                     continue;
                 }
 
+                // Size counts the 2-byte opcode. Anything smaller is a malformed frame, and
+                // feeding it to the copy below would rent a buffer and then read a negative
+                // length, so bail out instead of throwing deep inside the socket read.
+                if (packetSize < sizeof(ushort))
+                {
+                    WorldClientLogMessages.MalformedHeaderSize(_melLog, _sourceFile, _netDirRecv, packetSize, header.Opcode);
+                    HandleDisconnect("header");
+                    return;
+                }
+
                 // Rent a possibly-oversized buffer; WorldPacket(byte[], int length, isPooled:true)
                 // tracks the actual payload length and returns it to the pool on Dispose.
-                byte[] buffer = ArrayPool<byte>.Shared.Rent(packetSize);
+                byte[] buffer = ArrayPool<byte>.Shared.Rent((int)packetSize);
                 bool packetOwnsBuffer = false;
                 try
                 {
-                    // copy the opcode into the new buffer
-                    buffer[0] = _headerBuffer[2];
-                    buffer[1] = _headerBuffer[3];
+                    // copy the opcode into the new buffer. The wide header spends an extra
+                    // byte on the size, so the opcode sits one position further along.
+                    int opcodeOffset = largeHeader ? 3 : 2;
+                    buffer[0] = _headerBuffer[opcodeOffset];
+                    buffer[1] = _headerBuffer[opcodeOffset + 1];
 
-                    if (!await ReceiveBufferFully(buffer.AsMemory(2, packetSize - 2)))
+                    if (!await ReceiveBufferFully(buffer.AsMemory(2, (int)packetSize - 2)))
                     {
                         HandleDisconnect("payload");
                         return;
                     }
 
-                    using WorldPacket packet = new WorldPacket(buffer, packetSize, isPooled: true);
+                    using WorldPacket packet = new WorldPacket(buffer, (int)packetSize, isPooled: true);
                     packetOwnsBuffer = true;
                     packet.SetReceiveTime(Environment.TickCount);
                     HandlePacket(packet);
@@ -283,7 +364,7 @@ public partial class WorldClient
             WorldClientLogMessages.PacketReadError(_melLog, e, _sourceFile, _netDirRecv, e.Message);
             if (_isSuccessful == null)
                 _isSuccessful = false;
-            else
+            else if (!_closing && GetSession().WorldClient == this)
             {
                 Disconnect();
                 GetSession().OnDisconnect();
@@ -309,7 +390,13 @@ public partial class WorldClient
                 header.Opcode = packet.GetOpcode();
                 header.Write(buffer);
 
-                WorldClientLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, LegacyVersion.GetUniversalOpcode(header.Opcode), header.Opcode, header.Size);
+                Opcode universalSendOpcode = LegacyVersion.GetUniversalOpcode(header.Opcode);
+                if (NoisyOpcodes.IsNoisy(universalSendOpcode))
+                    WorldClientLogMessages.PacketSentNoisy(_melLog, _sourceFile, _netDirSend, universalSendOpcode, header.Opcode, header.Size);
+                else
+                    WorldClientLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalSendOpcode, header.Opcode, header.Size);
+
+                WriteLegacySniff(packet, isFromClient: true);
 
                 byte[] headerArray = buffer.GetData();
                 if (_worldCrypt != null)
@@ -357,17 +444,17 @@ public partial class WorldClient
         var pendingLock = gameState.PendingUninstancedPacketsLock;
         if (packet.GetConnection() == ConnectionType.Realm)
         {
-            // Legacy backends (CMaNGOS / TrinityCore 3.3.5a) emit early-session Realm packets
-            // (SMSG_TUTORIAL_FLAGS, SMSG_CACHE_VERSION, etc.) as soon as the legacy world auth
-            // handshake completes. But on the modern-client side, the BNet→Realm socket
-            // handoff is still in flight — RealmSocket is null for a brief window.
-            // Mirror the InstanceSocket pattern below: queue and flush in
-            // WorldSocket.HandleEnterEncryptedModeAck when RealmSocket is assigned.
-            if (GetSession().RealmSocket == null)
+            // First login: RealmSocket is null until ENTER_ENCRYPTED_MODE_ACK.
+            // Change-realm: it still points at the old closed socket. Treat a
+            // dead socket like null so TUTORIAL_FLAGS queues instead of landing
+            // on the old connection and calling OnDisconnect.
+            var realmSocket = GetSession().RealmSocket;
+            if (realmSocket == null || !realmSocket.IsOpen())
             {
                 lock (gameState.PendingRealmPacketsLock)
                 {
-                    if (GetSession().RealmSocket == null)
+                    realmSocket = GetSession().RealmSocket;
+                    if (realmSocket == null || !realmSocket.IsOpen())
                     {
                         gameState.PendingRealmPackets.Enqueue(packet);
                         Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Can't send opcode {packet.GetUniversalOpcode()} ({packet.GetOpcode()}) before RealmSocket ready! Queue");
@@ -376,7 +463,7 @@ public partial class WorldClient
                 }
             }
 
-            GetSession().RealmSocket.SendPacket(packet);
+            realmSocket.SendPacket(packet);
         }
         else
         {
@@ -395,11 +482,23 @@ public partial class WorldClient
                 }
             }
 
-            // block these packets until connected to instance
+            // Block these packets until connected to instance. Bounded: an unbounded spin
+            // here deadlocks the legacy read loop for the rest of the session if the client
+            // never completes the instance handshake (or if OnDisconnect clears the socket).
+            const int instanceWaitTimeoutMs = 30000;
+            int waitedMs = 0;
             while (GetSession().InstanceSocket == null)
             {
+                if (waitedMs >= instanceWaitTimeoutMs)
+                {
+                    Log.PrintNet(LogType.Error, LogNetDir.P2C,
+                        $"Gave up waiting {instanceWaitTimeoutMs}ms for the instance connection; dropping {packet.GetUniversalOpcode()} ({packet.GetOpcode()}).");
+                    return;
+                }
+
                 Log.PrintNet(LogType.Network, LogNetDir.P2C, $"Waiting to send {packet.GetUniversalOpcode()} ({packet.GetOpcode()}).");
                 System.Threading.Thread.Sleep(200);
+                waitedMs += 200;
             }
 
             var socket = GetSession().InstanceSocket;
@@ -471,15 +570,63 @@ public partial class WorldClient
     // 1.12 sending SMSG_WARDEN_DATA mid-auth (issue #62).
     private static bool IsIgnorableDuringHandshake(Opcode op)
     {
-        return op == Opcode.SMSG_WARDEN_DATA;
+        // SMSG_CACHE_VERSION is pushed unprompted right after connect by TC-derived cores
+        // (AzerothCore included); if it lands before SMSG_AUTH_RESPONSE it would otherwise
+        // flip _isSuccessful to false and abort an otherwise healthy handshake.
+        return op == Opcode.SMSG_WARDEN_DATA
+            || op == Opcode.SMSG_CACHE_VERSION;
     }
 
     private void HandlePacket(WorldPacket packet)
     {
         Opcode universalOpcode = packet.GetUniversalOpcode(false);
-        WorldClientLogMessages.PacketReceived(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+        if (NoisyOpcodes.IsNoisy(universalOpcode))
+            WorldClientLogMessages.PacketReceivedNoisy(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
+        else
+            WorldClientLogMessages.PacketReceived(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
 
-        long startTimestamp = HermesProxy.Server.MetricsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        WriteLegacySniff(packet, isFromClient: false);
+
+        // Trace-level enrichment for the legacy 3.3.5a SMSG_UPDATE_OBJECT envelope.
+        // Layout: u32 NumObjUpdates, [optional u8 hasTransport in 3.3.5a+], then per-update body.
+        // Peek bytes without advancing the read cursor — paired with the modern outgoing
+        // trace line, this lets us correlate "what came in" with "what went out".
+        if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT)
+        {
+            byte[] raw = packet.GetData();
+            uint numObjUpdates = raw.Length >= 4
+                ? (uint)(raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24))
+                : 0u;
+            byte hasTransport = raw.Length >= 5 ? raw[4] : (byte)0;
+            int hexLen = System.Math.Min(48, raw.Length);
+            string hex = System.BitConverter.ToString(raw, 0, hexLen);
+            // First per-object byte (offset 5) is UpdateTypeLegacy (0=Values, 1=Movement,
+            // 2=CreateObject1, 3=CreateObject2, 4=NearObjects, 5=FarObjects). Decode for
+            // quick eyeballing of the burst type.
+            string firstUpdateType = "n/a";
+            if (raw.Length > 5)
+            {
+                byte t = raw[5];
+                firstUpdateType = t switch
+                {
+                    0 => "Values",
+                    1 => "Movement",
+                    2 => "CreateObject1",
+                    3 => "CreateObject2",
+                    4 => "NearObjects",
+                    5 => "FarObjects",
+                    _ => $"Unknown({t})"
+                };
+            }
+            Log.Print(LogType.Trace,
+                $"[UpdateObjectTrace][C P<S] SMSG_UPDATE_OBJECT rawBytes={raw.Length} numObjUpdates={numObjUpdates} hasTransport={hasTransport} firstUpdateType={firstUpdateType} headHex={hex}");
+        }
+
+        // The dispatch below is synchronous, so the per-thread allocation counter brackets
+        // exactly this packet's parse + translate + send even though ReceiveLoop is async.
+        bool metricsEnabled = HermesProxy.Server.MetricsEnabled;
+        long startTimestamp = metricsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        long allocBefore = metricsEnabled ? GC.GetAllocatedBytesForCurrentThread() : 0;
 
         switch (universalOpcode)
         {
@@ -494,7 +641,35 @@ public partial class WorldClient
             default:
                 if (_packetHandlers.TryGetValue(universalOpcode, out var handler))
                 {
-                    handler(packet);
+                    // A throwing legacy handler used to escape into the read loop's catch,
+                    // which tears down the world connection (and previously the process).
+                    // The packet is already fully read off the socket, so dropping it here
+                    // cannot desync the stream, so keep the session alive instead.
+                    try
+                    {
+                        handler(packet);
+                    }
+                    catch (UnmappedOpcodeException unmapped)
+                    {
+                        Log.Print(LogType.Warn,
+                            $"C P<S | Handling {universalOpcode} ({packet.GetOpcode()}): {unmapped.Message}");
+                    }
+                    catch (Exception handlerException)
+                    {
+                        // Dump the whole packet, not a prefix. A parser that over-reads is
+                        // usually wrong about a field well past the first few bytes, and this
+                        // only fires on an exception so the volume is irrelevant.
+                        // GetSize is the real payload length; GetData can hand back a larger
+                        // ArrayPool rental, and reporting that length makes an over-read look
+                        // like it had spare bytes to read.
+                        byte[] raw = packet.GetData();
+                        int size = (int)packet.GetSize();
+                        int hexLen = System.Math.Min(1024, System.Math.Min(size, raw.Length));
+                        string body = hexLen > 0 ? System.BitConverter.ToString(raw, 0, hexLen) : "<empty>";
+                        Log.Print(LogType.Error,
+                            $"C P<S | Unhandled exception in handler for {universalOpcode} ({packet.GetOpcode()}) " +
+                            $"[size={size} dumped={hexLen}]{System.Environment.NewLine}bytes={body}{System.Environment.NewLine}{handlerException}");
+                    }
                 }
                 else
                 {
@@ -505,9 +680,10 @@ public partial class WorldClient
                 break;
         }
 
-        if (HermesProxy.Server.MetricsEnabled)
+        if (metricsEnabled)
         {
-            HermesProxy.Server.Metrics.RecordServerToClientLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+            HermesProxy.Server.Metrics.RecordServerToClient(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds, allocated);
         }
 
         SendDelayedPacketsToServerOnOpcode(universalOpcode);
@@ -539,6 +715,13 @@ public partial class WorldClient
     public void SendAuthResponse(uint clientSeed, uint serverSeed)
     {
         uint zero = 0;
+        var authClient = GetSession().AuthClient;
+        if (authClient == null)
+        {
+            Log.Print(LogType.Error, "WorldClient.SendAuthResponse: AuthClient was torn down before world auth.");
+            _isSuccessful = false;
+            return;
+        }
 
         byte[] authResponse;
         {
@@ -547,7 +730,7 @@ public partial class WorldClient
             ih.AppendData(BitConverter.GetBytes(zero));
             ih.AppendData(BitConverter.GetBytes(clientSeed));
             ih.AppendData(BitConverter.GetBytes(serverSeed));
-            ih.AppendData(GetSession().AuthClient.GetSessionKey());
+            ih.AppendData(authClient.GetSessionKey());
             authResponse = ih.GetHashAndReset();
         }
 
@@ -589,7 +772,7 @@ public partial class WorldClient
 
         SendPacket(packet);
 
-        InitializeEncryption(GetSession().AuthClient.GetSessionKey());
+        InitializeEncryption(authClient.GetSessionKey());
     }
 
     private void HandleAuthResponse(WorldPacket packet)

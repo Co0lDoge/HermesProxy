@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using HermesProxy.World.Enums;
 
 namespace HermesProxy.World;
@@ -122,9 +121,17 @@ public class HighGuid703 : HighGuid
     public HighGuid703(byte high)
     {
         this.high = high;
-        if (!High703ToHighType.ContainsKey((HighGuidType703)high))
-            throw new ArgumentOutOfRangeException("0x" + high.ToString("X"));
-
-        highGuidType = High703ToHighType[(HighGuidType703)high];
+        // Defense-in-depth: an unknown 703 high-guid type must NOT throw — that exception
+        // propagates out of HandleUpdateObject into the WorldClient receive loop and tears
+        // down the whole legacy connection (one bad guid disconnects the client, issue #101).
+        // Mirror HighGuidLegacy: log it and treat as Null so the single object is skipped on
+        // the modern side instead of killing the session.
+        if (!High703ToHighType.TryGetValue((HighGuidType703)high, out highGuidType))
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Warn,
+                $"[HighGuid703] Unknown 703 high-guid 0x{high:X2} ({high}) — treating as Null. " +
+                "Object will be skipped on the modern side.");
+            highGuidType = HighGuidType.Null;
+        }
     }
 }

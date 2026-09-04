@@ -1,5 +1,6 @@
 ﻿using Framework.IO;
 using Framework.Logging;
+using HermesProxy.Enums;
 
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -7,8 +8,10 @@ using HermesProxy.World.Objects;
 using nietras.SeparatedValues;
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -29,6 +32,13 @@ public static partial class GameData
     public static SortedDictionary<uint, BroadcastText> BroadcastTextStore = [];
     public static FrozenDictionary<uint, uint> ItemDisplayIdStore = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> ItemDisplayIdToFileDataIdStore = FrozenDictionary<uint, uint>.Empty;
+    // (itemId, slot) -> baked-in V3_4_3.54261 ItemEffect.RecordID. Populated from
+    // CSV/Hotfix/ItemEffect3.csv (extracted from wago build 3.4.3.54261).
+    // When AddItemEffectRecord is asked to create a hotfix for an item already
+    // present in this lookup, it must reuse the baked-in RecordID so the V3_4_3
+    // client's pre-built ItemEffect-by-ParentItemID index points at our row.
+    public static FrozenDictionary<(uint itemId, byte slot), uint> V3_4_3ItemEffectRecordIdByItemSlot
+        = FrozenDictionary<(uint itemId, byte slot), uint>.Empty;
     public static FrozenDictionary<uint, ItemSpellsData> ItemSpellsDataStore = FrozenDictionary<uint, ItemSpellsData>.Empty;
     public static Dictionary<uint, ItemRecord> ItemRecordsStore = [];
     public static Dictionary<uint, ItemSparseRecord> ItemSparseRecordsStore = [];
@@ -36,6 +46,21 @@ public static partial class GameData
     public static Dictionary<uint, ItemModifiedAppearance> ItemModifiedAppearanceStore = [];
     public static Dictionary<uint, ItemEffect> ItemEffectStore = [];
     public static FrozenDictionary<uint, Battleground> Battlegrounds = FrozenDictionary<uint, Battleground>.Empty;
+
+    /// Every currency the modern client can display on this build, keyed by currency id.
+    public static FrozenDictionary<uint, CurrencyTypeRecord> CurrencyTypeStore
+        = FrozenDictionary<uint, CurrencyTypeRecord>.Empty;
+
+    /// The subset legacy carries as items in the currency-token slots, keyed by the legacy item
+    /// id. 3.4.3's CurrencyTypes.db2 dropped the ItemID column that 3.3.5a's DBC had, so the
+    /// pairing cannot be derived at runtime and ships as CSV/CurrencyTypes{expansion}.csv.
+    public static FrozenDictionary<uint, CurrencyTypeRecord> CurrencyTypeByItemId
+        = FrozenDictionary<uint, CurrencyTypeRecord>.Empty;
+    // Modern AreaTrigger id -> the 3.3.5a-era id the legacy server's areatrigger_teleport
+    // (and BattlegroundWS::HandleAreaTrigger) is keyed on. Cataclysm renumbered most static
+    // triggers; the Classic clients ship the post-Cataclysm DB2 while legacy cores kept the
+    // WotLK ids. Data-driven via CSV/AreaTriggerRemap*.csv — adding a remap needs no code.
+    public static FrozenDictionary<uint, uint> AreaTriggerModernToLegacy = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, ChatChannel> ChatChannels = FrozenDictionary<uint, ChatChannel>.Empty;
     public static Dictionary<uint, Dictionary<uint, byte>> ItemEffects = [];
     // Maps a legacy (1.12) spell id to its modern client spell id, populated when an item-effect
@@ -44,25 +69,36 @@ public static partial class GameData
     public static Dictionary<uint, uint> LegacyToModernSpellId = [];
     public static FrozenDictionary<uint, uint> ItemEnchantVisuals = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> SpellVisuals = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenDictionary<uint, uint> SpellXSpellVisualToSpellVisual = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenSet<uint> MissileSpellVisuals = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, uint> LearnSpells = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> TotemSpells = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenDictionary<ushort, uint> GlyphSpellById = FrozenDictionary<ushort, uint>.Empty;
+    public static FrozenSet<int> Heirlooms = FrozenSet<int>.Empty;
+    public static FrozenSet<uint> Toys = FrozenSet<uint>.Empty;
+    public static FrozenDictionary<uint, BattlePetSpeciesInfo> BattlePetSpeciesBySummonSpell
+        = FrozenDictionary<uint, BattlePetSpeciesInfo>.Empty;
+    public static FrozenSet<uint> MountSpells = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenSet<uint> WmoGameObjectDisplays = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, string> AreaNames = FrozenDictionary<uint, string>.Empty;
     public static FrozenDictionary<uint, uint> RaceFaction = FrozenDictionary<uint, uint>.Empty;
     public static FrozenSet<uint> DispellSpells = FrozenSet<uint>.Empty;
-    public static Dictionary<uint, List<float>> SpellEffectPoints = [];
+    public static Dictionary<uint, ImmutableArray<float>> SpellEffectPoints = [];
     public static FrozenSet<uint> StackableAuras = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> MountAuras = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> NextMeleeSpells = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> AutoRepeatSpells = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> AuraSpells = FrozenSet<uint>.Empty;
+    public static FrozenSet<uint> PassiveSpells = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, int> AuraDurations = FrozenDictionary<uint, int>.Empty;
     public static FrozenDictionary<uint, TaxiPath> TaxiPaths = FrozenDictionary<uint, TaxiPath>.Empty;
     public static int[,] TaxiNodesGraph = new int[250, 250];
     public static FrozenDictionary<uint /*questId*/, uint /*questBit*/> QuestBits = FrozenDictionary<uint, uint>.Empty;
+    public static FrozenDictionary<int /*worldMapAreaId (legacy 3.3.5a)*/, int /*uiMapId (modern build)*/> WorldMapAreaIDToUiMapID = FrozenDictionary<int, int>.Empty;
 
     // From Server
     public static Dictionary<uint, ItemTemplate> ItemTemplates = [];
@@ -229,11 +265,44 @@ public static partial class GameData
         return null;
     }
 
-    public static uint GetFirstFreeId<T>(Dictionary<uint, T> dict, uint after = 0)
+    // ITEM_SPELLTRIGGER_ON_USE = 0. Used when CMSG_USE_TOY has no bag copy on this
+    // character and the spell is already in the 3.3.5a spellbook (native Use Toy).
+    public static bool TryGetItemOnUseSpellId(uint itemId, out uint spellId)
+    {
+        spellId = 0;
+        ItemEffect? best = null;
+        foreach (var item in ItemEffectStore)
+        {
+            var effect = item.Value;
+            if (effect.ParentItemID != (int)itemId || effect.TriggerType != 0 || effect.SpellID <= 0)
+                continue;
+            if (best == null || effect.LegacySlotIndex < best.LegacySlotIndex)
+                best = effect;
+        }
+        if (best == null)
+            return false;
+        spellId = (uint)best.SpellID;
+        return true;
+    }
+
+    // Caller-provided cursor turns the linear ContainsKey scan from O(N) per call
+    // into amortized O(1). Append-only callers (hotfix RecordIDs) would otherwise
+    // re-scan from `after+1` every time, doing O(N²) work over a session. The
+    // cursor is just a hint — correctness is preserved by walking past any
+    // occupied slots from there. Pass `ref` to a static field per store.
+    private static uint _hotfixesCursor;
+    private static uint _itemEffectCursor;
+    private static uint _itemAppearanceCursor;
+    private static uint _itemModifiedAppearanceCursor;
+
+    public static uint GetFirstFreeId<T>(IDictionary<uint, T> dict, ref uint cursor, uint after = 0)
     {
         uint candidate = after + 1;
+        if (cursor > candidate)
+            candidate = cursor;
         while (dict.ContainsKey(candidate))
             candidate++;
+        cursor = candidate + 1;
         return candidate;
     }
 
@@ -291,6 +360,15 @@ public static partial class GameData
         if (SpellVisuals.TryGetValue(spellId, out visual))
             return visual;
         return 0;
+    }
+
+    public static bool IsMissileSpellVisual(uint spellXSpellVisualId)
+    {
+        if (spellXSpellVisualId == 0)
+            return false;
+        if (!SpellXSpellVisualToSpellVisual.TryGetValue(spellXSpellVisualId, out var visualId))
+            return false;
+        return MissileSpellVisuals.Contains(visualId);
     }
 
     /// <summary>
@@ -372,6 +450,14 @@ public static partial class GameData
             return period;
         return 0;
     }
+
+    /// <summary>
+    /// True when the GameObject display is a WMO map object rather than an M2 doodad.
+    /// Derived from GameObjectDisplayInfo.ModelName's file extension; see
+    /// CSV/WmoGameObjectDisplays.csv.
+    /// </summary>
+    public static bool IsWmoGameObjectDisplay(int displayId)
+        => displayId > 0 && WmoGameObjectDisplays.Contains((uint)displayId);
 
     public static string GetAreaName(uint id)
     {
@@ -561,16 +647,24 @@ public static partial class GameData
             LoadItemEffect,
             LoadItemSpellsData,
             LoadItemDisplayIdToFileDataId,
+            LoadAreaTriggerRemap,
             LoadBattlegrounds,
+            LoadCurrencyTypes,
             LoadChatChannels,
             LoadItemEnchantVisuals,
             LoadSpellVisuals,
             LoadLearnSpells,
             LoadTotemSpells,
             LoadGems,
+            LoadGlyphProperties,
+            LoadHeirlooms,
+            LoadToys,
+            LoadBattlePetSpecies,
+            LoadMountSpells,
             LoadCreatureDisplayInfo,
             LoadCreatureModelCollisionHeights,
             LoadTransports,
+            LoadWmoGameObjectDisplays,
             LoadAreaNames,
             LoadRaceFaction,
             LoadDispellSpells,
@@ -580,10 +674,12 @@ public static partial class GameData
             LoadMeleeSpells,
             LoadAutoRepeatSpells,
             LoadAuraSpells,
+            LoadPassiveSpells,
             LoadAuraDurations,
             LoadTaxiPaths,
             LoadTaxiPathNodesGraph,
             LoadQuestBits,
+            LoadWorldMapAreaIDToUiMapID,
             LoadHotfixes
         );
 
@@ -593,6 +689,15 @@ public static partial class GameData
     public static void LoadBuildAuthSeeds()
     {
         var path = Path.Combine("CSV", $"BuildAuthSeeds.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
@@ -614,6 +719,15 @@ public static partial class GameData
     public static void LoadBroadcastTexts()
     {
         var path = Path.Combine("CSV", $"BroadcastTexts{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         foreach (var row in reader)
@@ -633,9 +747,51 @@ public static partial class GameData
         }
     }
 
+    public static void LoadCurrencyTypes()
+    {
+        var path = Path.Combine("CSV", $"CurrencyTypes{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: the expansion has no item-backed currencies to bridge.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        int estimate = EstimateRowCount(path, 48);
+        var byId = new Dictionary<uint, CurrencyTypeRecord>(estimate);
+        var byItemId = new Dictionary<uint, CurrencyTypeRecord>(estimate);
+        foreach (var row in reader)
+        {
+            uint currencyId = uint.Parse(row[0].Span);
+            uint itemId = uint.Parse(row[1].Span);
+            uint maxQuantity = uint.Parse(row[2].Span);
+
+            var record = new CurrencyTypeRecord(currencyId, itemId, maxQuantity);
+            byId[currencyId] = record;
+
+            // Honor and arena points carry item id 0: legacy keeps them in player fields rather
+            // than the currency-token slots, so they must not be picked up by the token sweep.
+            if (itemId != 0)
+                byItemId[itemId] = record;
+        }
+
+        CurrencyTypeStore = byId.ToFrozenDictionary();
+        CurrencyTypeByItemId = byItemId.ToFrozenDictionary();
+    }
+
     public static void LoadItemDisplayIds()
     {
         var path = Path.Combine("CSV", $"ItemIdToDisplayId{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
         foreach (var row in reader)
@@ -651,6 +807,15 @@ public static partial class GameData
     public static void LoadItemRecords()
     {
         var path = Path.Combine("CSV", $"Item{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, ItemRecord>(EstimateRowCount<ItemRecord>(path));
 
@@ -703,6 +868,15 @@ public static partial class GameData
     public static void LoadItemSparseRecords()
     {
         var path = Path.Combine("CSV", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         foreach (var row in reader)
         {
@@ -842,6 +1016,15 @@ public static partial class GameData
     public static void LoadItemAppearance()
     {
         var path = Path.Combine("CSV", $"ItemAppearance{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         ItemAppearanceStore = new Dictionary<uint, ItemAppearance>(EstimateRowCount<ItemAppearance>(path));
         foreach (var row in reader)
@@ -859,6 +1042,15 @@ public static partial class GameData
     public static void LoadItemModifiedAppearance()
     {
         var path = Path.Combine("CSV", $"ItemModifiedAppearance{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         ItemModifiedAppearanceStore = new Dictionary<uint, ItemModifiedAppearance>(EstimateRowCount<ItemModifiedAppearance>(path));
         foreach (var row in reader)
@@ -877,6 +1069,15 @@ public static partial class GameData
     public static void LoadItemEffect()
     {
         var path = Path.Combine("CSV", $"ItemEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         foreach (var row in reader)
         {
@@ -898,6 +1099,15 @@ public static partial class GameData
     public static void LoadItemSpellsData()
     {
         var path = Path.Combine("CSV", $"ItemSpellsData{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, ItemSpellsData>(EstimateRowCount<ItemSpellsData>(path));
         foreach (var row in reader)
@@ -915,6 +1125,15 @@ public static partial class GameData
     public static void LoadItemDisplayIdToFileDataId()
     {
         var path = Path.Combine("CSV", $"ItemDisplayIdToFileDataId{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
         foreach (var row in reader)
@@ -927,9 +1146,76 @@ public static partial class GameData
         ItemDisplayIdToFileDataIdStore = dict.ToFrozenDictionary();
     }
 
+    // Builds a (itemId, slot) -> baked-in V3_4_3.54261 ItemEffect.RecordID lookup
+    // from CSV/Hotfix/ItemEffect3.csv (extracted directly from wago.tools for build
+    // 3.4.3.54261). Used by AddItemEffectRecord to keep our hotfix RecordID aligned
+    // with the slot the V3_4_3 client's pre-built ItemEffect-by-ParentItemID index
+    // already points at — INSERT at a fresh ID (whether 1 or HotfixItemBegin+) does
+    // not extend that index, so the tooltip "Use:" line stays blank even when the
+    // hotfix bytes are byte-perfect (observed for items 38607 and 41751).
+    public static void LoadV3_4_3ItemEffectLookup()
+    {
+        var path = Path.Combine("CSV", "Hotfix", "ItemEffect3.csv");
+        if (!File.Exists(path))
+        {
+            Log.Print(LogType.Server,
+                $"LoadV3_4_3ItemEffectLookup: {path} not found — Item* hotfix RecordID alignment disabled.");
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<(uint, byte), uint>(EstimateRowCount(path, 50));
+        foreach (var row in reader)
+        {
+            uint recordId = uint.Parse(row[0].Span);   // ID
+            byte slot     = byte.Parse(row[1].Span);   // LegacySlotIndex
+            uint itemId   = uint.Parse(row[9].Span);   // ParentItemID
+            dict[(itemId, slot)] = recordId;
+        }
+        V3_4_3ItemEffectRecordIdByItemSlot = dict.ToFrozenDictionary();
+        Log.Print(LogType.Server,
+            $"LoadV3_4_3ItemEffectLookup: loaded {V3_4_3ItemEffectRecordIdByItemSlot.Count} (itemId, slot) -> RecordID entries.");
+    }
+
+    public static void LoadAreaTriggerRemap()
+    {
+        var path = Path.Combine("CSV", $"AreaTriggerRemap{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+        {
+            AreaTriggerModernToLegacy = FrozenDictionary<uint, uint>.Empty;
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<uint, uint>();
+
+        foreach (var row in reader)
+        {
+            if (!uint.TryParse(row[0].Span, out uint modernId) ||
+                !uint.TryParse(row[1].Span, out uint legacyId) ||
+                modernId == 0 || legacyId == 0)
+            {
+                Log.Print(LogType.Error,
+                    $"LoadAreaTriggerRemap: malformed row in {path}, skipping.");
+                continue;
+            }
+            dict[modernId] = legacyId;
+        }
+        AreaTriggerModernToLegacy = dict.ToFrozenDictionary();
+    }
+
     public static void LoadBattlegrounds()
     {
         var path = Path.Combine("CSV", "Battlegrounds.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, Battleground>(EstimateRowCount<Battleground>(path));
 
@@ -944,7 +1230,14 @@ public static partial class GameData
                 if (mapId != 0)
                     bg.MapIds.Add(mapId);
             }
-            System.Diagnostics.Trace.Assert(bg.MapIds.Count != 0);
+            // Was a Trace.Assert. A malformed CSV row is a data problem, not a reason to
+            // abort the process during startup — skip the row and say which one it was.
+            if (bg.MapIds.Count == 0)
+            {
+                Log.Print(LogType.Error,
+                    $"LoadBattlegrounds: battleground {bgId} has no map IDs in {path}, skipping row.");
+                continue;
+            }
             dict.Add(bgId, bg);
         }
         Battlegrounds = dict.ToFrozenDictionary();
@@ -953,6 +1246,15 @@ public static partial class GameData
     public static void LoadChatChannels()
     {
         var path = Path.Combine("CSV", "ChatChannels.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, ChatChannel>(EstimateRowCount<ChatChannel>(path));
 
@@ -970,6 +1272,15 @@ public static partial class GameData
     public static void LoadItemEnchantVisuals()
     {
         var path = Path.Combine("CSV", $"ItemEnchantVisuals{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -985,6 +1296,15 @@ public static partial class GameData
     public static void LoadSpellVisuals()
     {
         var path = Path.Combine("CSV", $"SpellVisuals{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1000,6 +1320,15 @@ public static partial class GameData
     public static void LoadLearnSpells()
     {
         var path = Path.Combine("CSV", "LearnSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1019,6 +1348,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"TotemSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1037,6 +1375,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"Gems{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1049,9 +1396,158 @@ public static partial class GameData
         Gems = dict.ToFrozenDictionary();
     }
 
+    // GlyphProperties.dbc — maps GlyphID (row ID, what 3.3.5a sends in PLAYER_FIELD_GLYPHS_*
+    // and SMSG_UPDATE_TALENT_DATA's glyph block) to the SpellID of the passive that the
+    // glyph applies. The V3_4_3 client's SMSG_ACTIVE_GLYPHS expects (SpellID, GlyphID) pairs;
+    // legacy 3.3.5a only has the GlyphID, so we look up the SpellID here. Sourced from
+    // wago.tools at ?build=3.4.3.54261. CSV columns: ID, SpellID, ..., SpellIconFileDataID, GlyphSlotFlags.
+    public static void LoadGlyphProperties()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"GlyphProperties{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<ushort, uint>(EstimateRowCount(path, 40));
+
+        foreach (var row in reader)
+        {
+            ushort glyphId = ushort.Parse(row[0].Span);
+            uint spellId = uint.Parse(row[1].Span);
+            dict[glyphId] = spellId;
+        }
+        GlyphSpellById = dict.ToFrozenDictionary();
+    }
+
+    // V3_4_3 client expects SMSG_ACCOUNT_HEIRLOOM_UPDATE to ship the full modern
+    // heirloom set so the Collections panel renders. Legacy 3.3.5a has no equivalent;
+    // we ship a hardcoded list (Flags=0, no upgrade levels). Sourced from wago.tools
+    // Heirloom.db2 ?build=3.4.3.54261.
+    public static void LoadHeirlooms()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"Heirloom{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var ids = new HashSet<int>();
+        foreach (var row in reader)
+            ids.Add(int.Parse(row[1].Span));
+
+        Heirlooms = ids.ToFrozenSet();
+    }
+
+    // Toy.db2 for V3_4_3.54261. 3.3.5a has no toy box; bag items still fire via CMSG_USE_ITEM.
+    public static void LoadToys()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"Toy{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var ids = new HashSet<uint>();
+        foreach (var row in reader)
+            ids.Add(uint.Parse(row[1].Span));
+
+        Toys = ids.ToFrozenSet();
+    }
+
+    public static bool IsToyItem(uint itemId) => Toys.Contains(itemId);
+
+    // BattlePetSpecies.db2 for V3_4_3.54261, keyed by SummonSpellID so a learned
+    // 3.3.5a companion spell can fill SMSG_BATTLE_PET_JOURNAL. WotLK-range spells
+    // only (SummonSpellID <= 80864). Sourced from wago.tools ?build=3.4.3.54261.
+    public static void LoadBattlePetSpecies()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"BattlePetSpecies{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<uint, BattlePetSpeciesInfo>(EstimateRowCount(path, 24));
+        foreach (var row in reader)
+        {
+            uint speciesId = uint.Parse(row[0].Span);
+            uint summonSpellId = uint.Parse(row[1].Span);
+            uint creatureId = uint.Parse(row[2].Span);
+            uint flags = uint.Parse(row[3].Span);
+            dict[summonSpellId] = new BattlePetSpeciesInfo(speciesId, creatureId, flags);
+        }
+        BattlePetSpeciesBySummonSpell = dict.ToFrozenDictionary();
+    }
+
+    public static bool TryGetBattlePetSpecies(uint summonSpellId, out BattlePetSpeciesInfo species)
+        => BattlePetSpeciesBySummonSpell.TryGetValue(summonSpellId, out species);
+
+    public static bool TryGetSpeciesByCreatureId(uint creatureId, out BattlePetSpeciesInfo species)
+    {
+        foreach (var kv in BattlePetSpeciesBySummonSpell)
+        {
+            if (kv.Value.CreatureId == creatureId)
+            {
+                species = kv.Value;
+                return true;
+            }
+        }
+        species = default;
+        return false;
+    }
+
+    public static bool TryGetSummonSpellForSpecies(uint speciesId, out uint summonSpellId)
+    {
+        foreach (var kv in BattlePetSpeciesBySummonSpell)
+        {
+            if (kv.Value.SpeciesId == speciesId)
+            {
+                summonSpellId = kv.Key;
+                return true;
+            }
+        }
+        summonSpellId = 0;
+        return false;
+    }
+
+    // Mount.db2 SourceSpellID for V3_4_3.54261, WotLK-range spells only.
+    public static void LoadMountSpells()
+    {
+        if (ModernVersion.ExpansionVersion < 3)
+            return;
+
+        var path = Path.Combine("CSV", "Hotfix", $"Mount{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 12));
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+        MountSpells = set.ToFrozenSet();
+    }
+
     public static void LoadCreatureDisplayInfo()
     {
         var path = Path.Combine("CSV", "CreatureDisplayInfo.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, CreatureDisplayInfo>(EstimateRowCount<CreatureDisplayInfo>(path));
 
@@ -1068,6 +1564,15 @@ public static partial class GameData
     public static void LoadCreatureModelCollisionHeights()
     {
         var path = Path.Combine("CSV", $"CreatureModelCollisionHeightsModern{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, CreatureModelCollisionHeight>(EstimateRowCount<CreatureModelCollisionHeight>(path));
 
@@ -1085,6 +1590,15 @@ public static partial class GameData
     public static void LoadTransports()
     {
         var path = Path.Combine("CSV", $"Transports{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1097,9 +1611,39 @@ public static partial class GameData
         TransportPeriods = dict.ToFrozenDictionary();
     }
 
+    public static void LoadWmoGameObjectDisplays()
+    {
+        var path = Path.Combine("CSV", "WmoGameObjectDisplays.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 6));
+
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+
+        WmoGameObjectDisplays = set.ToFrozenSet();
+    }
+
     public static void LoadAreaNames()
     {
         var path = Path.Combine("CSV", $"AreaNames.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, string>(EstimateRowCount(path, 40));
 
@@ -1115,6 +1659,15 @@ public static partial class GameData
     public static void LoadRaceFaction()
     {
         var path = Path.Combine("CSV", $"RaceFaction.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var dict = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
@@ -1133,6 +1686,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", "DispellSpells.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1146,6 +1708,15 @@ public static partial class GameData
     public static void LoadSpellEffectPoints()
     {
         var path = Path.Combine("CSV", $"SpellEffectPoints{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
@@ -1166,7 +1737,7 @@ public static partial class GameData
             if (basePointsEff3 != 0)
                 basePointsEff3 += 1;
 
-            SpellEffectPoints.Add(spellId, new List<float> { basePointsEff1, basePointsEff2, basePointsEff3 });
+            SpellEffectPoints.Add(spellId, ImmutableArray.Create<float>(basePointsEff1, basePointsEff2, basePointsEff3));
         }
     }
 
@@ -1176,6 +1747,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"StackableAuras{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1192,6 +1772,15 @@ public static partial class GameData
             return;
 
         var path = Path.Combine("CSV", $"MountAuras.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1205,6 +1794,15 @@ public static partial class GameData
     public static void LoadMeleeSpells()
     {
         var path = Path.Combine("CSV", $"MeleeSpells{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1218,6 +1816,15 @@ public static partial class GameData
     public static void LoadAutoRepeatSpells()
     {
         var path = Path.Combine("CSV", $"AutoRepeatSpells{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1230,6 +1837,15 @@ public static partial class GameData
     public static void LoadAuraSpells()
     {
         var path = Path.Combine("CSV", $"AuraSpells{LegacyVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         var set = new HashSet<uint>(EstimateRowCount(path, 8));
         foreach (var row in reader)
@@ -1238,6 +1854,17 @@ public static partial class GameData
             set.Add(spellId);
         }
         AuraSpells = set.ToFrozenSet();
+    }
+    public static void LoadPassiveSpells()
+    {
+        var path = Path.Combine("CSV", $"PassiveSpells{LegacyVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 8));
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+        PassiveSpells = set.ToFrozenSet();
     }
 
     public static void LoadAuraDurations()
@@ -1262,6 +1889,15 @@ public static partial class GameData
     public static void LoadTaxiPaths()
     {
         var path = Path.Combine("CSV", $"TaxiPath{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
         var dict = new Dictionary<uint, TaxiPath>(EstimateRowCount<TaxiPath>(path));
 
@@ -1401,6 +2037,15 @@ public static partial class GameData
     public static void LoadQuestBits()
     {
         var path = Path.Combine("CSV", $"QuestV2_{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
 
         Dictionary<uint, uint> dict = [];
@@ -1414,6 +2059,43 @@ public static partial class GameData
         }
         QuestBits = dict.ToFrozenDictionary();
     }
+
+    /// <summary>
+    /// Legacy 3.3.5a WorldMapArea id to the UiMap id the connected modern client expects.
+    /// The id sets differ per client generation, so the table is version-suffixed like the
+    /// other per-expansion CSVs; a build with no table falls back to the raw id.
+    /// <para>
+    /// The V3_4_3 table was derived by joining a legacy <c>quest_poi</c> against a native
+    /// 3.4.3 one on (QuestID, BlobIndex), so every row is backed by the quests that agree on
+    /// it. Each id was then confirmed to exist in <c>UiMap.db2</c> for build 3.4.3.54261.
+    /// Classic zones live in the 1400 range — Teldrassil is 1438, not retail 57.
+    /// </para>
+    /// </summary>
+    public static void LoadWorldMapAreaIDToUiMapID()
+    {
+        var path = Path.Combine("CSV", $"WorldMapAreaIDToUiMapID{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+
+        Dictionary<int, int> dict = [];
+        foreach (var row in reader)
+        {
+            int worldMapAreaId = int.Parse(row[0].Span);
+            int uiMapId = int.Parse(row[1].Span);
+            dict[worldMapAreaId] = uiMapId;
+        }
+        WorldMapAreaIDToUiMapID = dict.ToFrozenDictionary();
+    }
+
+    /// <summary>
+    /// Returns the modern UiMap id for a legacy WorldMapArea, or the id unchanged when this
+    /// build has no mapping for it. Passing the raw id through is what shipped before the
+    /// table existed, so an unmapped zone is no worse off than it was.
+    /// </summary>
+    public static int GetUiMapId(int worldMapAreaId) =>
+        WorldMapAreaIDToUiMapID.TryGetValue(worldMapAreaId, out int uiMapId) ? uiMapId : worldMapAreaId;
 
     #endregion
     #region HotFixes
@@ -1441,32 +2123,64 @@ public static partial class GameData
     public const uint HotfixCreatureDisplayInfoBegin = 2_700_000;
     public const uint HotfixCreatureDisplayInfoExtraBegin = 2_800_000;
     public const uint HotfixCreatureDisplayInfoOptionBegin = 2_900_000;
-    public static Dictionary<uint, HotfixRecord> Hotfixes = [];
+    public const uint HotfixChrCustomizationChoiceBegin = 3_000_000;
+    public const uint HotfixChrCustomizationOptionBegin = 3_100_000;
+    // ConcurrentDictionary so LoadHotfixes can run its sub-loaders in parallel — each
+    // sub-loader writes to a disjoint HotfixId key range (per the HotfixXxxBegin constants
+    // above), so there's no actual contention on writes; we just need a thread-safe Add.
+    // V3_4_3 sequential load was ~2 sec vs ~400 ms for V1_14/V2_5 (the modern hotfix CSVs
+    // are 5-10× larger), and the inner pipeline was the bottleneck.
+    public static ConcurrentDictionary<uint, HotfixRecord> Hotfixes = [];
     public static void LoadHotfixes()
     {
-        LoadAreaTriggerHotfixes();
-        LoadSkillLineHotfixes();
-        LoadSkillRaceClassInfoHotfixes();
-        LoadSkillLineAbilityHotfixes();
-        LoadSpellHotfixes();
-        LoadSpellNameHotfixes();
-        LoadSpellLevelsHotfixes();
-        LoadSpellAuraOptionsHotfixes();
-        LoadSpellMiscHotfixes();
-        LoadSpellEffectHotfixes();
-        LoadSpellXSpellVisualHotfixes();
-        LoadItemSparseHotfixes();
-        LoadItemHotfixes();
-        LoadItemEffectHotfixes();
-        LoadItemDisplayInfoHotfixes();
-        LoadCreatureDisplayInfoHotfixes();
-        LoadCreatureDisplayInfoExtraHotfixes();
-        LoadCreatureDisplayInfoOptionHotfixes();
+        // ChrCustomizationChoice / ChrCustomizationOption / V3_4_3ItemEffectLookup CSVs
+        // only exist for V3_4_3 (WotLK Classic, expansion=3). The DB2 tables don't exist
+        // in TBC / Vanilla hotfix data, and the V3_4_3 client is the only modern build
+        // that consults them for character-enum rendering. Skip those for older
+        // expansions to avoid FileNotFoundException at startup.
+        var jobs = new List<Action>(24)
+        {
+            LoadAreaTriggerHotfixes,
+            LoadSkillLineHotfixes,
+            LoadSkillRaceClassInfoHotfixes,
+            LoadSkillLineAbilityHotfixes,
+            LoadSpellHotfixes,
+            LoadSpellNameHotfixes,
+            LoadSpellLevelsHotfixes,
+            LoadSpellAuraOptionsHotfixes,
+            LoadSpellMiscHotfixes,
+            LoadSpellEffectHotfixes,
+            LoadSpellXSpellVisualHotfixes,
+            LoadSpellVisualMissileFlags,
+            LoadItemSparseHotfixes,
+            LoadItemHotfixes,
+            LoadItemEffectHotfixes,
+            LoadItemDisplayInfoHotfixes,
+            LoadCreatureDisplayInfoHotfixes,
+            LoadCreatureDisplayInfoExtraHotfixes,
+            LoadCreatureDisplayInfoOptionHotfixes,
+        };
+        if (ModernVersion.ExpansionVersion >= 3)
+        {
+            jobs.Add(LoadChrCustomizationChoiceHotfixes);
+            jobs.Add(LoadChrCustomizationOptionHotfixes);
+            jobs.Add(LoadV3_4_3ItemEffectLookup);
+        }
+        Parallel.Invoke(jobs.ToArray());
     }
 
     public static void LoadAreaTriggerHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"AreaTrigger{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
@@ -1500,7 +2214,15 @@ public static partial class GameData
             HotfixRecord record = new()
             {
                 TableHash = DB2Hash.AreaTrigger,
-                HotfixId = HotfixAreaTriggerBegin + counter
+                // Push ids must be STABLE across sessions: the client caches applied
+                // hotfixes in Cache/ADB/<locale>/DBCache.bin keyed by push id, and
+                // SMSG_AVAILABLE_HOTFIXES is only a list of ids -- the client diffs that
+                // against its cache and re-requests just the ones it is missing. Keying off
+                // the row's position in the CSV made a record's id depend on how many rows
+                // preceded it, so shipping a different subset silently re-keyed every
+                // record and defeated the diff. The AreaTrigger id space (max ~10546) fits
+                // inside this table's 100k window.
+                HotfixId = HotfixAreaTriggerBegin + at.Id
             };
             record.UniqueId = record.HotfixId;
             record.RecordId = at.Id;
@@ -1523,12 +2245,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt16(at.ShapeId);
             record.HotfixContent.WriteUInt16(at.ActionSetId);
             record.HotfixContent.WriteUInt8(at.Flags);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSkillLineHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillLine{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
@@ -1572,12 +2302,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt32(parentTierIndex);
             record.HotfixContent.WriteUInt16(flags);
             record.HotfixContent.WriteUInt32(spellBookSpellID);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSkillRaceClassInfoHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillRaceClassInfo{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
@@ -1608,12 +2346,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt8(availability);
             record.HotfixContent.WriteUInt8(minLevel);
             record.HotfixContent.WriteUInt16(skillTierId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSkillLineAbilityHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SkillLineAbility{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
@@ -1664,12 +2410,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt16(skillUpSkillLineId);
             record.HotfixContent.WriteUInt32(characterPoints1);
             record.HotfixContent.WriteUInt32(characterPoints2);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"Spell{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -1691,12 +2445,20 @@ public static partial class GameData
             record.HotfixContent.WriteCString(nameSubText);
             record.HotfixContent.WriteCString(description);
             record.HotfixContent.WriteCString(auraDescription);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellNameHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellName{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
         uint counter = 0;
@@ -1714,12 +2476,20 @@ public static partial class GameData
             record.RecordId = id;
             record.Status = HotfixStatus.Valid;
             record.HotfixContent.WriteCString(name);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellLevelsHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellLevels{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -1747,12 +2517,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt16(spellLevel);
             record.HotfixContent.WriteUInt8(maxPassiveAuraLevel);
             record.HotfixContent.WriteUInt32(spellId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellAuraOptionsHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellAuraOptions{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -1786,12 +2564,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt32(procTypeMask0);
             record.HotfixContent.WriteUInt32(procTypeMask1);
             record.HotfixContent.WriteUInt32(spellId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellMiscHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellMisc{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -1857,12 +2643,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt32(attributes13);
             record.HotfixContent.WriteUInt32(attributes14);
             record.HotfixContent.WriteUInt32(spellId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellEffectHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
 
         uint counter = 0;
@@ -1948,14 +2742,24 @@ public static partial class GameData
             record.HotfixContent.WriteInt16(implicitTarget1);
             record.HotfixContent.WriteInt16(implicitTarget2);
             record.HotfixContent.WriteUInt32(spellId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadSpellXSpellVisualHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"SpellXSpellVisual{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = false }).FromFile(path);
         var dict = new Dictionary<uint, uint>(SpellVisuals);
+        var sxsvToVisual = new Dictionary<uint, uint>(EstimateRowCount(path, 20));
 
         uint counter = 0;
         foreach (var row in reader)
@@ -1965,6 +2769,7 @@ public static partial class GameData
             uint id = uint.Parse(row[0].Span);
             byte difficultyId = byte.Parse(row[1].Span);
             uint spellVisualId = uint.Parse(row[2].Span);
+            sxsvToVisual[id] = spellVisualId;
             float probability = float.Parse(row[3].Span);
             byte flags = byte.Parse(row[4].Span);
             byte priority = byte.Parse(row[5].Span);
@@ -2000,14 +2805,40 @@ public static partial class GameData
             record.HotfixContent.WriteUInt16(casterUnitConditionId);
             record.HotfixContent.WriteUInt32(casterPlayerConditionId);
             record.HotfixContent.WriteUInt32(spellId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
 
         SpellVisuals = dict.ToFrozenDictionary();
+        SpellXSpellVisualToSpellVisual = sxsvToVisual.ToFrozenDictionary();
     }
+
+    public static void LoadSpellVisualMissileFlags()
+    {
+        var path = Path.Combine("CSV", "Hotfix", $"SpellVisualMissile{ModernVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+        {
+            MissileSpellVisuals = FrozenSet<uint>.Empty;
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 8));
+        foreach (var row in reader)
+            set.Add(uint.Parse(row[0].Span));
+        MissileSpellVisuals = set.ToFrozenSet();
+    }
+
     public static void LoadItemSparseHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemSparse{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
 
@@ -2160,7 +2991,16 @@ public static partial class GameData
             record.HotfixContent.WriteUInt32(durationInInventory);
             record.HotfixContent.WriteFloat(qualityModifier);
             record.HotfixContent.WriteUInt32(bagFamily);
-            record.HotfixContent.WriteFloat(rangeMod);
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                // V3_4_3 (ItemSparseHandler341): StartQuestID (Int32) + ItemRange (Single).
+                record.HotfixContent.WriteInt32(0);         // StartQuestID
+                record.HotfixContent.WriteFloat(rangeMod);  // ItemRange
+            }
+            else
+            {
+                record.HotfixContent.WriteFloat(rangeMod);
+            }
             record.HotfixContent.WriteFloat(statPercentageOfSocket1);
             record.HotfixContent.WriteFloat(statPercentageOfSocket2);
             record.HotfixContent.WriteFloat(statPercentageOfSocket3);
@@ -2183,6 +3023,12 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(statPercentEditor10);
             record.HotfixContent.WriteInt32(stackable);
             record.HotfixContent.WriteInt32(maxCount);
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                // V3_4_3 (ItemSparseHandler341): MinReputation as Int32 between MaxCount
+                // and RequiredAbility. The trailing MinReputation byte is dropped.
+                record.HotfixContent.WriteInt32(0);
+            }
             record.HotfixContent.WriteUInt32(requiredAbility);
             record.HotfixContent.WriteUInt32(sellPrice);
             record.HotfixContent.WriteUInt32(buyPrice);
@@ -2194,6 +3040,14 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(flags3);
             record.HotfixContent.WriteInt32(flags4);
             record.HotfixContent.WriteInt32(oppositeFactionItemId);
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                // V3_4_3 (ItemSparseHandler341): three Int32 fields between FactionRelated
+                // (oppositeFactionItemId) and MaxDurability.
+                record.HotfixContent.WriteInt32(0);         // ModifiedCraftingReagentItemID
+                record.HotfixContent.WriteInt32(0);         // ContentTuningID
+                record.HotfixContent.WriteInt32(0);         // PlayerLevelToItemLevelCurveID
+            }
             record.HotfixContent.WriteUInt32(maxDurability);
             record.HotfixContent.WriteUInt16(itemNameDescriptionId);
             record.HotfixContent.WriteUInt16(requiredTransmogHoliday);
@@ -2235,48 +3089,100 @@ public static partial class GameData
             record.HotfixContent.WriteInt16(shadowResistance);
             record.HotfixContent.WriteInt16(arcaneResistance);
             record.HotfixContent.WriteUInt16(scalingStatDistributionId);
-            record.HotfixContent.WriteUInt8(expansionId);
-            record.HotfixContent.WriteUInt8(artifactId);
-            record.HotfixContent.WriteUInt8(spellWeight);
-            record.HotfixContent.WriteUInt8(spellWeightCategory);
-            record.HotfixContent.WriteUInt8(socketType1);
-            record.HotfixContent.WriteUInt8(socketType2);
-            record.HotfixContent.WriteUInt8(socketType3);
-            record.HotfixContent.WriteUInt8(sheatheType);
-            record.HotfixContent.WriteUInt8(material);
-            record.HotfixContent.WriteUInt8(pageMaterial);
-            record.HotfixContent.WriteUInt8(pageLanguage);
-            record.HotfixContent.WriteUInt8(bonding);
-            record.HotfixContent.WriteUInt8(damageType);
-            record.HotfixContent.WriteInt8(statType1);
-            record.HotfixContent.WriteInt8(statType2);
-            record.HotfixContent.WriteInt8(statType3);
-            record.HotfixContent.WriteInt8(statType4);
-            record.HotfixContent.WriteInt8(statType5);
-            record.HotfixContent.WriteInt8(statType6);
-            record.HotfixContent.WriteInt8(statType7);
-            record.HotfixContent.WriteInt8(statType8);
-            record.HotfixContent.WriteInt8(statType9);
-            record.HotfixContent.WriteInt8(statType10);
-            record.HotfixContent.WriteUInt8(containerSlots);
-            record.HotfixContent.WriteUInt8(requiredReputationRank);
-            record.HotfixContent.WriteUInt8(requiredCityRank);
-            record.HotfixContent.WriteUInt8(requiredHonorRank);
-            record.HotfixContent.WriteUInt8(inventoryType);
-            record.HotfixContent.WriteUInt8(overallQualityId);
-            record.HotfixContent.WriteUInt8(ammoType);
-            record.HotfixContent.WriteInt8(statValue1);
-            record.HotfixContent.WriteInt8(statValue2);
-            record.HotfixContent.WriteInt8(statValue3);
-            record.HotfixContent.WriteInt8(statValue4);
-            record.HotfixContent.WriteInt8(statValue5);
-            record.HotfixContent.WriteInt8(statValue6);
-            record.HotfixContent.WriteInt8(statValue7);
-            record.HotfixContent.WriteInt8(statValue8);
-            record.HotfixContent.WriteInt8(statValue9);
-            record.HotfixContent.WriteInt8(statValue10);
-            record.HotfixContent.WriteInt8(requiredLevel);
-            Hotfixes.Add(record.HotfixId, record);
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                // V3_4_3 ItemSparse layout. Reference: WPP V3_4_0_45166 HotfixHandler.cs:4087-4113.
+                // Note: statValue1..10 move from the trailing block to here as
+                // StatModifierBonusAmount[10] (Int16). The trailing sbyte block is removed.
+                record.HotfixContent.WriteInt16((short)statValue1);  // StatModifierBonusAmount[0]
+                record.HotfixContent.WriteInt16((short)statValue2);
+                record.HotfixContent.WriteInt16((short)statValue3);
+                record.HotfixContent.WriteInt16((short)statValue4);
+                record.HotfixContent.WriteInt16((short)statValue5);
+                record.HotfixContent.WriteInt16((short)statValue6);
+                record.HotfixContent.WriteInt16((short)statValue7);
+                record.HotfixContent.WriteInt16((short)statValue8);
+                record.HotfixContent.WriteInt16((short)statValue9);
+                record.HotfixContent.WriteInt16((short)statValue10);
+                record.HotfixContent.WriteUInt8(expansionId);
+                record.HotfixContent.WriteUInt8(artifactId);
+                record.HotfixContent.WriteUInt8(spellWeight);
+                record.HotfixContent.WriteUInt8(spellWeightCategory);
+                record.HotfixContent.WriteUInt8(socketType1);
+                record.HotfixContent.WriteUInt8(socketType2);
+                record.HotfixContent.WriteUInt8(socketType3);
+                record.HotfixContent.WriteUInt8(sheatheType);
+                record.HotfixContent.WriteUInt8(material);
+                record.HotfixContent.WriteUInt8(pageMaterial);
+                record.HotfixContent.WriteUInt8(pageLanguage);
+                record.HotfixContent.WriteUInt8(bonding);
+                record.HotfixContent.WriteUInt8(damageType);
+                record.HotfixContent.WriteInt8(statType1);
+                record.HotfixContent.WriteInt8(statType2);
+                record.HotfixContent.WriteInt8(statType3);
+                record.HotfixContent.WriteInt8(statType4);
+                record.HotfixContent.WriteInt8(statType5);
+                record.HotfixContent.WriteInt8(statType6);
+                record.HotfixContent.WriteInt8(statType7);
+                record.HotfixContent.WriteInt8(statType8);
+                record.HotfixContent.WriteInt8(statType9);
+                record.HotfixContent.WriteInt8(statType10);
+                record.HotfixContent.WriteUInt8(containerSlots);
+                record.HotfixContent.WriteUInt8(requiredReputationRank);
+                record.HotfixContent.WriteUInt8(requiredCityRank);
+                // No requiredHonorRank for V3_4_3 — see RequiredHonorRank removal in
+                // WriteItemSparseHotfix above (341 layout drops the trailing MinReputation byte).
+                record.HotfixContent.WriteInt8((sbyte)inventoryType);   // sbyte in V3_4_3
+                record.HotfixContent.WriteInt8((sbyte)overallQualityId);
+                record.HotfixContent.WriteUInt8(ammoType);
+                record.HotfixContent.WriteInt8(requiredLevel);
+            }
+            else
+            {
+                // V1_14 / V2_5 layout — preserve original upstream byte sequence verbatim.
+                record.HotfixContent.WriteUInt8(expansionId);
+                record.HotfixContent.WriteUInt8(artifactId);
+                record.HotfixContent.WriteUInt8(spellWeight);
+                record.HotfixContent.WriteUInt8(spellWeightCategory);
+                record.HotfixContent.WriteUInt8(socketType1);
+                record.HotfixContent.WriteUInt8(socketType2);
+                record.HotfixContent.WriteUInt8(socketType3);
+                record.HotfixContent.WriteUInt8(sheatheType);
+                record.HotfixContent.WriteUInt8(material);
+                record.HotfixContent.WriteUInt8(pageMaterial);
+                record.HotfixContent.WriteUInt8(pageLanguage);
+                record.HotfixContent.WriteUInt8(bonding);
+                record.HotfixContent.WriteUInt8(damageType);
+                record.HotfixContent.WriteInt8(statType1);
+                record.HotfixContent.WriteInt8(statType2);
+                record.HotfixContent.WriteInt8(statType3);
+                record.HotfixContent.WriteInt8(statType4);
+                record.HotfixContent.WriteInt8(statType5);
+                record.HotfixContent.WriteInt8(statType6);
+                record.HotfixContent.WriteInt8(statType7);
+                record.HotfixContent.WriteInt8(statType8);
+                record.HotfixContent.WriteInt8(statType9);
+                record.HotfixContent.WriteInt8(statType10);
+                record.HotfixContent.WriteUInt8(containerSlots);
+                record.HotfixContent.WriteUInt8(requiredReputationRank);
+                record.HotfixContent.WriteUInt8(requiredCityRank);
+                record.HotfixContent.WriteUInt8(requiredHonorRank);
+                record.HotfixContent.WriteUInt8(inventoryType);
+                record.HotfixContent.WriteUInt8(overallQualityId);
+                record.HotfixContent.WriteUInt8(ammoType);
+                record.HotfixContent.WriteInt8(statValue1);
+                record.HotfixContent.WriteInt8(statValue2);
+                record.HotfixContent.WriteInt8(statValue3);
+                record.HotfixContent.WriteInt8(statValue4);
+                record.HotfixContent.WriteInt8(statValue5);
+                record.HotfixContent.WriteInt8(statValue6);
+                record.HotfixContent.WriteInt8(statValue7);
+                record.HotfixContent.WriteInt8(statValue8);
+                record.HotfixContent.WriteInt8(statValue9);
+                record.HotfixContent.WriteInt8(statValue10);
+                record.HotfixContent.WriteInt8(requiredLevel);
+            }
+            Hotfixes[record.HotfixId] = record;
         }
     }
 
@@ -2302,7 +3208,16 @@ public static partial class GameData
         buffer.WriteUInt32(item.Duration);
         buffer.WriteFloat(0);
         buffer.WriteUInt32(item.BagFamily);
-        buffer.WriteFloat(item.RangedMod);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341): StartQuestID (Int32) + ItemRange (Single).
+            buffer.WriteInt32(0);                           // StartQuestID
+            buffer.WriteFloat(item.RangedMod);              // ItemRange
+        }
+        else
+        {
+            buffer.WriteFloat(item.RangedMod);
+        }
         buffer.WriteFloat(0);
         buffer.WriteFloat(0);
         buffer.WriteFloat(0);
@@ -2325,6 +3240,12 @@ public static partial class GameData
         buffer.WriteInt32(0);
         buffer.WriteInt32(item.MaxStackSize);
         buffer.WriteInt32(item.MaxCount);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341 layout): MinReputation moved here from a
+            // trailing byte to a 4-byte field between MaxCount and RequiredAbility.
+            buffer.WriteInt32(0);                           // MinReputation
+        }
         buffer.WriteUInt32(item.RequiredSpell);
         buffer.WriteUInt32(item.SellPrice);
         buffer.WriteUInt32(item.BuyPrice);
@@ -2336,6 +3257,15 @@ public static partial class GameData
         buffer.WriteInt32(0);
         buffer.WriteInt32(0);
         buffer.WriteInt32(0);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341): three Int32 fields between FactionRelated
+            // and MaxDurability — ModifiedCraftingReagentItemID, ContentTuningID,
+            // PlayerLevelToItemLevelCurveID.
+            buffer.WriteInt32(0);                           // ModifiedCraftingReagentItemID
+            buffer.WriteInt32(0);                           // ContentTuningID
+            buffer.WriteInt32(0);                           // PlayerLevelToItemLevelCurveID
+        }
         buffer.WriteUInt32(item.MaxDurability);
         buffer.WriteUInt16(0);
         buffer.WriteUInt16(0);
@@ -2377,51 +3307,88 @@ public static partial class GameData
         buffer.WriteInt16((short)item.ShadowResistance);
         buffer.WriteInt16((short)item.ArcaneResistance);
         buffer.WriteUInt16((ushort)item.ScalingStatDistribution);
-        buffer.WriteUInt8(254);
-        buffer.WriteUInt8(0);
-        buffer.WriteUInt8(0);
-        buffer.WriteUInt8(0);
-        buffer.WriteUInt8((byte)item.ItemSocketColors[0]);
-        buffer.WriteUInt8((byte)item.ItemSocketColors[1]);
-        buffer.WriteUInt8((byte)item.ItemSocketColors[2]);
-        buffer.WriteUInt8((byte)item.SheathType);
-        buffer.WriteUInt8((byte)item.Material);
-        buffer.WriteUInt8((byte)item.PageMaterial);
-        buffer.WriteUInt8((byte)item.Language);
-        buffer.WriteUInt8((byte)item.Bonding);
-        buffer.WriteUInt8((byte)item.DamageTypes[0]);
-        buffer.WriteInt8((sbyte)item.StatTypes[0]);
-        buffer.WriteInt8((sbyte)item.StatTypes[1]);
-        buffer.WriteInt8((sbyte)item.StatTypes[2]);
-        buffer.WriteInt8((sbyte)item.StatTypes[3]);
-        buffer.WriteInt8((sbyte)item.StatTypes[4]);
-        buffer.WriteInt8((sbyte)item.StatTypes[5]);
-        buffer.WriteInt8((sbyte)item.StatTypes[6]);
-        buffer.WriteInt8((sbyte)item.StatTypes[7]);
-        buffer.WriteInt8((sbyte)item.StatTypes[8]);
-        buffer.WriteInt8((sbyte)item.StatTypes[9]);
-        buffer.WriteUInt8((byte)item.ContainerSlots);
-        buffer.WriteUInt8((byte)item.RequiredRepValue);
-        buffer.WriteUInt8((byte)item.RequiredCityRank);
-        buffer.WriteUInt8((byte)item.RequiredHonorRank);
-        buffer.WriteUInt8((byte)item.InventoryType);
-        buffer.WriteUInt8((byte)item.Quality);
-        buffer.WriteUInt8((byte)item.AmmoType);
-        buffer.WriteInt8((sbyte)StatValues[0]);
-        buffer.WriteInt8((sbyte)StatValues[1]);
-        buffer.WriteInt8((sbyte)StatValues[2]);
-        buffer.WriteInt8((sbyte)StatValues[3]);
-        buffer.WriteInt8((sbyte)StatValues[4]);
-        buffer.WriteInt8((sbyte)StatValues[5]);
-        buffer.WriteInt8((sbyte)StatValues[6]);
-        buffer.WriteInt8((sbyte)StatValues[7]);
-        buffer.WriteInt8((sbyte)StatValues[8]);
-        buffer.WriteInt8((sbyte)StatValues[9]);
-        buffer.WriteInt8((sbyte)item.RequiredLevel);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 ItemSparse format. Reference: WPP V3_4_0_45166 HotfixHandler.cs:4087-4113,
+            // HermesProxy-WOTLK GameData.cs:2549-2581.
+            for (int i = 0; i < 10; i++)
+                buffer.WriteInt16((short)StatValues[i]);     // StatModifierBonusAmount[10]
+            buffer.WriteUInt8(254);                          // ExpansionID
+            buffer.WriteUInt8(0);                            // ArtifactID
+            buffer.WriteUInt8(0);                            // SpellWeight
+            buffer.WriteUInt8(0);                            // SpellWeightCategory
+            buffer.WriteUInt8((byte)item.ItemSocketColors[0]); // SocketType[0]
+            buffer.WriteUInt8((byte)item.ItemSocketColors[1]);
+            buffer.WriteUInt8((byte)item.ItemSocketColors[2]);
+            buffer.WriteUInt8((byte)item.SheathType);
+            buffer.WriteUInt8((byte)item.Material);
+            buffer.WriteUInt8((byte)item.PageMaterial);
+            buffer.WriteUInt8((byte)item.Language);
+            buffer.WriteUInt8((byte)item.Bonding);
+            buffer.WriteUInt8((byte)item.DamageTypes[0]);
+            for (int i = 0; i < 10; i++)
+                buffer.WriteInt8((sbyte)item.StatTypes[i]);  // StatModifierBonusStat[10]
+            buffer.WriteUInt8((byte)item.ContainerSlots);
+            buffer.WriteUInt8((byte)item.RequiredRepValue);  // RequiredPVPMedal
+            buffer.WriteUInt8((byte)item.RequiredCityRank);  // RequiredPVPRank
+            // No RequiredHonorRank in V3_4_3 — the 341 layout removed the trailing
+            // MinReputation byte (which V3_4_3 relocated to a 4-byte field above).
+            buffer.WriteInt8((sbyte)item.InventoryType);     // sbyte in V3_4_3
+            buffer.WriteInt8((sbyte)item.Quality);           // OverallQualityID (sbyte)
+            buffer.WriteUInt8((byte)item.AmmoType);
+            buffer.WriteInt8((sbyte)item.RequiredLevel);
+        }
+        else
+        {
+            // V1_14 / V2_5 layout — original upstream format. Do not alter without
+            // a per-build WPP cross-check for the affected client.
+            buffer.WriteUInt8(254);
+            buffer.WriteUInt8(0);
+            buffer.WriteUInt8(0);
+            buffer.WriteUInt8(0);
+            buffer.WriteUInt8((byte)item.ItemSocketColors[0]);
+            buffer.WriteUInt8((byte)item.ItemSocketColors[1]);
+            buffer.WriteUInt8((byte)item.ItemSocketColors[2]);
+            buffer.WriteUInt8((byte)item.SheathType);
+            buffer.WriteUInt8((byte)item.Material);
+            buffer.WriteUInt8((byte)item.PageMaterial);
+            buffer.WriteUInt8((byte)item.Language);
+            buffer.WriteUInt8((byte)item.Bonding);
+            buffer.WriteUInt8((byte)item.DamageTypes[0]);
+            buffer.WriteInt8((sbyte)item.StatTypes[0]);
+            buffer.WriteInt8((sbyte)item.StatTypes[1]);
+            buffer.WriteInt8((sbyte)item.StatTypes[2]);
+            buffer.WriteInt8((sbyte)item.StatTypes[3]);
+            buffer.WriteInt8((sbyte)item.StatTypes[4]);
+            buffer.WriteInt8((sbyte)item.StatTypes[5]);
+            buffer.WriteInt8((sbyte)item.StatTypes[6]);
+            buffer.WriteInt8((sbyte)item.StatTypes[7]);
+            buffer.WriteInt8((sbyte)item.StatTypes[8]);
+            buffer.WriteInt8((sbyte)item.StatTypes[9]);
+            buffer.WriteUInt8((byte)item.ContainerSlots);
+            buffer.WriteUInt8((byte)item.RequiredRepValue);
+            buffer.WriteUInt8((byte)item.RequiredCityRank);
+            buffer.WriteUInt8((byte)item.RequiredHonorRank);
+            buffer.WriteUInt8((byte)item.InventoryType);
+            buffer.WriteUInt8((byte)item.Quality);
+            buffer.WriteUInt8((byte)item.AmmoType);
+            buffer.WriteInt8((sbyte)StatValues[0]);
+            buffer.WriteInt8((sbyte)StatValues[1]);
+            buffer.WriteInt8((sbyte)StatValues[2]);
+            buffer.WriteInt8((sbyte)StatValues[3]);
+            buffer.WriteInt8((sbyte)StatValues[4]);
+            buffer.WriteInt8((sbyte)StatValues[5]);
+            buffer.WriteInt8((sbyte)StatValues[6]);
+            buffer.WriteInt8((sbyte)StatValues[7]);
+            buffer.WriteInt8((sbyte)StatValues[8]);
+            buffer.WriteInt8((sbyte)StatValues[9]);
+            buffer.WriteInt8((sbyte)item.RequiredLevel);
+        }
     }
 
     public static void WriteItemSparseHotfix(ItemSparseRecord row, Framework.IO.ByteBuffer buffer)
     {
+        var startSize = buffer.GetSize();
         Span<int> StatValues = stackalloc int[10];
         for (int i = 0; i < 10; i++)
         {
@@ -2442,7 +3409,19 @@ public static partial class GameData
         buffer.WriteUInt32(row.DurationInInventory);
         buffer.WriteFloat(row.QualityModifier);
         buffer.WriteUInt32(row.BagFamily);
-        buffer.WriteFloat(row.RangeMod);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341): split into StartQuestID (Int32) + ItemRange (Single).
+            // Older V1_14/V2_5 layout has a single combined RangeMod here AND a UInt16
+            // StartQuestId near ItemSet. V3_4_3 promotes StartQuestId to a 4-byte field
+            // and drops the UInt16 from the later block (handled below).
+            buffer.WriteInt32((int)row.StartQuestId);       // StartQuestID
+            buffer.WriteFloat(row.RangeMod);                // ItemRange
+        }
+        else
+        {
+            buffer.WriteFloat(row.RangeMod);
+        }
         buffer.WriteFloat(row.StatPercentageOfSocket[0]);
         buffer.WriteFloat(row.StatPercentageOfSocket[1]);
         buffer.WriteFloat(row.StatPercentageOfSocket[2]);
@@ -2465,6 +3444,12 @@ public static partial class GameData
         buffer.WriteInt32(row.StatPercentEditor[9]);
         buffer.WriteInt32(row.Stackable);
         buffer.WriteInt32(row.MaxCount);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341): MinReputation Int32 between MaxCount
+            // and RequiredAbility. The trailing MinReputation byte is dropped.
+            buffer.WriteInt32(0);                           // MinReputation
+        }
         buffer.WriteUInt32(row.RequiredAbility);
         buffer.WriteUInt32(row.SellPrice);
         buffer.WriteUInt32(row.BuyPrice);
@@ -2476,6 +3461,14 @@ public static partial class GameData
         buffer.WriteUInt32(row.Flags[2]);
         buffer.WriteUInt32(row.Flags[3]);
         buffer.WriteInt32(row.OppositeFactionItemId);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3 (ItemSparseHandler341): three Int32 fields between FactionRelated
+            // and MaxDurability.
+            buffer.WriteInt32(0);                           // ModifiedCraftingReagentItemID
+            buffer.WriteInt32(0);                           // ContentTuningID
+            buffer.WriteInt32(0);                           // PlayerLevelToItemLevelCurveID
+        }
         buffer.WriteUInt32(row.MaxDurability);
         buffer.WriteUInt16(row.ItemNameDescriptionId);
         buffer.WriteUInt16(row.RequiredTransmogHoliday);
@@ -2489,7 +3482,13 @@ public static partial class GameData
         buffer.WriteUInt16(row.ZoneBound[1]);
         buffer.WriteUInt16(row.ItemSet);
         buffer.WriteUInt16(row.LockId);
-        buffer.WriteUInt16(row.StartQuestId);
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+        {
+            // V1_14/V2_5: StartQuestId UInt16 sits here. V3_4_3 promoted this to a
+            // 4-byte StartQuestID Int32 written earlier (after BagFamily), so the
+            // UInt16 slot here disappears.
+            buffer.WriteUInt16(row.StartQuestId);
+        }
         buffer.WriteUInt16(row.PageText);
         buffer.WriteUInt16(row.Delay);
         buffer.WriteUInt16(row.RequiredReputationId);
@@ -2517,51 +3516,96 @@ public static partial class GameData
         buffer.WriteInt16(row.Resistances[5]);
         buffer.WriteInt16(row.Resistances[6]);
         buffer.WriteUInt16(row.ScalingStatDistributionId);
-        buffer.WriteUInt8(row.ExpansionId);
-        buffer.WriteUInt8(row.ArtifactId);
-        buffer.WriteUInt8(row.SpellWeight);
-        buffer.WriteUInt8(row.SpellWeightCategory);
-        buffer.WriteUInt8(row.SocketType[0]);
-        buffer.WriteUInt8(row.SocketType[1]);
-        buffer.WriteUInt8(row.SocketType[2]);
-        buffer.WriteUInt8(row.SheatheType);
-        buffer.WriteUInt8(row.Material);
-        buffer.WriteUInt8(row.PageMaterial);
-        buffer.WriteUInt8(row.PageLanguage);
-        buffer.WriteUInt8(row.Bonding);
-        buffer.WriteUInt8(row.DamageType);
-        buffer.WriteInt8(row.StatType[0]);
-        buffer.WriteInt8(row.StatType[1]);
-        buffer.WriteInt8(row.StatType[2]);
-        buffer.WriteInt8(row.StatType[3]);
-        buffer.WriteInt8(row.StatType[4]);
-        buffer.WriteInt8(row.StatType[5]);
-        buffer.WriteInt8(row.StatType[6]);
-        buffer.WriteInt8(row.StatType[7]);
-        buffer.WriteInt8(row.StatType[8]);
-        buffer.WriteInt8(row.StatType[9]);
-        buffer.WriteUInt8(row.ContainerSlots);
-        buffer.WriteUInt8(row.RequiredReputationRank);
-        buffer.WriteUInt8(row.RequiredCityRank);
-        buffer.WriteUInt8(row.RequiredHonorRank);
-        buffer.WriteUInt8(row.InventoryType);
-        buffer.WriteUInt8(row.OverallQualityId);
-        buffer.WriteUInt8(row.AmmoType);
-        buffer.WriteInt8((sbyte)StatValues[0]);
-        buffer.WriteInt8((sbyte)StatValues[1]);
-        buffer.WriteInt8((sbyte)StatValues[2]);
-        buffer.WriteInt8((sbyte)StatValues[3]);
-        buffer.WriteInt8((sbyte)StatValues[4]);
-        buffer.WriteInt8((sbyte)StatValues[5]);
-        buffer.WriteInt8((sbyte)StatValues[6]);
-        buffer.WriteInt8((sbyte)StatValues[7]);
-        buffer.WriteInt8((sbyte)StatValues[8]);
-        buffer.WriteInt8((sbyte)StatValues[9]);
-        buffer.WriteInt8(row.RequiredLevel);
+        Log.Print(LogType.Trace, $"[ItemSparseHotfix] item={row.Id} preScalingSize={buffer.GetSize() - startSize} build={ModernVersion.Build}");
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            Log.Print(LogType.Trace, $"[ItemSparseHotfix] item={row.Id} taking V3_4_3 path");
+            // V3_4_3 ItemSparse format. Reference: WPP V3_4_0_45166 HotfixHandler.cs:4087-4113.
+            for (int i = 0; i < 10; i++)
+                buffer.WriteInt16((short)row.StatValue[i]);  // StatModifierBonusAmount[10]
+            buffer.WriteUInt8(row.ExpansionId);
+            buffer.WriteUInt8(row.ArtifactId);
+            buffer.WriteUInt8(row.SpellWeight);
+            buffer.WriteUInt8(row.SpellWeightCategory);
+            buffer.WriteUInt8(row.SocketType[0]);
+            buffer.WriteUInt8(row.SocketType[1]);
+            buffer.WriteUInt8(row.SocketType[2]);
+            buffer.WriteUInt8(row.SheatheType);
+            buffer.WriteUInt8(row.Material);
+            buffer.WriteUInt8(row.PageMaterial);
+            buffer.WriteUInt8(row.PageLanguage);
+            buffer.WriteUInt8(row.Bonding);
+            buffer.WriteUInt8(row.DamageType);
+            for (int i = 0; i < 10; i++)
+                buffer.WriteInt8(row.StatType[i]);           // StatModifierBonusStat[10]
+            buffer.WriteUInt8(row.ContainerSlots);
+            buffer.WriteUInt8(row.RequiredReputationRank);   // RequiredPVPMedal
+            buffer.WriteUInt8(row.RequiredCityRank);         // RequiredPVPRank
+            // No RequiredHonorRank for V3_4_3 — 341 layout drops the trailing
+            // MinReputation byte; MinReputation moved up to a 4-byte field above.
+            buffer.WriteInt8((sbyte)row.InventoryType);      // InventoryType (sbyte in V3_4_3)
+            buffer.WriteInt8((sbyte)row.OverallQualityId);   // OverallQualityID (sbyte)
+            buffer.WriteUInt8(row.AmmoType);                 // AmmunitionType
+            buffer.WriteInt8(row.RequiredLevel);
+        }
+        else
+        {
+            // V1_14 / V2_5 layout — preserve original upstream byte sequence.
+            buffer.WriteUInt8(row.ExpansionId);
+            buffer.WriteUInt8(row.ArtifactId);
+            buffer.WriteUInt8(row.SpellWeight);
+            buffer.WriteUInt8(row.SpellWeightCategory);
+            buffer.WriteUInt8(row.SocketType[0]);
+            buffer.WriteUInt8(row.SocketType[1]);
+            buffer.WriteUInt8(row.SocketType[2]);
+            buffer.WriteUInt8(row.SheatheType);
+            buffer.WriteUInt8(row.Material);
+            buffer.WriteUInt8(row.PageMaterial);
+            buffer.WriteUInt8(row.PageLanguage);
+            buffer.WriteUInt8(row.Bonding);
+            buffer.WriteUInt8(row.DamageType);
+            buffer.WriteInt8(row.StatType[0]);
+            buffer.WriteInt8(row.StatType[1]);
+            buffer.WriteInt8(row.StatType[2]);
+            buffer.WriteInt8(row.StatType[3]);
+            buffer.WriteInt8(row.StatType[4]);
+            buffer.WriteInt8(row.StatType[5]);
+            buffer.WriteInt8(row.StatType[6]);
+            buffer.WriteInt8(row.StatType[7]);
+            buffer.WriteInt8(row.StatType[8]);
+            buffer.WriteInt8(row.StatType[9]);
+            buffer.WriteUInt8(row.ContainerSlots);
+            buffer.WriteUInt8(row.RequiredReputationRank);
+            buffer.WriteUInt8(row.RequiredCityRank);
+            buffer.WriteUInt8(row.RequiredHonorRank);
+            buffer.WriteUInt8(row.InventoryType);
+            buffer.WriteUInt8(row.OverallQualityId);
+            buffer.WriteUInt8(row.AmmoType);
+            buffer.WriteInt8((sbyte)StatValues[0]);
+            buffer.WriteInt8((sbyte)StatValues[1]);
+            buffer.WriteInt8((sbyte)StatValues[2]);
+            buffer.WriteInt8((sbyte)StatValues[3]);
+            buffer.WriteInt8((sbyte)StatValues[4]);
+            buffer.WriteInt8((sbyte)StatValues[5]);
+            buffer.WriteInt8((sbyte)StatValues[6]);
+            buffer.WriteInt8((sbyte)StatValues[7]);
+            buffer.WriteInt8((sbyte)StatValues[8]);
+            buffer.WriteInt8((sbyte)StatValues[9]);
+            buffer.WriteInt8(row.RequiredLevel);
+        }
+        Log.Print(LogType.Trace, $"[ItemSparseHotfixSize] item={row.Id} buildTotal={buffer.GetSize() - startSize}");
     }
     public static void LoadItemHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"Item{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -2650,7 +3694,7 @@ public static partial class GameData
             record.HotfixContent.WriteUInt16(MaxDamage3);
             record.HotfixContent.WriteUInt16(MaxDamage4);
             record.HotfixContent.WriteUInt16(MaxDamage5);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
 
@@ -2753,7 +3797,18 @@ public static partial class GameData
         buffer.WriteInt32(modAppearance.ItemAppearanceModifierID);
         buffer.WriteInt32(modAppearance.ItemAppearanceID);
         buffer.WriteInt32(modAppearance.OrderIndex);
-        buffer.WriteInt32(modAppearance.TransmogSourceTypeEnum);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // V3_4_3: TransmogSourceTypeEnum is sbyte (1 byte), per WPP
+            // V3_4_0_45166/HotfixHandler.cs:3725. Sending Int32 (4 bytes) like the
+            // V1_14/V2_5 path adds 3 trailing bytes which the V3_4_3 client rejects
+            // as "incorrect structure" — and silently fails to register the appearance.
+            buffer.WriteInt8((sbyte)modAppearance.TransmogSourceTypeEnum);
+        }
+        else
+        {
+            buffer.WriteInt32(modAppearance.TransmogSourceTypeEnum);
+        }
     }
 
     public static void WriteItemEffectHotfix(ItemEffect effect, Framework.IO.ByteBuffer buffer)
@@ -2785,11 +3840,11 @@ public static partial class GameData
                 HotfixRecord record = new HotfixRecord();
                 record.Status = remove ? HotfixStatus.RecordRemoved : HotfixStatus.Valid;
                 record.TableHash = table;
-                record.HotfixId = GetFirstFreeId(Hotfixes, HotfixItemBegin);
+                record.HotfixId = GetFirstFreeId(Hotfixes, ref _hotfixesCursor, HotfixItemBegin);
                 record.UniqueId = record.HotfixId;
                 record.RecordId = recordId;
                 writer?.Invoke(record.HotfixContent);
-                Hotfixes.Add(record.HotfixId, record);
+                Hotfixes[record.HotfixId] = record;
             }
             else
             {
@@ -2833,6 +3888,30 @@ public static partial class GameData
 
     public static Server.Packets.HotFixMessage? GenerateItemUpdateIfNeeded(ItemTemplate item)
     {
+        // Skip proactive Item hotfix when our DisplayID -> FileDataID lookup fails.
+        // The hotfix would set IconFileDataID=0 and OVERRIDE the client's baked-in
+        // (correct) value — observed for item 38607 (Battle-worn Sword): TC's
+        // DisplayID 50887 doesn't exist in V3_4_3 ItemDisplayInfo (0 rows on wago);
+        // the V3_4_3 client has Item.IconFileDataID=135410 baked in and uses it
+        // directly for the inventory icon, bypassing DisplayID. Sending our broken
+        // hotfix replaces 135410 with 0 -> red "?" icon. If the client ever needs
+        // Item table data we don't have baked in, it requests via CMSG_DB_QUERY_BULK
+        // and HotfixHandler.HandleDbQueryBulk answers — that path is unaffected.
+        if (GetItemIconFileDataIdByDisplayId(item.DisplayID) == 0)
+        {
+            Log.Print(LogType.Storage,
+                $"Item #{item.Entry} (DisplayID {item.DisplayID}): no FileDataID mapping — " +
+                "skipping Item hotfix to preserve V3_4_3 client's baked-in IconFileDataID.");
+            return null;
+        }
+
+        if (ModernVersion.ExpansionVersion >= 3 && Heirlooms.Contains((int)item.Entry))
+        {
+            Log.Print(LogType.Storage,
+                $"[HeirloomHotfixSkip] item={item.Entry} skipping Item hotfix (heirloom — let baked V3_4_3 DB2 render scaling).");
+            return null;
+        }
+
         if (ItemRecordsStore.TryGetValue(item.Entry, out var row))
         {
             int iconFileDataId = (int)GetItemIconFileDataIdByDisplayId(item.DisplayID);
@@ -2934,6 +4013,26 @@ public static partial class GameData
 
     public static Server.Packets.HotFixMessage? GenerateItemSparseUpdateIfNeeded(ItemTemplate item)
     {
+        // Same skip heuristic as GenerateItemUpdateIfNeeded: if the V3_4_3 client has no
+        // DisplayID -> FileDataID mapping for this item, it likely has no baked Item DBC
+        // entry either. Sending an ItemSparse hotfix for a missing-from-baked-DBC item
+        // crashed the V3_4_3.54261 client (Error 132 ACCESS_VIOLATION at 0x0 — observed
+        // 2026-05-09 with .additem 45805). Let the client fall back to CMSG_DB_QUERY_BULK
+        // for unknown items; HotfixHandler.HandleDbQueryBulk answers from server-authoritative data.
+        if (GetItemIconFileDataIdByDisplayId(item.DisplayID) == 0)
+        {
+            Log.Print(LogType.Storage,
+                $"Item #{item.Entry}: skipping ItemSparse hotfix (no V3_4_3 DisplayID mapping; client falls back to CMSG_DB_QUERY_BULK).");
+            return null;
+        }
+
+        if (ModernVersion.ExpansionVersion >= 3 && Heirlooms.Contains((int)item.Entry))
+        {
+            Log.Print(LogType.Storage,
+                $"[HeirloomHotfixSkip] item={item.Entry} skipping ItemSparse hotfix (heirloom — let baked V3_4_3 DB2 render scaling).");
+            return null;
+        }
+
         ItemSparseRecordsStore.TryGetValue(item.Entry, out var row);
         if (row != null)
         {
@@ -3173,6 +4272,17 @@ public static partial class GameData
 
     public static Server.Packets.HotFixMessage? GenerateItemEffectUpdateIfNeeded(ItemTemplate item, byte slot)
     {
+        // Same skip heuristic as GenerateItemUpdateIfNeeded / GenerateItemSparseUpdateIfNeeded:
+        // unknown-to-V3_4_3-client items get NO hotfix updates. Sending an ItemEffect for an
+        // item with no baked Item DBC entry is part of the .additem 45805 client-crash chain
+        // (iter-15 — see GenerateItemSparseUpdateIfNeeded for the full diagnosis).
+        if (GetItemIconFileDataIdByDisplayId(item.DisplayID) == 0)
+        {
+            Log.Print(LogType.Storage,
+                $"Item #{item.Entry} slot #{slot}: skipping ItemEffect hotfix (no V3_4_3 DisplayID mapping).");
+            return null;
+        }
+
         ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
         if (effect != null)
         {
@@ -3558,9 +4668,34 @@ public static partial class GameData
 
     public static ItemEffect AddItemEffectRecord(ItemTemplate item, byte slot)
     {
+        // Prefer the V3_4_3.54261 baked-in DBC RecordID for this (item, slot) when
+        // we have it. Pushing the hotfix at the same RecordID lands it in the slot
+        // the client's pre-built ItemEffect-by-ParentItemID index already points at,
+        // turning the wire packet into an UPDATE (which the client re-reads) rather
+        // than an INSERT (which the client stores but doesn't re-index). Observed
+        // for items 38607 / 41751 — byte-correct hotfix at fresh RecordID (1 or
+        // HotfixItemBegin+) produced no "Use:" tooltip; matching the baked-in
+        // 141239 / 142989 should re-route the existing index entry to our row.
+        // For items genuinely missing from the baked-in lookup, fall back to
+        // HotfixItemBegin+ so we don't collide with anything else.
+        // Gated to V3_4_3_54261: V1_14 / V2_5 have different baked-in DBC RecordIDs;
+        // applying this lookup there would map V3_4_3 IDs onto the wrong client.
+        int id;
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && V3_4_3ItemEffectRecordIdByItemSlot.TryGetValue(((uint)item.Entry, slot), out var bakedRecordId))
+        {
+            id = (int)bakedRecordId;
+            Log.Print(LogType.Storage,
+                $"AddItemEffect: item={item.Entry} slot={slot} -> using BAKED-IN V3_4_3.54261 RecordID={id}.");
+        }
+        else
+        {
+            id = (int)GetFirstFreeId(ItemEffectStore, ref _itemEffectCursor, HotfixItemBegin);
+        }
+
         ItemEffect record = new()
         {
-            Id = (int)GetFirstFreeId(ItemEffectStore),
+            Id = id,
             LegacySlotIndex = slot
         };
         UpdateItemEffectRecord(record, item);
@@ -3593,7 +4728,8 @@ public static partial class GameData
     public static ItemAppearance AddItemAppearanceRecord(ItemTemplate item)
     {
         ItemAppearance record = new();
-        record.Id = (int)GetFirstFreeId(ItemAppearanceStore);
+        // Above baked-in DBC namespace (see AddItemEffectRecord comment).
+        record.Id = (int)GetFirstFreeId(ItemAppearanceStore, ref _itemAppearanceCursor, HotfixItemBegin);
         UpdateItemAppearanceRecord(record, item);
         ItemAppearanceStore.Add((uint)record.Id, record);
         Log.Print(LogType.Storage, $"ItemAppearance #{record.Id} created for DisplayID #{item.DisplayID}.");
@@ -3619,7 +4755,8 @@ public static partial class GameData
     public static ItemModifiedAppearance? AddItemModifiedAppearanceRecord(ItemTemplate item)
     {
         ItemModifiedAppearance record = new();
-        record.Id = (int)GetFirstFreeId(ItemModifiedAppearanceStore);
+        // Above baked-in DBC namespace (see AddItemEffectRecord comment).
+        record.Id = (int)GetFirstFreeId(ItemModifiedAppearanceStore, ref _itemModifiedAppearanceCursor, HotfixItemBegin);
         UpdateItemModifiedAppearanceRecord(record, item);
         if (record.ItemID != item.Entry)
         {
@@ -3678,12 +4815,30 @@ public static partial class GameData
         if (item.Class == 11 && item.SubClass == 2)
             return true;
 
+        // Quest items (Class 12) — many use weapon/armor display data and need
+        // ItemAppearance + ItemModifiedAppearance pushed for the icon to render.
+        // Without this, the modern V3_4_3 client falls back to the red "?" icon
+        // for looted quest items (observed: Battle-worn Sword item 38607 from
+        // DK starter quest 12619 — name showed via baked-in ItemSparse but the
+        // icon was missing because the proxy never emitted DisplayID -> file
+        // mapping records).
+        if (item.Class == 12)
+            return true;
+
         return false;
     }
 
     public static void LoadCreatureDisplayInfoHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfo{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -3751,12 +4906,20 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(textureVariationFileDataId1);
             record.HotfixContent.WriteInt32(textureVariationFileDataId2);
             record.HotfixContent.WriteInt32(textureVariationFileDataId3);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadCreatureDisplayInfoExtraHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfoExtra{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
 
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
@@ -3801,12 +4964,20 @@ public static partial class GameData
             record.HotfixContent.WriteUInt8(customDisplayOption1);
             record.HotfixContent.WriteUInt8(customDisplayOption2);
             record.HotfixContent.WriteUInt8(customDisplayOption3);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadCreatureDisplayInfoOptionHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"CreatureDisplayInfoOption{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -3827,12 +4998,21 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(chrCustomizationOptionId);
             record.HotfixContent.WriteInt32(chrCustomizationChoiceId);
             record.HotfixContent.WriteInt32(creatureDisplayInfoExtraId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     public static void LoadItemEffectHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemEffect{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this build: either the client's own DB2 already carries these
+            // rows, or the table has no overrides for this expansion. Nothing to load.
+            // See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -3865,13 +5045,21 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(spellId);
             record.HotfixContent.WriteInt16(chrSpecializationId);
             record.HotfixContent.WriteInt32(parentItemId);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
         }
     }
 
     public static void LoadItemDisplayInfoHotfixes()
     {
         var path = Path.Combine("CSV", "Hotfix", $"ItemDisplayInfo{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
         using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
         uint counter = 0;
         foreach (var row in reader)
@@ -3944,7 +5132,119 @@ public static partial class GameData
             record.HotfixContent.WriteInt32(attachmentGeosetGroup6);
             record.HotfixContent.WriteInt32(helmetGeosetVis1);
             record.HotfixContent.WriteInt32(helmetGeosetVis2);
-            Hotfixes.Add(record.HotfixId, record);
+            Hotfixes[record.HotfixId] = record;
+        }
+    }
+
+    // ChrCustomizationChoice: per-row choices the V3_4_3 client looks up when rendering a
+    // character (e.g. choice IDs 17161/17177/17193 for Human Male, 18079/18093 for Draenei
+    // Female). Without these the client silently drops multi-char enums for races whose
+    // choice IDs aren't in its baseline DB2 cache. Field/byte order matches CypherCore's
+    // ChrCustomizationChoiceRecord (Source/Game/DataStorage/Structs/C_Records.cs:200-213).
+    public static void LoadChrCustomizationChoiceHotfixes()
+    {
+        var path = Path.Combine("CSV", "Hotfix", $"ChrCustomizationChoice{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
+        uint counter = 0;
+        foreach (var row in reader)
+        {
+            counter++;
+
+            string name = row[0].ToString();
+            uint id = row[1].Parse<uint>();
+            int chrCustomizationOptionId = row[2].Parse<int>();
+            int chrCustomizationReqId = row[3].Parse<int>();
+            int chrCustomizationVisReqId = row[4].Parse<int>();
+            ushort sortOrder = row[5].Parse<ushort>();
+            ushort uiOrderIndex = row[6].Parse<ushort>();
+            int flags = row[7].Parse<int>();
+            int addedInPatch = row[8].Parse<int>();
+            int soundKitId = row[9].Parse<int>();
+            int swatchColor0 = row[10].Parse<int>();
+            int swatchColor1 = row[11].Parse<int>();
+
+            HotfixRecord record = new HotfixRecord();
+            record.Status = HotfixStatus.Valid;
+            record.TableHash = DB2Hash.ChrCustomizationChoice;
+            record.HotfixId = HotfixChrCustomizationChoiceBegin + counter;
+            record.UniqueId = record.HotfixId;
+            record.RecordId = id;
+            record.HotfixContent.WriteCString(name);
+            record.HotfixContent.WriteInt32((int)id);
+            record.HotfixContent.WriteInt32(chrCustomizationOptionId);
+            record.HotfixContent.WriteInt32(chrCustomizationReqId);
+            record.HotfixContent.WriteInt32(chrCustomizationVisReqId);
+            record.HotfixContent.WriteUInt16(sortOrder);
+            record.HotfixContent.WriteUInt16(uiOrderIndex);
+            record.HotfixContent.WriteInt32(flags);
+            record.HotfixContent.WriteInt32(addedInPatch);
+            record.HotfixContent.WriteInt32(soundKitId);
+            record.HotfixContent.WriteInt32(swatchColor0);
+            record.HotfixContent.WriteInt32(swatchColor1);
+            Hotfixes[record.HotfixId] = record;
+        }
+    }
+
+    // ChrCustomizationOption: the customization slots themselves (Skin Color, Face, ...).
+    // Pairs with ChrCustomizationChoice. Field order matches CypherCore's
+    // ChrCustomizationOptionRecord (C_Records.cs:245-259).
+    public static void LoadChrCustomizationOptionHotfixes()
+    {
+        var path = Path.Combine("CSV", "Hotfix", $"ChrCustomizationOption{ModernVersion.ExpansionVersion}.csv");
+
+        if (!File.Exists(path))
+        {
+            // Not shipped for this expansion: the client's own DB2 already carries these
+            // rows verbatim, so there is nothing to override. See scripts/compare-hotfix-csv.py.
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
+        uint counter = 0;
+        foreach (var row in reader)
+        {
+            counter++;
+
+            string name = row[0].ToString();
+            uint id = row[1].Parse<uint>();
+            ushort secondaryId = row[2].Parse<ushort>();
+            int flags = row[3].Parse<int>();
+            int chrModelId = row[4].Parse<int>();
+            int sortIndex = row[5].Parse<int>();
+            int chrCustomizationCategoryId = row[6].Parse<int>();
+            int optionType = row[7].Parse<int>();
+            float barberShopCostModifier = row[8].Parse<float>();
+            int chrCustomizationId = row[9].Parse<int>();
+            int chrCustomizationReqId = row[10].Parse<int>();
+            int uiOrderIndex = row[11].Parse<int>();
+
+            HotfixRecord record = new HotfixRecord();
+            record.Status = HotfixStatus.Valid;
+            record.TableHash = DB2Hash.ChrCustomizationOption;
+            record.HotfixId = HotfixChrCustomizationOptionBegin + counter;
+            record.UniqueId = record.HotfixId;
+            record.RecordId = id;
+            record.HotfixContent.WriteCString(name);
+            record.HotfixContent.WriteInt32((int)id);
+            record.HotfixContent.WriteUInt16(secondaryId);
+            record.HotfixContent.WriteInt32(flags);
+            record.HotfixContent.WriteInt32(chrModelId);
+            record.HotfixContent.WriteInt32(sortIndex);
+            record.HotfixContent.WriteInt32(chrCustomizationCategoryId);
+            record.HotfixContent.WriteInt32(optionType);
+            record.HotfixContent.WriteFloat(barberShopCostModifier);
+            record.HotfixContent.WriteInt32(chrCustomizationId);
+            record.HotfixContent.WriteInt32(chrCustomizationReqId);
+            record.HotfixContent.WriteInt32(uiOrderIndex);
+            Hotfixes[record.HotfixId] = record;
         }
     }
     #endregion
@@ -4142,6 +5442,7 @@ public static partial class GameData
     }
 
     public record CreatureDisplayInfo(uint ModelId, float DisplayScale);
+    public readonly record struct BattlePetSpeciesInfo(uint SpeciesId, uint CreatureId, uint Flags);
     public record CreatureModelCollisionHeight(float ModelScale, float Height, float MountHeight);
 
     // Hotfix structures

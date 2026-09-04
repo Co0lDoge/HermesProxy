@@ -16,6 +16,9 @@ public class AccountMetaDataManager
     private const string LAST_CHARACTER_FILE = "last_character.txt";
     private const string COMPLETED_QUESTS_FILE = "completed_quests.csv";
     private const string SETTINGS_FILE = "settings.json";
+    private const string CHAR_LIST_ORDER_FILE = "char_list_order.txt";
+    private const string COLLECTION_FAVORITES_FILE = "collection_favorites.json";
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private readonly string _accountName;
 
@@ -50,15 +53,20 @@ public class AccountMetaDataManager
         if (!File.Exists(path))
             return null;
 
-        var rawContent = File.ReadAllText(path, Encoding.UTF8);
+        var rawContent = File.ReadAllText(path, Encoding.UTF8).Trim();
+        if (rawContent.Length == 0)
+            return null;
+
         var content = rawContent.Split(',');
-        if (content.Length != 4)
+        if (content.Length != 4
+            || !ulong.TryParse(content[2], out ulong charLowerGuid)
+            || !long.TryParse(content[3], out long lastLoginUnixSec))
         {
-            Log.Print(LogType.Error, $"Invalid split size in 'GetLastSelectedCharacter' for account '{_accountName}'");
+            Log.Print(LogType.Error, $"Invalid last_character.txt for account '{_accountName}'");
             return null;
         }
-        
-        return (content[0], content[1], ulong.Parse(content[3]), long.Parse(content[2]));
+
+        return (content[0], content[1], charLowerGuid, lastLoginUnixSec);
     }
 
     public void SaveLastSelectedCharacter(string realmName, string charName, ulong charLowerGuid, long lastLoginUnixSec)
@@ -70,6 +78,25 @@ public class AccountMetaDataManager
         Log.Print(LogType.Debug, $"Saved last selected char in '{path}'");
     }
 
+    public void RememberRealmFromCharacterList(string realmName, IReadOnlyList<(string Name, ulong GuidLow)> characters)
+    {
+        if (string.IsNullOrEmpty(realmName) || characters.Count == 0)
+            return;
+
+        var existing = GetLastSelectedCharacter();
+        var pick = characters[0];
+        if (existing.HasValue)
+        {
+            var match = characters.FirstOrDefault(c =>
+                c.GuidLow == existing.Value.charLowerGuid
+                || string.Equals(c.Name, existing.Value.charName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(match.Name))
+                pick = match;
+        }
+
+        SaveLastSelectedCharacter(realmName, pick.Name, pick.GuidLow, Time.UnixTime);
+    }
+
     public void InvalidateLastSelectedCharacter()
     {
         var dir = GetAccountMetaDataDirectory();
@@ -78,8 +105,58 @@ public class AccountMetaDataManager
         if (!File.Exists(path))
             return;
 
-        File.WriteAllText(path, "");
+        File.Delete(path);
         Log.Print(LogType.Debug, $"Invalidated last selected character entry in '{path}'");
+    }
+
+    private string GetAccountRealmDirectory(string realmName)
+    {
+        string path = Path.GetFullPath(Path.Combine("AccountData", _accountName, realmName.Trim()));
+        if (!Directory.Exists(path))
+            Directory.CreateDirectory(path);
+        return path;
+    }
+
+    public List<CharacterListSlot> LoadCharacterListOrder(string realmName)
+    {
+        var path = Path.Combine(GetAccountRealmDirectory(realmName), CHAR_LIST_ORDER_FILE);
+        if (!File.Exists(path))
+            return new List<CharacterListSlot>();
+
+        var order = new List<CharacterListSlot>();
+        byte fallback = 0;
+        foreach (var raw in File.ReadAllLines(path, Encoding.UTF8))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0)
+                continue;
+            var parts = line.Split(',');
+            if (!ulong.TryParse(parts[0], out ulong guidLow))
+            {
+                Log.Print(LogType.Warn, $"Ignoring unparseable character-list order line in '{path}': '{line}'");
+                continue;
+            }
+            byte pos = fallback;
+            if (parts.Length >= 2)
+            {
+                if (!byte.TryParse(parts[1], out byte parsed))
+                {
+                    Log.Print(LogType.Warn, $"Ignoring unparseable character-list position in '{path}': '{line}'");
+                    continue;
+                }
+                pos = parsed;
+            }
+            order.Add(new CharacterListSlot(guidLow, pos));
+            fallback = (byte)(pos + 1);
+        }
+        return order;
+    }
+
+    public void SaveCharacterListOrder(string realmName, IReadOnlyList<CharacterListSlot> slots)
+    {
+        var path = Path.Combine(GetAccountRealmDirectory(realmName), CHAR_LIST_ORDER_FILE);
+        File.WriteAllLines(path, slots.Select(s => $"{s.GuidLow},{s.ListPosition}"), Utf8NoBom);
+        Log.Print(LogType.Debug, $"Saved character list order ({slots.Count}) in '{path}'");
     }
 
     public List<uint> GetAllCompletedQuests(string realmName, string charName)
@@ -143,6 +220,37 @@ public class AccountMetaDataManager
 
         return loadedJson!;
     }
+
+    public CollectionFavorites LoadCollectionFavorites()
+    {
+        var path = Path.Combine(GetAccountMetaDataDirectory(), COLLECTION_FAVORITES_FILE);
+        if (!File.Exists(path))
+            return new CollectionFavorites();
+
+        var loaded = JsonSerializer.Deserialize<CollectionFavorites>(File.ReadAllText(path, Encoding.UTF8));
+        if (loaded == null)
+            return new CollectionFavorites();
+        loaded.FavoritePetSpecies ??= [];
+        loaded.FavoriteMountSpells ??= [];
+        loaded.LearnedToys ??= [];
+        loaded.FavoriteToys ??= [];
+        return loaded;
+    }
+
+    public void SaveCollectionFavorites(CollectionFavorites favorites)
+    {
+        var path = Path.Combine(GetAccountMetaDataDirectory(), COLLECTION_FAVORITES_FILE);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(path, JsonSerializer.Serialize(favorites, options), Encoding.UTF8);
+    }
+}
+
+public sealed class CollectionFavorites
+{
+    public HashSet<uint> FavoritePetSpecies { get; set; } = [];
+    public HashSet<uint> FavoriteMountSpells { get; set; } = [];
+    public HashSet<uint> LearnedToys { get; set; } = [];
+    public HashSet<uint> FavoriteToys { get; set; } = [];
 }
 
 public class AccountData
@@ -217,31 +325,58 @@ public class AccountDataManager
         AccountData? data = null;
         string fileName = GetFullFileName(guid, type);
 
-        if (File.Exists(fileName))
+        if (!File.Exists(fileName))
+            return null;
+
+        // A stale, truncated or mismatched cache file must not be fatal. These were
+        // Trace.Asserts, which are compiled into Release and abort the process outright
+        // rather than throwing, so a single bad file on disk killed the proxy during
+        // login with nothing catchable. Discard the file instead: the client re-sends
+        // that slot and SaveData overwrites it.
+        try
         {
-            using (FileStream file = File.OpenRead(GetFullFileName(guid, type)))
+            using BinaryReader reader = new BinaryReader(File.OpenRead(fileName));
+
+            data = new();
+            ulong guidLow = reader.ReadUInt64();
+            ulong guidHigh = reader.ReadUInt64();
+            data.Guid = new WowGuid128(guidLow, guidHigh);
+
+            if (!IsGlobalDataType(type) && guid != data.Guid)
             {
-                using (BinaryReader reader = new BinaryReader(File.OpenRead(GetFullFileName(guid, type))))
-                {
-                    data = new();
-                    ulong guidLow = reader.ReadUInt64();
-                    ulong guidHigh = reader.ReadUInt64();
-                    data.Guid = new WowGuid128(guidLow, guidHigh);
-
-                    if (!IsGlobalDataType(type))
-                        System.Diagnostics.Trace.Assert(guid == data.Guid);
-
-                    data.Timestamp = reader.ReadInt64();
-                    data.Type = reader.ReadUInt32();
-                    System.Diagnostics.Trace.Assert(type == data.Type);
-                    data.UncompressedSize = reader.ReadUInt32();
-
-                    int compressedSize = reader.ReadInt32();
-                    data.CompressedData = reader.ReadBytes(compressedSize);
-                }
+                Log.Print(LogType.Warn,
+                    $"Account data '{fileName}' belongs to {data.Guid} but was loaded for {guid}, ignoring it.");
+                return null;
             }
+
+            data.Timestamp = reader.ReadInt64();
+            data.Type = reader.ReadUInt32();
+
+            if (type != data.Type)
+            {
+                Log.Print(LogType.Warn,
+                    $"Account data '{fileName}' holds type {data.Type} but type {type} was expected, ignoring it.");
+                return null;
+            }
+
+            data.UncompressedSize = reader.ReadUInt32();
+
+            int compressedSize = reader.ReadInt32();
+            if (compressedSize < 0 || compressedSize > reader.BaseStream.Length - reader.BaseStream.Position)
+            {
+                Log.Print(LogType.Warn,
+                    $"Account data '{fileName}' declares {compressedSize} compressed bytes but the file is shorter, ignoring it.");
+                return null;
+            }
+
+            data.CompressedData = reader.ReadBytes(compressedSize);
         }
-        
+        catch (Exception e)
+        {
+            Log.Print(LogType.Warn, $"Could not read account data '{fileName}', ignoring it: {e.Message}");
+            return null;
+        }
+
         return data;
     }
 

@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -16,16 +16,23 @@ public partial class WorldClient
     void HandleLootResponse(WorldPacket packet)
     {
         LootResponse loot = new();
-        GetSession().GameState.LastLootTargetGuid = packet.ReadGuid();
-        loot.Owner = GetSession().GameState.LastLootTargetGuid.To128(GetSession().GameState);
-        loot.LootObj = GetSession().GameState.LastLootTargetGuid.ToLootGuid();
+        var state = GetSession().GameState;
+        // Reset before anything else so a failed loot doesn't leak stale counters.
+        state.RemainingLootSlots.Clear();
+        state.RemainingLootCoins = 0;
+        state.ExpectingLootReleaseResponse = false;
+        state.LootMoneyPreClaimed = false;
+
+        state.LastLootTargetGuid = packet.ReadGuid();
+        loot.Owner = state.LastLootTargetGuid.To128(state);
+        loot.LootObj = state.LastLootTargetGuid.ToLootGuid();
         loot.AcquireReason = (LootType)packet.ReadUInt8();
         if (loot.AcquireReason == LootType.None)
         {
             loot.FailureReason = (LootError)packet.ReadUInt8();
             return;
         }
-        loot.LootMethod = GetSession().GameState.GetCurrentLootMethod();
+        loot.LootMethod = state.GetCurrentLootMethod();
 
         loot.Coins = packet.ReadUInt32();
 
@@ -42,7 +49,9 @@ public partial class WorldClient
             var uiType = (LootSlotTypeLegacy)packet.ReadUInt8();
             lootItem.UIType = uiType.CastEnum<LootSlotTypeModern>();
             loot.Items.Add(lootItem);
+            state.RemainingLootSlots.Add(lootItem.LootListID);
         }
+        state.RemainingLootCoins = loot.Coins;
         SendMasterLootListIfApplicable();
         SendPacketToClient(loot);
     }
@@ -52,21 +61,79 @@ public partial class WorldClient
     {
         LootReleaseResponse loot = new();
         WowGuid64 owner = packet.ReadGuid();
-        loot.Owner = owner.To128(GetSession().GameState);
+        var state = GetSession().GameState;
         loot.LootObj = owner.ToLootGuid();
         packet.ReadBool(); // unk
-        SendPacketToClient(loot);
-        GetSession().GameState.LastMasterLootSentTarget = default;
+
+        // Legacy 3.3.5a sends an unsolicited SMSG_LOOT_RELEASE after each auto-looted item,
+        // which the V3_4_3 client treats as "close the session." That makes subsequent
+        // SMSG_LOOT_REMOVED packets for the remaining slots no-ops on the UI side.
+        // Only forward when (a) gate is inactive, (b) client itself requested release, or
+        // (c) the loot is genuinely drained.
+        bool gateActive = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+        bool clientAsked = state.ExpectingLootReleaseResponse;
+        bool drained = state.RemainingLootSlots.Count == 0 && state.RemainingLootCoins == 0;
+
+        // V3_4_3 client expects Owner = the looting player's own GUID (see TC's
+        // Player::SendLootRelease in HermesProxy-WOTLK/tmp_certs/tc_player.cpp:8700-8705).
+        // Legacy 3.3.5a sent the corpse GUID; previous proxies forwarded that verbatim,
+        // which is why the modern UI silently ignored every close on this version.
+        loot.Owner = gateActive ? state.CurrentPlayerGuid : owner.To128(state);
+
+        if (!gateActive || clientAsked || drained)
+        {
+            SendPacketToClient(loot);
+            state.LastMasterLootSentTarget = default;
+            state.ExpectingLootReleaseResponse = false;
+            state.RemainingLootSlots.Clear();
+            state.RemainingLootCoins = 0;
+            state.LootMoneyPreClaimed = false;
+        }
+        // else: suppress; session is logically still open. Leave LastMasterLootSentTarget.
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_REMOVED)]
     void HandleLootRemoved(WorldPacket packet)
     {
         LootRemoved loot = new();
-        loot.Owner = GetSession().GameState.LastLootTargetGuid.To128(GetSession().GameState);
-        loot.LootObj = GetSession().GameState.LastLootTargetGuid.ToLootGuid();
-        loot.LootListID = packet.ReadUInt8();
+        var state = GetSession().GameState;
+        loot.Owner = state.LastLootTargetGuid.To128(state);
+        loot.LootObj = state.LastLootTargetGuid.ToLootGuid();
+        byte legacyByte = packet.ReadUInt8();
+
+        // TC 3.3.5 master's auto-loot drains the whole corpse from one
+        // CMSG_AUTOSTORE_LOOT_ITEM and echoes the *clicked* slot byte in every
+        // SMSG_LOOT_REMOVED, not the slot of the item actually being removed. Resolve
+        // the legacy byte against the remaining-slots list: take it if it's still in
+        // the set, otherwise pop the first remaining slot (legacy order from Response).
+        // cMaNGOS / older legacy backends always hit the first branch (real slot
+        // numbers), so this is a no-op for them.
+        byte resolvedSlot = legacyByte;
+        int slotIndex = state.RemainingLootSlots.IndexOf(legacyByte);
+        if (slotIndex >= 0)
+        {
+            state.RemainingLootSlots.RemoveAt(slotIndex);
+        }
+        else if (state.RemainingLootSlots.Count > 0)
+        {
+            resolvedSlot = state.RemainingLootSlots[0];
+            state.RemainingLootSlots.RemoveAt(0);
+        }
+        loot.LootListID = resolvedSlot;
         SendPacketToClient(loot);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && state.RemainingLootSlots.Count == 0
+            && state.RemainingLootCoins == 0)
+        {
+            // Last item drained: synthesize the close that we will have suppressed (or
+            // that the legacy server may still send) so the V3_4_3 UI auto-closes.
+            LootReleaseResponse synth = new();
+            synth.Owner = state.CurrentPlayerGuid;
+            synth.LootObj = state.LastLootTargetGuid.ToLootGuid();
+            SendPacketToClient(synth);
+            state.LastMasterLootSentTarget = default;
+        }
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_MONEY_NOTIFY)]
@@ -77,14 +144,37 @@ public partial class WorldClient
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             loot.SoleLooter = packet.ReadBool();
         SendPacketToClient(loot);
+
+        // V3_4_3 close synthesis for the coin path lives here, not in HandleLootCelarMoney:
+        // the legacy server sends SMSG_LOOT_CLEAR_MONEY first and SMSG_LOOT_MONEY_NOTIFY
+        // second, and the V3_4_3 client refuses to auto-close if the release arrives
+        // *before* the notify. Fire here once the session is fully drained.
+        var state = GetSession().GameState;
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && state.RemainingLootSlots.Count == 0
+            && state.RemainingLootCoins == 0)
+        {
+            LootReleaseResponse synth = new();
+            synth.Owner = state.CurrentPlayerGuid;
+            synth.LootObj = state.LastLootTargetGuid.ToLootGuid();
+            SendPacketToClient(synth);
+            state.LastMasterLootSentTarget = default;
+        }
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_CLEAR_MONEY)]
     void HandleLootCelarMoney(WorldPacket packet)
     {
         CoinRemoved loot = new();
-        loot.LootObj = GetSession().GameState.LastLootTargetGuid.ToLootGuid();
+        var state = GetSession().GameState;
+        loot.LootObj = state.LastLootTargetGuid.ToLootGuid();
         SendPacketToClient(loot);
+        state.RemainingLootCoins = 0;
+
+        // The closing synth is deferred to HandleLootMoneyNotify — the V3_4_3 client
+        // expects SMSG_COIN_REMOVED → SMSG_LOOT_MONEY_NOTIFY → SMSG_LOOT_RELEASE in
+        // that order; synthesizing here would put the release before the notify on
+        // the wire and the UI refuses to auto-close.
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_START_ROLL)]
@@ -110,6 +200,11 @@ public partial class WorldClient
             loot.ValidRolls = (RollMask)packet.ReadUInt8();
         else
             loot.ValidRolls = RollMask.AllNoDisenchant;
+
+        // Only this packet and SMSG_LOOT_ALL_PASSED carry the loot object on 3.3.5a; the
+        // result packets send an empty guid. Remember it so they can be given the same one.
+        GetSession().GameState.LootRollObjects[loot.Item.LootListID] = loot.LootObj;
+
         SendPacketToClient(loot);
 
         if (GetSession().GameState.IsPassingOnLoot)
@@ -122,6 +217,24 @@ public partial class WorldClient
         }
     }
 
+    /// <summary>
+    /// 3.3.5a sends <c>ObjectGuid::Empty</c> as the loot object on SMSG_LOOT_ROLL and
+    /// SMSG_LOOT_ROLL_WON (AzerothCore Group.cpp SendLootRoll / SendLootRollWon), so the
+    /// value on the wire cannot be forwarded — the modern client needs the same LootObj it
+    /// was given in SMSG_LOOT_START_ROLL or it cannot match the roll to the open dialog.
+    /// Falls back to whatever the packet carried when the slot was never announced, which
+    /// keeps behaviour unchanged on a backend that does populate it.
+    /// </summary>
+    private WowGuid128 ResolveLootRollObject(byte lootListId, WowGuid64 legacyOwner, WowGuid128 converted)
+    {
+        if (!legacyOwner.IsEmpty())
+            return converted;
+
+        return GetSession().GameState.LootRollObjects.TryGetValue(lootListId, out var remembered)
+            ? remembered
+            : converted;
+    }
+
     [PacketHandler(Opcode.SMSG_LOOT_ROLL)]
     void HandleLootRoll(WorldPacket packet)
     {
@@ -129,6 +242,7 @@ public partial class WorldClient
         WowGuid64 owner = packet.ReadGuid();
         loot.LootObj = owner.ToLootGuid();
         loot.Item.LootListID = (byte)packet.ReadUInt32();
+        loot.LootObj = ResolveLootRollObject(loot.Item.LootListID, owner, loot.LootObj);
         loot.Player = packet.ReadGuid().To128(GetSession().GameState);
         loot.Item.Loot.ItemID = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesSeed = packet.ReadUInt32();
@@ -157,8 +271,10 @@ public partial class WorldClient
     void HandleLootRollWon(WorldPacket packet)
     {
         LootRollWon loot = new LootRollWon();
-        loot.LootObj = packet.ReadGuid().ToLootGuid();
+        WowGuid64 wonOwner = packet.ReadGuid();
+        loot.LootObj = wonOwner.ToLootGuid();
         loot.Item.LootListID = (byte)packet.ReadUInt32();
+        loot.LootObj = ResolveLootRollObject(loot.Item.LootListID, wonOwner, loot.LootObj);
         loot.Item.Loot.ItemID = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesSeed = packet.ReadUInt32();
         loot.Item.Loot.RandomPropertiesID = packet.ReadUInt32();
@@ -174,6 +290,9 @@ public partial class WorldClient
         complete.LootObj = loot.LootObj;
         complete.LootListID = loot.Item.LootListID;
         SendPacketToClient(complete);
+
+        // The roll is over; drop the remembered loot object so the slot can be reused.
+        GetSession().GameState.LootRollObjects.Remove(loot.Item.LootListID);
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_ALL_PASSED)]
@@ -192,6 +311,9 @@ public partial class WorldClient
         complete.LootObj = loot.LootObj;
         complete.LootListID = loot.Item.LootListID;
         SendPacketToClient(complete);
+
+        // The roll is over; drop the remembered loot object so the slot can be reused.
+        GetSession().GameState.LootRollObjects.Remove(loot.Item.LootListID);
     }
 
     [PacketHandler(Opcode.SMSG_LOOT_MASTER_LIST)]

@@ -52,6 +52,39 @@ public partial class WorldClient
             gossip.GossipQuests.Add(quest);
         }
 
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            int totalOptionTextLen = 0;
+            int maxOptionTextLen = 0;
+            foreach (var opt in gossip.GossipOptions)
+            {
+                int len = opt.Text?.Length ?? 0;
+                totalOptionTextLen += len;
+                if (len > maxOptionTextLen) maxOptionTextLen = len;
+            }
+            int totalQuestTextLen = 0;
+            int maxQuestTextLen = 0;
+            foreach (var q in gossip.GossipQuests)
+            {
+                int len = q.QuestTitle?.Length ?? 0;
+                totalQuestTextLen += len;
+                if (len > maxQuestTextLen) maxQuestTextLen = len;
+            }
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Debug,
+                $"[V343Trace][Gossip] guid={gossip.GossipGUID} gossipId={gossip.GossipID} textId={gossip.TextID} options={gossip.GossipOptions.Count} quests={gossip.GossipQuests.Count} optTextLen(total/max)={totalOptionTextLen}/{maxOptionTextLen} questTextLen(total/max)={totalQuestTextLen}/{maxQuestTextLen}");
+        }
+
+        var state = GetSession().GameState;
+        // V3_4_3 only: a gossip list from the NPC we are mid-quest with would
+        // replace the details / RequestItems frame with a dead overlay.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && gossip.GossipGUID == state.CurrentInteractedWithNPC
+            && (state.AwaitingQuestRewardId != 0 || state.QuestDetailsOpen))
+            return;
+
+        state.LastGossip = gossip;
+        state.LastQuestList = null;
+        state.CloseQuestDetails();
         SendPacketToClient(gossip);
     }
 
@@ -130,6 +163,8 @@ public partial class WorldClient
             vendorItem.StackCount = packet.ReadUInt32();
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 vendorItem.ExtendedCostID = packet.ReadInt32();
+            // MuID is the 1-based vendor-array slot the server wrote, not the packed row index.
+            vendorItem.MuID = (uint)vendorItem.Slot;
             GetSession().GameState.SetItemBuyCount(vendorItem.Item.ItemID, vendorItem.StackCount);
             vendor.Items.Add(vendorItem);
         }

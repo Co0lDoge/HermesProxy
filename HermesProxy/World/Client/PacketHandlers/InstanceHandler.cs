@@ -10,12 +10,38 @@ namespace HermesProxy.World.Client;
 public partial class WorldClient
 {
     // Handlers for SMSG opcodes coming the legacy world server
+
+    /// <summary>
+    /// The "you will be saved to this instance" confirmation. Legacy sends two uint32s and a byte
+    /// (Map.cpp, perm-bound branch); V3_4_3 renamed the opcode to SMSG_PENDING_RAID_LOCK and packs
+    /// the trailing flags as bits. Without this the warning never reached the client, so the
+    /// client never sent CMSG_INSTANCE_LOCK_RESPONSE and the server sat on a pending bind.
+    /// </summary>
+    [PacketHandler(Opcode.SMSG_INSTANCE_LOCK_WARNING_QUERY)]
+    void HandleInstanceLockWarningQuery(WorldPacket packet)
+    {
+        PendingRaidLock pending = new PendingRaidLock();
+        pending.TimeUntilLock = (int)packet.ReadUInt32();
+        pending.CompletedMask = packet.ReadUInt32();
+        pending.Extending = packet.ReadUInt8() != 0;
+        pending.WarningOnly = false; // legacy has no equivalent; it only asks when a bind is pending
+        SendPacketToClient(pending);
+    }
+
     [PacketHandler(Opcode.SMSG_UPDATE_INSTANCE_OWNERSHIP)]
     void HandleUpdateInstanceOwnership(WorldPacket packet)
     {
         UpdateInstanceOwnership instance = new UpdateInstanceOwnership();
         instance.IOwnInstance = packet.ReadUInt32();
         SendPacketToClient(instance);
+    }
+
+    [PacketHandler(Opcode.SMSG_UPDATE_LAST_INSTANCE)]
+    void HandleUpdateLastInstance(WorldPacket packet)
+    {
+        UpdateLastInstance last = new();
+        last.MapID = packet.ReadUInt32();
+        SendPacketToClient(last);
     }
 
     [PacketHandler(Opcode.SMSG_INSTANCE_RESET)]

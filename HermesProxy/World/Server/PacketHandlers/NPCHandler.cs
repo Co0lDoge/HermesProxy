@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -15,15 +16,57 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BANKER_ACTIVATE)]
     [PacketHandler(Opcode.CMSG_BINDER_ACTIVATE)]
     [PacketHandler(Opcode.CMSG_LIST_INVENTORY)]
+    [PacketHandler(Opcode.CMSG_SPELL_CLICK)]
     [PacketHandler(Opcode.CMSG_SPIRIT_HEALER_ACTIVATE)]
-    [PacketHandler(Opcode.CMSG_TALK_TO_GOSSIP)]
     [PacketHandler(Opcode.CMSG_TRAINER_LIST)]
     [PacketHandler(Opcode.CMSG_BATTLEMASTER_HELLO)]
     [PacketHandler(Opcode.CMSG_AREA_SPIRIT_HEALER_QUERY)]
     [PacketHandler(Opcode.CMSG_AREA_SPIRIT_HEALER_QUEUE)]
     void HandleInteractWithNPC(InteractWithNPC interact)
     {
+        if (GetSession().GameState.AwaitingQuestRewardId != 0
+            && interact.CreatureGUID != GetSession().GameState.AwaitingQuestGiver)
+            GetSession().GameState.ClearQuestRewardWait();
+
         WorldPacket packet = new WorldPacket(interact.GetUniversalOpcode());
+        packet.WriteGuid(interact.CreatureGUID.To64());
+        SendPacketToServer(packet);
+    }
+
+    [PacketHandler(Opcode.CMSG_TALK_TO_GOSSIP)]
+    void HandleTalkToGossip(InteractWithNPC interact)
+    {
+        // V3_4_3 re-talks to the same NPC right after RequestItems. Replay once
+        // so the frame stays bound. A later talk is Cancel / the multi-quest list.
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261
+            && GetSession().GameState.AwaitingQuestRewardId != 0)
+        {
+            var state = GetSession().GameState;
+            var last = state.LastRequestItems;
+            if (last != null && interact.CreatureGUID == state.AwaitingQuestGiver)
+            {
+                if (state.JustSentRequestItems)
+                {
+                    state.JustSentRequestItems = false;
+                    SendPacket(last);
+                    return;
+                }
+
+                ReturnQuestFrameToGossip(state.AwaitingQuestRewardId, state.AwaitingQuestGiver, "decline-request-items");
+                return;
+            }
+
+            state.ClearQuestRewardWait();
+        }
+
+        if (ModernVersion.Build == HermesProxy.Enums.ClientVersionBuild.V3_4_3_54261
+            && GetSession().GameState.QuestDetailsOpen)
+        {
+            ReturnDetailsToGossip("decline-talk");
+            return;
+        }
+
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_TALK_TO_GOSSIP);
         packet.WriteGuid(interact.CreatureGUID.To64());
         SendPacketToServer(packet);
     }

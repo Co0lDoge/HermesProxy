@@ -1,9 +1,11 @@
 ﻿using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
+using System.Collections.Generic;
 
 namespace HermesProxy.World.Client;
 
@@ -16,6 +18,7 @@ public partial class WorldClient
         QuestGiverQuestDetails quest = new();
         quest.QuestGiverGUID = packet.ReadGuid().To128(GetSession().GameState);
         GetSession().GameState.CurrentInteractedWithNPC = quest.QuestGiverGUID;
+        quest.QuestGiverCreatureID = quest.QuestGiverGUID.GetEntry();
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             quest.InformUnit = packet.ReadGuid().To128(GetSession().GameState);
@@ -66,6 +69,7 @@ public partial class WorldClient
             quest.DescEmotes[i].Type = packet.ReadUInt32();
             quest.DescEmotes[i].Delay = packet.ReadUInt32();
         }
+        MarkQuestDetailsOpen(quest);
         SendPacketToClient(quest);
     }
 
@@ -136,7 +140,11 @@ public partial class WorldClient
     {
         QuestGiverStatusPkt response = new QuestGiverStatusPkt();
         response.QuestGiver.Guid = packet.ReadGuid().To128(GetSession().GameState);
-        response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(packet.ReadUInt8());
+        byte legacyStatus = packet.ReadUInt8();
+        response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(legacyStatus);
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS recv: GUID={response.QuestGiver.Guid} entry={response.QuestGiver.Guid.GetEntry()} " +
+            $"legacyByte={legacyStatus} → modern={response.QuestGiver.Status}");
         SendPacketToClient(response);
     }
 
@@ -145,11 +153,17 @@ public partial class WorldClient
     {
         QuestGiverStatusMultiple response = new QuestGiverStatusMultiple();
         int count = packet.ReadInt32();
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[QuestStatusTrace] SMSG_QUEST_GIVER_STATUS_MULTIPLE recv: count={count}");
         for (int i = 0; i < count; i++)
         {
             QuestGiverInfo info = new();
             info.Guid = packet.ReadGuid().To128(GetSession().GameState);
-            info.Status = LegacyVersion.ConvertQuestGiverStatus(packet.ReadUInt8());
+            byte legacyStatus = packet.ReadUInt8();
+            info.Status = LegacyVersion.ConvertQuestGiverStatus(legacyStatus);
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+                $"[QuestStatusTrace]   recv[{i}] GUID={info.Guid} entry={info.Guid.GetEntry()} " +
+                $"legacyByte={legacyStatus} → modern={info.Status}");
             response.QuestGivers.Add(info);
         }
         SendPacketToClient(response);
@@ -171,6 +185,10 @@ public partial class WorldClient
             ClientGossipQuest quest = ReadGossipQuestOption(packet);
             quests.QuestOptions.Add(quest);
         }
+        var state = GetSession().GameState;
+        state.LastQuestList = quests;
+        state.LastGossip = null;
+        state.CloseQuestDetails();
         SendPacketToClient(quests);
     }
 
@@ -178,12 +196,55 @@ public partial class WorldClient
     {
         ClientGossipQuest quest = new();
         quest.QuestID = packet.ReadUInt32();
-        QuestGiverStatusModern dialogStatus = LegacyVersion.ConvertQuestGiverStatus((byte)packet.ReadInt32());
-
-        if (dialogStatus.HasAnyFlag(QuestGiverStatusModern.Available | QuestGiverStatusModern.AvailableCovenantCalling | QuestGiverStatusModern.AvailableJourney | QuestGiverStatusModern.AvailableLegendaryQuest | QuestGiverStatusModern.AvailableRep | QuestGiverStatusModern.LowLevelAvailable | QuestGiverStatusModern.LowLevelAvailableRep))
-            quest.QuestType = 2; // available
+        // The per-quest gossip icon byte's encoding is backend-version specific:
+        //   WotLK+ (V3_0_2+): backend already emits modern GossipQuestIcon values
+        //                     directly. TC wotlk_classic `Player.cpp:13572-13598`
+        //                     calls AddMenuItem(quest_id, 0|2|4) using exactly the
+        //                     {AvailableRepeatable=0, Available=2, Complete=4} set.
+        //                     Pass through.
+        //   TBC   (V2_0_1..V3_0_2): backend emits QuestGiverStatusTBC ordinal
+        //                     (Incomplete=3, AvailableRep=5, Available=6, etc).
+        //                     Translate to GossipQuestIcon — verified against
+        //                     `hermes-20260505_015835.log:283` where V2_4_3 emitted
+        //                     byte 3 for the in-progress quest 179.
+        //   Vanilla (pre-V2_0_1): backend emits QuestGiverStatusVanilla ordinal.
+        // Note: do NOT route through ConvertQuestGiverStatus here; that converter
+        // is for the byte in SMSG_QUEST_GIVER_STATUS (the world-space `?`/`!`
+        // over the NPC's head), not the per-quest gossip icon byte.
+        int rawIcon = packet.ReadInt32();
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
+        {
+            quest.QuestType = rawIcon;
+        }
+        else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+        {
+            quest.QuestType = (int)((QuestGiverStatusTBC)rawIcon switch
+            {
+                QuestGiverStatusTBC.LowLevelAvailable => GossipQuestIcon.Available,
+                QuestGiverStatusTBC.Incomplete        => GossipQuestIcon.Complete,
+                QuestGiverStatusTBC.RewardRep         => GossipQuestIcon.Complete,
+                QuestGiverStatusTBC.AvailableRep      => GossipQuestIcon.Available,
+                QuestGiverStatusTBC.Available         => GossipQuestIcon.Available,
+                QuestGiverStatusTBC.Reward2           => GossipQuestIcon.Complete,
+                QuestGiverStatusTBC.Reward            => GossipQuestIcon.Complete,
+                _                                     => GossipQuestIcon.AvailableRepeatable,
+            });
+        }
         else
-            quest.QuestType = 4; // complete
+        {
+            quest.QuestType = (int)((QuestGiverStatusVanilla)rawIcon switch
+            {
+                QuestGiverStatusVanilla.LowLevelAvailable => GossipQuestIcon.Available,
+                QuestGiverStatusVanilla.Available         => GossipQuestIcon.Available,
+                QuestGiverStatusVanilla.Incomplete        => GossipQuestIcon.Complete,
+                QuestGiverStatusVanilla.RewardRep         => GossipQuestIcon.Complete,
+                QuestGiverStatusVanilla.Reward2           => GossipQuestIcon.Complete,
+                QuestGiverStatusVanilla.Reward            => GossipQuestIcon.Complete,
+                _                                         => GossipQuestIcon.AvailableRepeatable,
+            });
+        }
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[QuestStatusTrace] ReadGossipQuestOption: questId={quest.QuestID} legacyIcon={rawIcon} → modernQuestType={quest.QuestType}");
 
         quest.QuestLevel = packet.ReadInt32();
 
@@ -193,8 +254,22 @@ public partial class WorldClient
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_3_11685))
             quest.Repeatable = packet.ReadBool();
 
+        GetSession().GameState.GossipQuestTypesById[quest.QuestID] = quest.QuestType;
+
         quest.QuestTitle = packet.ReadCString();
         return quest;
+    }
+
+    void MarkQuestDetailsOpen(QuestGiverQuestDetails quest)
+    {
+        var state = GetSession().GameState;
+        if (state.LastGossip != null && state.LastGossip.GossipGUID != quest.QuestGiverGUID)
+            state.LastGossip = null;
+        if (state.LastQuestList != null && state.LastQuestList.QuestGiverGUID != quest.QuestGiverGUID)
+            state.LastQuestList = null;
+        state.LastQuestDetails = quest;
+        state.QuestDetailsOpen = true;
+        state.JustLeftGossipForDetails = true;
     }
 
     [PacketHandler(Opcode.SMSG_QUEST_GIVER_REQUEST_ITEMS)]
@@ -234,15 +309,39 @@ public partial class WorldClient
 
         // flags
         uint statusFlags = packet.ReadUInt32();
-        if ((statusFlags & 3) != 0)
-            quest.StatusFlags = 223;
-        else
-            quest.StatusFlags = 219;
         packet.ReadUInt32(); // Unk flags 2
         packet.ReadUInt32(); // Unk flags 3
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             packet.ReadUInt32(); // Unk flags 4
+
+        bool itemsMet = RequestItemsObjectivesMet(quest);
+        quest.StatusFlags = QuestGiverRequestItems.StatusForClient(statusFlags, itemsMet);
+
+        var state = GetSession().GameState;
+        state.AwaitingQuestRewardId = quest.QuestID;
+        state.AwaitingQuestGiver = quest.QuestGiverGUID;
+        state.LastRequestItems = quest;
+        state.JustSentRequestItems = true;
+        state.CloseQuestDetails();
+        WorldClientLogMessages.RequestItems(
+            _melLog, _sourceFile, _netDirRecv,
+            quest.QuestID, statusFlags, quest.StatusFlags, itemsMet, quest.Collect.Count, quest.AutoLaunched);
         SendPacketToClient(quest);
+    }
+
+    bool RequestItemsObjectivesMet(QuestGiverRequestItems quest)
+    {
+        Dictionary<uint, uint>? counts = null;
+        foreach (QuestObjectiveCollect item in quest.Collect)
+        {
+            if (item.ObjectID == 0 || item.Amount == 0)
+                continue;
+            counts ??= GetSession().GameState.GetInventoryItemCounts();
+            counts.TryGetValue(item.ObjectID, out uint have);
+            if (have < item.Amount)
+                return false;
+        }
+        return true;
     }
 
     [PacketHandler(Opcode.SMSG_QUEST_GIVER_OFFER_REWARD_MESSAGE)]
@@ -277,6 +376,22 @@ public partial class WorldClient
 
         ReadExtraQuestInfo(packet, quest.QuestData.Rewards, true);
 
+        // Proactively query the quest template if it isn't cached. The proxy-side
+        // CHOOSE_REWARD handler needs `QuestTemplate.UnfilteredChoiceItems` to map
+        // the modern client's ItemID back to the legacy choice index. Without
+        // this query the user's first reward click fails with QUEST_FAILED until
+        // they retry (after the cache populates from a manual query).
+        if (GameData.GetQuestTemplate(quest.QuestData.QuestID) == null)
+        {
+            WorldPacket queryQuest = new WorldPacket(Opcode.CMSG_QUERY_QUEST_INFO);
+            queryQuest.WriteUInt32(quest.QuestData.QuestID);
+            SendPacketToServer(queryQuest);
+        }
+
+        GetSession().GameState.JustSentOfferReward = true;
+        GetSession().GameState.LastRequestItems = null;
+        GetSession().GameState.AwaitingQuestRewardId = 0;
+        GetSession().GameState.CloseQuestDetails();
         SendPacketToClient(quest);
     }
 
@@ -321,21 +436,33 @@ public partial class WorldClient
         }
 
         quest.ItemReward.ItemID = itemId;
-
         QuestTemplate? questTemplate = GameData.GetQuestTemplate((uint)quest.QuestID);
-        if (questTemplate != null && questTemplate.RewardNextQuest == 0)
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // AC already pushes the next QUEST_DETAILS on the same NPC.
+            // LaunchQuest makes 3.4.3 HELLO again and the details window opens twice.
+            quest.LaunchQuest = false;
+        }
+        else if (questTemplate != null && questTemplate.RewardNextQuest == 0)
         {
             quest.LaunchQuest = false;
-
-            if (GetSession().GameState.CurrentInteractedWithNPC != default)
-            {
-                uint npcFlags = GetSession().GameState.GetLegacyFieldValueUInt32(GetSession().GameState.CurrentInteractedWithNPC, UnitField.UNIT_NPC_FLAGS);
-                if (npcFlags.HasAnyFlag(NPCFlags.Gossip))
-                    quest.LaunchGossip = true;
-            }
         }
-        
+
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
+            && !quest.LaunchQuest
+            && GetSession().GameState.CurrentInteractedWithNPC != default)
+        {
+            uint npcFlags = GetSession().GameState.GetLegacyFieldValueUInt32(GetSession().GameState.CurrentInteractedWithNPC, UnitField.UNIT_NPC_FLAGS);
+            if (npcFlags.HasAnyFlag(NPCFlags.Gossip))
+                quest.LaunchGossip = true;
+        }
+
+        GetSession().GameState.CloseQuestDetails();
+        GetSession().GameState.LastGossip = null;
+        GetSession().GameState.LastQuestList = null;
         SendPacketToClient(quest);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            SendPacketToClient(new GossipComplete());
 
         DisplayToast toast = new();
         toast.QuestID = quest.QuestID;
@@ -367,6 +494,8 @@ public partial class WorldClient
     {
         QuestGiverInvalidQuest quest = new QuestGiverInvalidQuest();
         quest.Reason = (QuestFailedReasons)packet.ReadUInt32();
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[QuestInvalidTrace] Reason={quest.Reason} ({(uint)quest.Reason})");
         SendPacketToClient(quest);
     }
 
@@ -383,27 +512,118 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_QUEST_UPDATE_ADD_ITEM)]
     void HandleQuestUpdateAddItem(WorldPacket packet)
     {
-        uint itemId = packet.ReadUInt32();
-        uint count = packet.ReadUInt32();
-
-        QuestObjective? objective = GameData.GetQuestObjectiveForItem(itemId);
-        if (objective == null)
+        // 3.3.5a client counts quest items from bags. AzerothCore even sends this
+        // packet empty. 3.4.3 needs SMSG_QUEST_UPDATE_ADD_CREDIT (type Item).
+        if (packet.CanRead())
         {
-            var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
-            int questsCount = LegacyVersion.GetQuestLogSize();
-            for (int i = 0; i < questsCount; i++)
-            {
-                QuestLog? logEntry = ReadQuestLogEntry(i, null, updateFields!);
-                if (logEntry == null || logEntry.QuestID == null)
-                    continue;
+            uint itemId = packet.ReadUInt32();
+            if (packet.CanRead())
+                packet.ReadUInt32(); // count; inventory total is authoritative
+            SendItemQuestCredit(itemId);
+            return;
+        }
 
-                if (GameData.GetQuestTemplate((uint)logEntry.QuestID) == null)
-                {
-                    WorldPacket packet2 = new WorldPacket(Opcode.CMSG_QUERY_QUEST_INFO);
-                    packet2.WriteUInt32((uint)logEntry.QuestID);
-                    SendPacketToServer(packet2);
-                }
+        ResyncItemQuestCredits();
+    }
+
+    // Credits a single looted item across every in-log quest that wants it. The
+    // count always comes from the bags, so this is also correct when the same item
+    // id satisfies two quests at once.
+    void SendItemQuestCredit(uint itemId)
+    {
+        if (itemId == 0)
+            return;
+
+        uint have = GetSession().GameState.GetItemCountInInventory(itemId);
+        bool sent = false;
+
+        foreach (int questId in GetSession().GameState.QuestLogQuestIDs)
+        {
+            if (questId == 0)
+                continue;
+            QuestTemplate? template = GameData.GetQuestTemplate((uint)questId);
+            if (template == null)
+                continue;
+            foreach (QuestObjective obj in template.Objectives)
+            {
+                if (obj.Type != QuestObjectiveType.Item || obj.ObjectID != (int)itemId)
+                    continue;
+                SendItemCredit((uint)questId, itemId, have, (ushort)Math.Max(obj.Amount, 1));
+                sent = true;
             }
+        }
+
+        if (!sent)
+            RequestMissingQuestTemplates();
+    }
+
+    void SendItemCredit(uint questId, uint itemId, uint have, ushort required)
+    {
+        ushort count = (ushort)Math.Min(have, required);
+        var key = (questId, itemId);
+        var sentCredits = GetSession().GameState.SentItemQuestCredits;
+        if (sentCredits.TryGetValue(key, out ushort last) && last == count)
+            return;
+        sentCredits[key] = count;
+        GetSession().GameState.RememberObjectiveCount(questId, QuestObjectiveType.Item, (int)itemId, (short)count);
+
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Server,
+            $"[QuestItemCredit] quest={questId} item={itemId} have={have}/{required}");
+        SendPacketToClient(new QuestUpdateAddCredit
+        {
+            QuestID = questId,
+            ObjectID = (int)itemId,
+            Count = count,
+            Required = required,
+            ObjectiveType = QuestObjectiveType.Item,
+            VictimGUID = WowGuid128.Empty,
+        });
+    }
+
+    // Drives every item objective of every in-log quest off one bag snapshot, so a
+    // count that dropped (sold, destroyed, traded) is pushed down as well as up.
+    // SendItemCredit swallows unchanged values, so calling this often is cheap.
+    void ResyncItemQuestCredits()
+    {
+        Dictionary<uint, uint>? counts = null;
+        foreach (int questId in GetSession().GameState.QuestLogQuestIDs)
+        {
+            if (questId == 0)
+                continue;
+            QuestTemplate? template = GameData.GetQuestTemplate((uint)questId);
+            if (template == null)
+                continue;
+            foreach (QuestObjective obj in template.Objectives)
+            {
+                if (obj.Type != QuestObjectiveType.Item)
+                    continue;
+                counts ??= GetSession().GameState.GetInventoryItemCounts();
+                counts.TryGetValue((uint)obj.ObjectID, out uint have);
+                SendItemCredit((uint)questId, (uint)obj.ObjectID, have, (ushort)Math.Max(obj.Amount, 1));
+            }
+        }
+    }
+
+    void RequestMissingQuestTemplates()
+    {
+        var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
+        if (updateFields == null)
+            return;
+        int questsCount = LegacyVersion.GetQuestLogSize();
+        for (int i = 0; i < questsCount; i++)
+        {
+            QuestLog? logEntry = ReadQuestLogEntry(i, null, updateFields);
+            if (logEntry?.QuestID == null)
+                continue;
+            if (GameData.GetQuestTemplate((uint)logEntry.QuestID) != null)
+                continue;
+            // One query per quest id. Without this, every looted trash item replays
+            // the whole log's missing-template queries.
+            if (!GetSession().GameState.RequestedQuestTemplateIds.Add((uint)logEntry.QuestID))
+                continue;
+            WorldPacket query = new WorldPacket(Opcode.CMSG_QUERY_QUEST_INFO);
+            query.WriteUInt32((uint)logEntry.QuestID);
+            SendPacketToServer(query);
         }
     }
 
@@ -418,6 +638,8 @@ public partial class WorldClient
         credit.Count = (ushort)packet.ReadUInt32();
         credit.Required = (ushort)packet.ReadUInt32();
         credit.VictimGUID = packet.ReadGuid().To128(GetSession().GameState);
+        GetSession().GameState.RememberObjectiveCount(
+            credit.QuestID, credit.ObjectiveType, credit.ObjectID, (short)credit.Count);
         SendPacketToClient(credit);
     }
 
@@ -436,7 +658,130 @@ public partial class WorldClient
     {
         QuestPushResult quest = new QuestPushResult();
         quest.SenderGUID = packet.ReadGuid().To128(GetSession().GameState);
-        quest.Result = (QuestPushReason)packet.ReadUInt8();
+        quest.Result = LegacyVersion.ConvertQuestPushReason(packet.ReadUInt8());
         SendPacketToClient(quest);
+    }
+
+    [PacketHandler(Opcode.SMSG_QUEST_POI_QUERY_RESPONSE)]
+    void HandleQuestPOIQueryResponse(WorldPacket packet)
+    {
+        // Legacy 3.3.5a wire layout (mangos-wotlk QueryHandler.cpp:526):
+        //   uint32 count
+        //   per quest:
+        //     uint32 questID, uint32 blobs.Count
+        //     per blob:
+        //       uint32 BlobIndex, int32 ObjectiveIndex, uint32 MapID,
+        //       uint32 WorldMapAreaID, uint32 FloorID, uint32 Unk3, uint32 Unk4,
+        //       uint32 points.Count
+        //       per point: int32 X, int32 Y
+        //
+        // Field mapping:
+        //   legacy WorldMapAreaID → modern UiMapID, translated to the Classic UiMap id the
+        //     V3_4_3 client expects (Teldrassil WMA 41 -> 1438). Retail UiMap ids are a
+        //     different set and do not work here; see GameData.GetUiMapId.
+        //   modern Flags          → synthesized below, NOT taken from the wire
+        //   legacy FloorID/Unk3/Unk4 → discarded
+        // QuestObjectiveID synthesized from the cached QuestTemplate's objective IDs so the
+        // client can associate the blob with a specific objective row in its tracker.
+        QuestPOIQueryResponse response = new();
+        uint count = packet.ReadUInt32();
+        for (uint i = 0; i < count; i++)
+        {
+            QuestPOIData data = new();
+            data.QuestID = (int)packet.ReadUInt32();
+            uint blobCount = packet.ReadUInt32();
+            QuestTemplate? template = GameData.GetQuestTemplate((uint)data.QuestID);
+            for (uint b = 0; b < blobCount; b++)
+            {
+                QuestPOIBlobData blob = new();
+                blob.BlobIndex = (int)packet.ReadUInt32();
+                blob.ObjectiveIndex = packet.ReadInt32();
+                blob.MapID = (int)packet.ReadUInt32();
+                int legacyWMA = (int)packet.ReadUInt32();
+                blob.UiMapID = legacyWMA;
+                packet.ReadUInt32(); // FloorID
+                packet.ReadUInt32(); // Unk3 / Priority
+                packet.ReadUInt32(); // Unk4 / Flags
+
+                bool isV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+
+                // The V3_4_3 client wants a Classic UiMap id here, not the legacy
+                // WorldMapArea id. Zones outside the derived set fall back to the raw id.
+                if (isV343)
+                    blob.UiMapID = GameData.GetUiMapId(legacyWMA);
+
+                if (template != null && blob.ObjectiveIndex >= 0)
+                    BindLegacyPoiObjective(blob, template);
+
+                // Legacy 3.3.5a stored FloorID in this field (typically 0) which the
+                // V3_4_3 client rejects as a no-render flag. Rewrite with the native
+                // V3_4_3 convention: objective markers get ShowOnMap + ObjectiveNumber,
+                // pure location markers (ObjectiveIndex=-1) get ShowOnMap only.
+                if (isV343)
+                {
+                    QuestPOIFlags flags = QuestPOIFlags.ShowOnMap;
+                    if (blob.ObjectiveIndex >= 0 && blob.QuestObjectiveID != 0)
+                        flags |= QuestPOIFlags.ObjectiveNumber;
+                    blob.Flags = (int)flags;
+                }
+                uint pointsCount = packet.ReadUInt32();
+                for (uint p = 0; p < pointsCount; p++)
+                {
+                    QuestPOIBlobPoint point = new()
+                    {
+                        X = (short)packet.ReadInt32(),
+                        Y = (short)packet.ReadInt32(),
+                        Z = 0
+                    };
+                    blob.Points.Add(point);
+                }
+                Framework.Logging.Log.Print(Framework.Logging.LogType.Debug,
+                    $"[QuestPOI] quest={data.QuestID} blob={blob.BlobIndex} objIdx={blob.ObjectiveIndex} " +
+                    $"map={blob.MapID} wma={legacyWMA} uiMap={blob.UiMapID} flags={blob.Flags} " +
+                    $"objId={blob.QuestObjectiveID} points={pointsCount}");
+                data.Blobs.Add(blob);
+            }
+            response.QuestPOIDataStats.Add(data);
+        }
+        SendPacketToClient(response);
+        ResyncItemQuestCredits();
+    }
+
+    static void BindLegacyPoiObjective(QuestPOIBlobData blob, QuestTemplate template)
+    {
+        QuestObjective? match = null;
+
+        // Legacy blobs address the raw template column (0-3 creature/GO, 4+N items).
+        // Quest 179 stores its meat at column 4 while StorageIndex is 0.
+        foreach (QuestObjective objective in template.Objectives)
+        {
+            if (objective.LegacyPoiIndex >= 0 && objective.LegacyPoiIndex == blob.ObjectiveIndex)
+            {
+                match = objective;
+                break;
+            }
+        }
+
+        if (match == null)
+        {
+            foreach (QuestObjective objective in template.Objectives)
+            {
+                if (objective.StorageIndex == blob.ObjectiveIndex)
+                {
+                    match = objective;
+                    break;
+                }
+            }
+        }
+
+        if (match == null && template.Objectives.Count == 1)
+            match = template.Objectives[0];
+
+        if (match == null)
+            return;
+
+        blob.ObjectiveIndex = match.StorageIndex;
+        blob.QuestObjectiveID = (int)match.Id;
+        blob.QuestObjectID = match.ObjectID;
     }
 }

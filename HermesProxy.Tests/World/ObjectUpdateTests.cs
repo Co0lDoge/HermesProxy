@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
@@ -13,6 +13,139 @@ public class ObjectUpdateConstructorTests
     private static GlobalSessionData CreateGlobalSession()
     {
         return (GlobalSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GlobalSessionData));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_Type15MoTransport_TrueForAnyDisplay()
+    {
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, 8409, ClientVersionBuild.V3_4_3_54261));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, 455, ClientVersionBuild.V3_4_3_54261));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.MOTransport, null, ClientVersionBuild.V3_4_3_54261));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_Type11_SplitsOnDisplay()
+    {
+        GameData.LoadWmoGameObjectDisplays();
+        Assert.NotEmpty(GameData.WmoGameObjectDisplays);
+
+        // Strand of the Ancients / Isle of Conquest gunships -- WMO displays.
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8409, ClientVersionBuild.V3_4_3_54261));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8410, ClientVersionBuild.V3_4_3_54261));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 8587, ClientVersionBuild.V3_4_3_54261));
+
+        // Undercity elevator / Deeprun tram car -- M2 doodads, must stay unflagged.
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 455, ClientVersionBuild.V3_4_3_54261));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, 3831, ClientVersionBuild.V3_4_3_54261));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag((sbyte)GameObjectTypeModern.Transport, null, ClientVersionBuild.V3_4_3_54261));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_DoorOrGeneric_False()
+    {
+        GameData.LoadWmoGameObjectDisplays();
+
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(0, 8409, ClientVersionBuild.V3_4_3_54261));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(5, 8409, ClientVersionBuild.V3_4_3_54261));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(null, 8409, ClientVersionBuild.V3_4_3_54261));
+    }
+
+    [Fact]
+    public void NeedsWmoMapObjectFlag_Type33DestructibleBuilding_V343Only()
+    {
+        GameData.LoadWmoGameObjectDisplays();
+
+        // Type 33 destructible buildings DO take the flag, at any display: a native 3.4.3
+        // Strand of the Ancients capture sends all 8 of its gates and walls with Flags
+        // 0x100020, i.e. the map-object bit set, where we were sending 0x20 and the client
+        // drew nothing at all (issue #184).
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag(
+            (sbyte)GameObjectTypeModern.DestructibleBuilding, 8409, ClientVersionBuild.V3_4_3_54261));
+        Assert.True(ObjectUpdate.NeedsWmoMapObjectFlag(
+            (sbyte)GameObjectTypeModern.DestructibleBuilding, null, ClientVersionBuild.V3_4_3_54261));
+
+        // ...but only for V3_4_3. Type 33 was added in 3.0, so no vanilla or TBC backend can
+        // produce one, and the older wire formats stay byte-identical.
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(
+            (sbyte)GameObjectTypeModern.DestructibleBuilding, 8409, ClientVersionBuild.V1_14_2_42597));
+        Assert.False(ObjectUpdate.NeedsWmoMapObjectFlag(
+            (sbyte)GameObjectTypeModern.DestructibleBuilding, 8409, ClientVersionBuild.V2_5_3_42598));
+    }
+
+    [Fact]
+    public void InitializePlaceholders_ValuesUpdateWithoutTypeId_KeepsWmoMapObjectFlag()
+    {
+        var session = CreateGlobalSession();
+        var gameState = (GameSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GameSessionData));
+        gameState.WmoMapObjectGuids = [];
+        session.GameState = gameState;
+
+        var guid = WowGuid128.Create(HighGuidType703.GameObject, 0, 190375, 7);
+
+        // The create carries GAMEOBJECT_BYTES_1, so the type resolves and the flag goes on.
+        var create = new ObjectUpdate(guid, UpdateTypeModern.CreateObject1, session);
+        create.GameObjectData.TypeID = (sbyte)GameObjectTypeModern.MOTransport;
+        create.GameObjectData.Flags = 0x20;
+        create.InitializePlaceholders();
+
+        Assert.Equal(0x100020u, create.GameObjectData.Flags!.Value);
+
+        // A later Values update rewrites GAMEOBJECT_FLAGS without GAMEOBJECT_BYTES_1 in its
+        // mask, so TypeID is null and the flag can only come from what the create established.
+        // Losing it here is what made destructible buildings vanish the moment they took
+        // damage -- the damage transition is exactly this shape of update (issue #184).
+        var values = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
+        values.GameObjectData.Flags = 0x20;
+        values.InitializePlaceholders();
+
+        Assert.Null(values.GameObjectData.TypeID);
+        Assert.Equal(0x100020u, values.GameObjectData.Flags!.Value);
+    }
+
+    [Fact]
+    public void InitializePlaceholders_ValuesUpdateWithoutFlags_DoesNotFabricateFlags()
+    {
+        var session = CreateGlobalSession();
+        var gameState = (GameSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GameSessionData));
+        gameState.WmoMapObjectGuids = [];
+        session.GameState = gameState;
+
+        var guid = WowGuid128.Create(HighGuidType703.GameObject, 0, 193182, 13);
+
+        var create = new ObjectUpdate(guid, UpdateTypeModern.CreateObject1, session);
+        create.GameObjectData.TypeID = (sbyte)GameObjectTypeModern.MOTransport;
+        create.GameObjectData.Flags = 0x8;
+        create.InitializePlaceholders();
+        Assert.Equal(0x100008u, create.GameObjectData.Flags!.Value);
+
+        // A Values delta that does not carry GAMEOBJECT_FLAGS must not publish one. Publishing
+        // MAP_OBJECT alone would clear every other bit on the client -- GO_FLAG_TRANSPORT (0x8)
+        // among them, which is what lets a player attach to the deck. TrinityCore sends
+        // exactly such a delta (ParentRotation + DynamicFlags) right after a boat's create.
+        var values = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
+        values.ObjectData.DynamicFlags = 0;
+        values.InitializePlaceholders();
+
+        Assert.Null(values.GameObjectData.Flags);
+    }
+
+    [Fact]
+    public void InitializePlaceholders_ValuesUpdateForUnknownGameObject_LeavesFlagsAlone()
+    {
+        var session = CreateGlobalSession();
+        var gameState = (GameSessionData)RuntimeHelpers.GetUninitializedObject(typeof(GameSessionData));
+        gameState.WmoMapObjectGuids = [];
+        session.GameState = gameState;
+
+        // Nothing ever established this guid as a map object, so the memory must not invent
+        // the flag for it -- an M2 doodad given GO_FLAG_MAP_OBJECT renders as an untextured
+        // placeholder.
+        var guid = WowGuid128.Create(HighGuidType703.GameObject, 0, 3831, 2);
+        var values = new ObjectUpdate(guid, UpdateTypeModern.Values, session);
+        values.GameObjectData.Flags = 0x20;
+        values.InitializePlaceholders();
+
+        Assert.Equal(0x20u, values.GameObjectData.Flags!.Value);
     }
 
     [Fact]

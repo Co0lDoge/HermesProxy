@@ -22,9 +22,12 @@ using Framework.IO;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace HermesProxy.World.Server.Packets;
 
@@ -95,11 +98,262 @@ public class ObjectUpdate
     public PlayerData PlayerData = null!;
     public ActivePlayerData ActivePlayerData = null!;
     public GameObjectData GameObjectData = null!;
+    /// <summary>
+    /// Stop frame for a type 11 transport, emitted as the single PauseTimes entry. Taken
+    /// from the legacy GAMEOBJECT_LEVEL, which on a 3.3.5a core carries
+    /// gameobject_template.data[0] -- the same value native 3.4.3 sends as PauseTimes[0].
+    /// </summary>
+    public uint? TransportStopFrame;
+    /// <summary>
+    /// ServerTime for the create of a transport the proxy parks and sails itself. Native
+    /// 3.4.3 writes GameTime::GetGameTimeMS() there, and the client seeds the clock it
+    /// compares GameObjectData.Level against from it, so the two must share a source. A
+    /// backend that never relocates its type 11 transports hands us a free-running path
+    /// counter instead, which cannot be extended into a deadline. Null leaves the builder
+    /// forwarding the legacy path progress, which is right for a backend that moves the
+    /// boat itself.
+    /// </summary>
+    public uint? TransportServerTime;
     public DynamicObjectData DynamicObjectData = null!;
     public CorpseData CorpseData = null!;
 
+    // GO_FLAG_MAP_OBJECT: the object is a WMO map object, i.e. a MO_TRANSPORT. No
+    // equivalent exists in the 3.3.5a flag set. Combined with the legacy GAMEOBJECT_FLAGS
+    // value (0x28 for these objects) it reproduces the 1048616 composite the previous code
+    // hardcoded for CSV-listed entries.
+    private const uint ModernTransportFlag = 0x100000u;
+
+    // GOState (SharedDefines.h). A 3.3.5a core only ever sends the first two; a modern
+    // client additionally uses GO_STATE_TRANSPORT_ACTIVE = 24 to run a transport along
+    // its path and GO_STATE_TRANSPORT_STOPPED = 25, where 25 + n parks it at stop frame n.
+    private const sbyte LegacyGameObjectStateActive = 0;   // door open / transport moving
+    private const sbyte LegacyGameObjectStateReady = 1;    // door closed / transport parked
+    private const sbyte ModernTransportStateActive = 24;
+    private const sbyte ModernTransportStateStopped = 25;
+
+    /// <summary>
+    /// GO_FLAG_MAP_OBJECT tells the client to load the display as a WMO map object
+    /// instead of an M2 doodad. Type 15 MO_TRANSPORT always is one. Type 11 TRANSPORT
+    /// is mixed, so it has to be split on the display: the Strand of the Ancients and
+    /// Isle of Conquest gunships are WMOs (displays 8409/8410/8587) and AV the V3_4_3
+    /// client without the flag, while Undercity elevators and Deeprun tram cars are
+    /// M2s that render as untextured placeholders *with* it.
+    /// </summary>
+    /// <summary>
+    /// True for the two GameObject types the client drives as transports: type 11
+    /// TRANSPORT and type 15 MO_TRANSPORT. A native 3.4.3 server gives both a
+    /// HighGuid::Transport and sets the ServerTime create bit
+    /// (GameObject.cpp `m_updateFlag.ServerTime = true`); 3.3.5a cores give type 11 a
+    /// plain HighGuid::GameObject instead, so guid high type cannot be used to spot one.
+    /// </summary>
+    internal static bool IsTransportGameObjectType(sbyte? typeId) =>
+        typeId is (sbyte)GameObjectTypeModern.MOTransport
+            or (sbyte)GameObjectTypeModern.Transport;
+
+    internal static bool NeedsWmoMapObjectFlag(sbyte? typeId, int? displayId, ClientVersionBuild build) => typeId switch
+    {
+        (sbyte)GameObjectTypeModern.MOTransport => true,
+        (sbyte)GameObjectTypeModern.Transport => displayId is int id && GameData.IsWmoGameObjectDisplay(id),
+        // Destructible buildings are WMOs by construction — gates, walls and towers. A
+        // native 3.4.3 server sets the flag on every one of them (verified against a
+        // Strand of the Ancients capture: 8 of 8 carry Flags 0x100020, where we sent
+        // 0x20). Unconditional rather than display-gated like type 11, because the
+        // displays are not in WmoGameObjectDisplays.csv and native does not discriminate.
+        //
+        // Restricted to V3_4_3: type 33 does not exist before 3.0, so a vanilla or TBC
+        // backend can never produce one, and the gate keeps the V1_14 / V2_5 wire
+        // byte-identical even if a client is pointed at a WotLK core by mistake.
+        (sbyte)GameObjectTypeModern.DestructibleBuilding =>
+            build == ClientVersionBuild.V3_4_3_54261,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Reshapes a type 11 GAMEOBJECT_TYPE_TRANSPORT from its 3.3.5a form into what a native
+    /// V3_4_3 server sends. Verified field-by-field against the golden capture
+    /// refs/native-captures/wrathion_343_sota_attacker_boat_20260830.pkt.
+    /// </summary>
+    private void ApplyTransportGameObjectFixups()
+    {
+        if (GameObjectData == null)
+            return;
+
+        // GO_FLAG_MAP_OBJECT has to survive a Values update that rewrites GAMEOBJECT_FLAGS,
+        // not just the create, or the client loses the WMO loader mid-battleground.
+        //
+        // Both inputs come out of the update mask, so a Values delta usually carries neither:
+        // TypeID needs GAMEOBJECT_BYTES_1 and DisplayID needs GAMEOBJECT_DISPLAYID. Asking the
+        // test again on such a delta answers "not a WMO" and drops the flag — precisely the
+        // case the guard exists for, since a destructible building's damage transitions
+        // rewrite GAMEOBJECT_FLAGS. So remember the guids that did resolve as map objects on
+        // an update that carried the fields, and re-apply from that. The set only ever takes
+        // transports and destructible buildings, not every gameobject seen.
+        var wmoMapObjects = GlobalSession.GameState.WmoMapObjectGuids;
+        bool needsWmoFlag = NeedsWmoMapObjectFlag(
+            GameObjectData.TypeID, GameObjectData.DisplayID, ModernVersion.Build);
+        if (needsWmoFlag)
+            wmoMapObjects.Add(Guid);
+        else
+            needsWmoFlag = wmoMapObjects.Contains(Guid);
+
+        // Only touch Flags where the whole value is being published: on the create, or on
+        // a Values that carries GAMEOBJECT_FLAGS. Fabricating Flags = MAP_OBJECT alone on a
+        // Values that does not carry the field ships a value with every other bit cleared,
+        // GO_FLAG_TRANSPORT (0x8) included -- and that bit is what lets the client attach a
+        // player to a GameObject. TrinityCore follows a freshly spawned boat's create with a
+        // Values carrying only ParentRotation and DynamicFlags in the same tick; with the
+        // flag fabricated there, a player landing on that boat was never attached and stood
+        // still while it sailed away. Native leaves Flags off such a Values entirely.
+        if (needsWmoFlag && (CreateData != null || GameObjectData.Flags != null))
+            GameObjectData.Flags = (GameObjectData.Flags ?? 0) | ModernTransportFlag;
+
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261
+            || GameObjectData.TypeID != (sbyte)GameObjectTypeModern.Transport)
+            return;
+
+        // Everything below is for backends that do NOT move the transport themselves, and
+        // only the WMO flag above is common to both.
+        //
+        // AzerothCore routes type 11 through StaticTransport -- Battleground::AddObject picks
+        // it via ObjectMgr::IsGameObjectStaticTransport -- which takes HIGHGUID_TRANSPORT and
+        // genuinely relocates the boat and its passengers each tick, with path progress
+        // climbing in GAMEOBJECT_DYNAMIC. The HighGuidType.Transport block below already
+        // forwards that faithfully. TrinityCore instead hands type 11 a plain
+        // HighGuid::GameObject and leaves GameObjectRelocation commented out, so its boat
+        // never moves and needs the parking synthesized below.
+        //
+        // The stop frame and the state translation are a pair and must not be split: the
+        // client indexes _stopFrames[state - GO_STATE_TRANSPORT_STOPPED], so a non-empty
+        // stop-frame array alongside a raw 3.3.5a door state reads index -24 and dies with
+        // ERROR 132. With no stop frame it takes the _stopFrames.empty() path and is safe.
+        // AzerothCore therefore gets neither, which leaves its boat looping its path instead
+        // of docking -- tracked separately, and closing it means translating its state while
+        // keeping its moving boat and riding passengers correct.
+        if (Guid.GetHighType() == HighGuidType.Transport)
+            return;
+
+        if (GameObjectData.Level is > 0)
+            TransportStopFrame = (uint)GameObjectData.Level.Value;
+
+        // Remember the boat from its create. The ships-start flip arrives later as a Values
+        // update carrying only GAMEOBJECT_BYTES_1, so the stop frame it has to sail to is
+        // no longer on the wire by then, and the deck position is what a rider's offset is
+        // measured from.
+        //
+        // One hash lookup per update: a create always writes its slot, a Values update only
+        // reads one that exists. The ref is not held across any other mutation of the map.
+        var transports = GlobalSession.GameState.SynthesizedTransports;
+        bool isCreate = CreateData?.MoveInfo != null;
+        ref SynthesizedTransport known = ref isCreate
+            ? ref CollectionsMarshal.GetValueRefOrAddDefault(transports, Guid, out _)
+            : ref CollectionsMarshal.GetValueRefOrNullRef(transports, Guid);
+        if (isCreate)
+        {
+            // A re-create keeps whatever sail is already under way (see below).
+            known = new SynthesizedTransport(
+                TransportStopFrame ?? known.StopFrame,
+                CreateData!.MoveInfo.Position,
+                CreateData.MoveInfo.Orientation,
+                known.SailDeadline,
+                known.SailTargetState);
+        }
+
+        // GO_STATE_TRANSPORT_ACTIVE parks the transport at path position 0 -- its spawn --
+        // and GO_STATE_TRANSPORT_STOPPED + n parks it at _stopFrames[n], which for the SotA
+        // gunships is the landing beach. That maps cleanly onto the two phases a 3.3.5a core
+        // expresses with the only states it has: GO_STATE_READY during the warm-up, and
+        // GO_STATE_ACTIVE once TrinityCore's StartShips() calls DoorOpen() on the boats.
+        //
+        // Forwarding the raw door state is not an option: the client evaluates
+        // `state - GO_STATE_TRANSPORT_ACTIVE`, so a raw 0 is stop-frame index -24 and an
+        // instant ERROR 132 when StartShips() flips the gunships. State and TypeID both come
+        // out of GAMEOBJECT_BYTES_1, so whenever a state change reaches us the type does too.
+        if (GameObjectData.State == LegacyGameObjectStateReady)
+            GameObjectData.State = ModernTransportStateActive;
+        else if (GameObjectData.State == LegacyGameObjectStateActive)
+            GameObjectData.State = ModernTransportStateStopped;
+
+        // Native sends 255; the V3_4_3 PercentHealth default is meant for destructible
+        // GameObjects and reads as a damaged transport.
+        GameObjectData.PercentHealth = 255;
+
+        // Level is a deadline in the game clock, not a period: the client interpolates the
+        // transport's path progress toward the state's stop frame only while `now < Level`,
+        // and parks it there otherwise (TrinityCore 3.4.3 GameObject.cpp). On a state change
+        // native sets Level = now + |pathProgress - stopPathProgress|, which the golden SotA
+        // capture confirms: the flip carried Level 227076 with the clock at 166942, a
+        // difference of 60134 against a stop frame of 60133.
+        //
+        // The client seeds `now` from the ServerTime it saw in the create, so both stamps
+        // come from the proxy clock. Native's own create shape is Level just below
+        // ServerTime -- already expired, boat parked at its spawn.
+        //
+        // A flip in either direction is a full traverse between the two stop positions, so
+        // the deadline is always now + stopFrame. That assumes the previous traverse had
+        // finished; a flip landing mid-sail would overshoot by whatever was left, which
+        // nothing in the SotA round timing produces.
+        //
+        // Whatever arrives while a sail is under way republishes the deadline already
+        // scheduled rather than stamping a new one. TrinityCore 3.3.5a never adds a type 11
+        // transport to m_clientGUIDs (Player.cpp UpdateVisibilityOf_helper, a deliberate
+        // hack so the Deeprun tram does not vanish under a rider), so every visibility pass
+        // re-sends the boat's full create -- once a second, observed live, all through the
+        // crossing. An expired Level on one of those would park the boat at the far end the
+        // instant the client honoured it. Same shape for a repeated flip.
+        //
+        // Only a transport with a stop frame gets any of this. A stop-frame-less type 11 --
+        // the Deeprun tram -- free-runs its path with no ServerTime create bit and nothing
+        // to sail to, and keeps the legacy path counter in Level exactly as before.
+        uint now = Time.GetMSTime();
+        sbyte state = GameObjectData.State ?? 0;
+        bool hasStopFrame = !Unsafe.IsNullRef(ref known) && known.StopFrame != 0;
+        bool sailing = hasStopFrame && known.IsSailing(now) && known.SailTargetState == state;
+        if (isCreate)
+        {
+            if (hasStopFrame)
+            {
+                TransportServerTime = now;
+                GameObjectData.Level = (int)(sailing ? known.SailDeadline : now);
+            }
+            else
+            {
+                GameObjectData.Level = (int)CreateData!.MoveInfo.TransportPathTimer;
+            }
+        }
+        else if (state is ModernTransportStateActive or ModernTransportStateStopped)
+        {
+            if (sailing)
+            {
+                GameObjectData.Level = (int)known.SailDeadline;
+            }
+            else if (hasStopFrame)
+            {
+                uint deadline = now + known.StopFrame;
+                GameObjectData.Level = (int)deadline;
+                known = known with { SailDeadline = deadline, SailTargetState = state };
+                if (_melTransport.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                    TransportLogMessages.SailScheduled(_melTransport, Guid.Low, Guid.GetEntry(),
+                        state, known.StopFrame, now, (int)deadline);
+            }
+            else if (_melTransport.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            {
+                // Nothing to sail to; Level stays off the wire and the state flip is
+                // instantaneous, as before.
+                TransportLogMessages.SailUnknownStopFrame(_melTransport, Guid.Low, Guid.GetEntry(), state);
+            }
+        }
+    }
+
+    private static readonly Microsoft.Extensions.Logging.ILogger _melTransport =
+        Log.CreateMelLogger(Log.CategoryServer);
+
     public void InitializePlaceholders()
     {
+        // Values updates need the transport reshaping too, so this sits above the
+        // CreateData early-out: TrinityCore flips the gunships to GO_STATE_ACTIVE when
+        // StartShips() fires and that arrives as a Values update, with no create alongside.
+        ApplyTransportGameObjectFixups();
+
         if (CreateData == null)
             return;
 
@@ -157,25 +411,46 @@ public class ObjectUpdate
         {
             if ((GameObjectData.PercentHealth == null) &&
                 (GameObjectData.State != null || GameObjectData.TypeID != null || GameObjectData.ArtKit != null))
-                GameObjectData.PercentHealth = 255;
+            {
+                // Legacy V1_14/V2_5: byte 3 of GAMEOBJECT_BYTES_1 is AnimProgress (0..255),
+                // 255 = max anim phase. V3_4_3 renamed the slot to PercentHealth (0..100);
+                // 255 reads as invalid HP on non-destructible CHEST and the client refuses
+                // to render — observed for entry 190584 (Battle-worn Sword) in Acherus DK
+                // starter, where CypherCore reference ships PercentHealth=0.
+                GameObjectData.PercentHealth = (byte)(ModernVersion.ExpansionVersion >= 3 ? 0 : 255);
+            }
             if (GameObjectData.ParentRotation[3] == null)
                 GameObjectData.ParentRotation[3] = 1;
             if (GameObjectData.StateAnimID == null)
                 GameObjectData.StateAnimID = ModernVersion.GetGameObjectStateAnimId();
+
             if (Guid.GetHighType() == HighGuidType.Transport)
             {
                 var transportTimer = CreateData.MoveInfo!.TransportPathTimer;
-                uint period = GameData.GetTransportPeriod((uint)ObjectData.EntryID!);
-                if (period != 0)
+                // A 3.3.5a backend puts the real loop period in GAMEOBJECT_LEVEL
+                // (AzerothCore Transport.h:81), which is authoritative. The CSV is the
+                // fallback for backends that leave the field unset.
+                uint period = GameObjectData.Level is > 0
+                    ? (uint)GameObjectData.Level.Value
+                    : GameData.GetTransportPeriod((uint)ObjectData.EntryID!);
+                if (period != 0 && GameObjectData.Level == null)
+                    GameObjectData.Level = (int)period;
+
+                // Only synthesize the path-progress fraction when the backend sent none;
+                // the legacy GAMEOBJECT_DYNAMIC high half already carries it otherwise.
+                if (ObjectData.DynamicFlags == null)
                 {
-                    if (GameObjectData.Level == null)
-                        GameObjectData.Level = (int)period;
-                    if (ObjectData.DynamicFlags == null)
-                        ObjectData.DynamicFlags = (((uint)(((float)(transportTimer % period) / (float)period) * System.UInt16.MaxValue)) << 16);
-                    GameObjectData.Flags = 1048616;
+                    ObjectData.DynamicFlags = period != 0
+                        ? (((uint)(((float)(transportTimer % period) / (float)period) * System.UInt16.MaxValue)) << 16)
+                        : ((transportTimer % System.UInt16.MaxValue) << 16);
                 }
-                else if (ObjectData.DynamicFlags == null)
-                    ObjectData.DynamicFlags = ((transportTimer % System.UInt16.MaxValue) << 16);
+
+                Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+                    $"[Transport] guid={Guid} entry={ObjectData.EntryID} typeID={GameObjectData.TypeID} " +
+                    $"pathProgress={transportTimer} period={period} level={GameObjectData.Level} " +
+                    $"dynFlags=0x{(ObjectData.DynamicFlags ?? 0):X8} goFlags={GameObjectData.Flags} " +
+                    $"pos=({CreateData.MoveInfo!.Position.X:F1},{CreateData.MoveInfo.Position.Y:F1},{CreateData.MoveInfo.Position.Z:F1}) " +
+                    $"o={CreateData.MoveInfo.Orientation:F3}");
             }
         }
         if (CorpseData != null)
@@ -298,8 +573,346 @@ public class UpdateObject : ServerPacket
         _gameState = gameState;
     }
 
+    /// <summary>
+    /// V3_4_3 Values-update filter. Drops Values entries that target an unknown guid
+    /// (no prior CreateObject) or carry no concrete field changes — cMangos emits
+    /// the latter as bookkeeping no-ops that materialize as a 13-byte garbage body
+    /// the V3_4_3 client rejects with CMSG_OBJECT_UPDATE_FAILED.
+    ///
+    /// Player Values now pass through unchanged. They used to be sanitized via a
+    /// StripPlayerCrashingBlocks helper (per fork research/player_values_update_crash.md),
+    /// but that strip is unnecessary now that UpdateHandler splits player Values
+    /// into a dedicated SMSG_UPDATE_OBJECT (port of fork commit 18caaf7) — once
+    /// the player's deltas are no longer intermixed with creature deltas, the
+    /// changedMask cascade is well-formed and the client accepts blocks 0/1/4 plus
+    /// PlayerData and ActivePlayerData. Removing the strip restores Coinage,
+    /// InvSlots, DisplayPower and the rage bar.
+    /// </summary>
+    private static readonly Microsoft.Extensions.Logging.ILogger _melObjLife =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+
+    public static int FilterV3_4_3Values(UpdateObject obj, GameSessionData gameState)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return 0;
+
+        int beforeCount = obj.ObjectUpdates.Count;
+        var known = gameState.ClientKnownGuids;
+
+        // First pass: register every CreateObject in this batch as a guid the client
+        // will know after this packet is sent. We add BEFORE the strip pass so that a
+        // Values entry later in the same batch (uncommon but legal) wouldn't be
+        // dropped just because we register guids only after.
+        int createKept = 0;
+        foreach (var u in obj.ObjectUpdates)
+        {
+            if (u.Type == UpdateTypeModern.CreateObject1 || u.Type == UpdateTypeModern.CreateObject2)
+            {
+                known.Add(u.Guid);
+                createKept++;
+                World.Logging.ObjectLifecycleLogMessages.CreateRegistered(
+                    _melObjLife, u.Guid.Low, u.Guid.High, u.Type.ToString());
+            }
+        }
+
+        int valuesKept = 0;
+        int valuesUnknownStripped = 0;
+        int valuesEmptyStripped = 0;
+        obj.ObjectUpdates.RemoveAll(u =>
+        {
+            if (u.Type != UpdateTypeModern.Values)
+                return false;
+            if (!known.Contains(u.Guid))
+            {
+                valuesUnknownStripped++;
+                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                    _melObjLife, u.Guid.Low, u.Guid.High, "unknown-guid");
+                return true;
+            }
+            if (IsEmptyValuesDelta(u))
+            {
+                valuesEmptyStripped++;
+                World.Logging.ObjectLifecycleLogMessages.ValuesStripped(
+                    _melObjLife, u.Guid.Low, u.Guid.High, "empty-delta");
+                return true;
+            }
+            valuesKept++;
+            World.Logging.ObjectLifecycleLogMessages.ValuesForwarded(
+                _melObjLife, u.Guid.Low, u.Guid.High, u.CorpseData != null, u.DynamicObjectData != null);
+            return false;
+        });
+
+        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+            $"[UpdateObjectTrace] V3_4_3 filter: in={beforeCount} valuesKept={valuesKept} valuesEmpty={valuesEmptyStripped} valuesUnknown={valuesUnknownStripped} createKept={createKept} mapId={gameState.CurrentMapId}");
+
+        return valuesUnknownStripped + valuesEmptyStripped;
+    }
+
+    /// <summary>
+    /// Re-resolve pet-pointing GUID fields on every UnitData in the batch against
+    /// the (now-fully-populated) PetModernGuidByNumber map. Fixes the cmangos-style
+    /// race: when the player's CreateObject is read BEFORE the pet's batch arrives,
+    /// the player's UNIT_FIELD_SUMMON gets translated against an empty pet map and
+    /// stores entry=pet_number instead of entry=realEntry. Pet's later CreateObject
+    /// has the corrected entry — without this reseat, the V3_4_3 client sees them
+    /// as different GUIDs and can't bind the pet UI.
+    /// No-op on TC native repacks (PetModernGuidByNumber empty) and on non-Pet GUIDs.
+    /// </summary>
+    public static void ReseatStalePetGuids(UpdateObject obj, GameSessionData gs)
+    {
+        int fixedCount = 0;
+        foreach (var u in obj.ObjectUpdates)
+        {
+            var unit = u.UnitData;
+            if (unit == null) continue;
+            Reseat(ref unit.Summon,        gs, ref fixedCount, u.Guid, "Summon");
+            Reseat(ref unit.SummonedBy,    gs, ref fixedCount, u.Guid, "SummonedBy");
+            Reseat(ref unit.Charm,         gs, ref fixedCount, u.Guid, "Charm");
+            Reseat(ref unit.CharmedBy,     gs, ref fixedCount, u.Guid, "CharmedBy");
+            Reseat(ref unit.CreatedBy,     gs, ref fixedCount, u.Guid, "CreatedBy");
+            Reseat(ref unit.Target,        gs, ref fixedCount, u.Guid, "Target");
+            Reseat(ref unit.ChannelObject, gs, ref fixedCount, u.Guid, "ChannelObject");
+        }
+        if (fixedCount > 0)
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+                $"[ReseatStalePetGuids] reseated {fixedCount} pet-pointing field(s) in batch");
+        }
+    }
+
+    private static void Reseat(ref WowGuid128? field, GameSessionData gs, ref int fixedCount, WowGuid128 ownerGuid, string fieldName)
+    {
+        if (!field.HasValue) return;
+        var corrected = gs.ResolveStalePetGuid(field.Value);
+        if (corrected.HasValue)
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
+                $"[ReseatStalePetGuids] owner={ownerGuid} field={fieldName} stale={field.Value} -> {corrected.Value}");
+            field = corrected.Value;
+            fixedCount++;
+        }
+    }
+
+    private static bool IsEmptyValuesDelta(ObjectUpdate u)
+    {
+        // A Values delta is "empty" if no concrete field has a value. The data objects
+        // (UnitData/PlayerData/ActivePlayerData) themselves may be non-null but contain
+        // only nullable fields all set to null — the V3_4_3 client treats the resulting
+        // bit-mask body as malformed.
+
+        // ObjectData fields apply to every entity type. A Values update that only
+        // clears UNIT_DYNAMIC_FLAGS (e.g. dropping the Lootable bit after loot
+        // release) populates ObjectData.DynamicFlags = 0 and nothing else; without
+        // this probe the filter classified that as empty and dropped it, leaving
+        // the corpse sparkly on the modern client.
+        var obj = u.ObjectData;
+        if (obj != null)
+        {
+            if (obj.DynamicFlags.HasValue) return false;
+            if (obj.EntryID.HasValue) return false;
+            if (obj.Scale.HasValue) return false;
+        }
+
+        // A moving transport's Values deltas carry GAMEOBJECT_LEVEL (the path period) and
+        // nothing else once GAMEOBJECT_DYNAMIC stops changing, so without this probe the
+        // filter classified them as empty and dropped them. Same for a door or chest whose
+        // only change is GAMEOBJECT_BYTES_1 (State/ArtKit).
+        var go = u.GameObjectData;
+        if (go != null)
+        {
+            if (go.Level.HasValue || go.State.HasValue || go.TypeID.HasValue) return false;
+            if (go.DisplayID.HasValue || go.Flags.HasValue || go.ArtKit.HasValue) return false;
+            if (go.FactionTemplate.HasValue || go.PercentHealth.HasValue) return false;
+            if (go.SpellVisualID.HasValue || go.StateSpellVisualID.HasValue) return false;
+            if (go.StateAnimID.HasValue || go.StateAnimKitID.HasValue || go.CustomParam.HasValue) return false;
+            if (go.CreatedBy != null || go.GuildGUID != null) return false;
+            if (go.ParentRotation != null)
+                for (int i = 0; i < go.ParentRotation.Length; i++)
+                    if (go.ParentRotation[i].HasValue) return false;
+        }
+
+        var unit = u.UnitData;
+        if (unit != null)
+        {
+            if (unit.Health.HasValue || unit.MaxHealth.HasValue || unit.DisplayID.HasValue) return false;
+            if (unit.Charm != null || unit.Summon != null || unit.CharmedBy != null) return false;
+            if (unit.SummonedBy != null || unit.CreatedBy != null || unit.Target != null) return false;
+            if (unit.Critter != null || unit.BattlePetCompanionGUID != null) return false;
+            if (unit.ChannelData != null || unit.ChannelObject != null) return false;
+            if (unit.RaceId.HasValue || unit.ClassId.HasValue || unit.SexId.HasValue) return false;
+            if (unit.Level.HasValue || unit.EffectiveLevel.HasValue || unit.DisplayPower.HasValue) return false;
+            if (unit.FactionTemplate.HasValue || unit.Flags.HasValue || unit.Flags2.HasValue || unit.Flags3.HasValue) return false;
+            if (unit.AuraState.HasValue) return false;
+            if (unit.BoundingRadius.HasValue || unit.CombatReach.HasValue) return false;
+            if (unit.NativeDisplayID.HasValue || unit.MountDisplayID.HasValue) return false;
+            if (unit.HoverHeight.HasValue || unit.GuildGUID != null) return false;
+            if (unit.MinDamage.HasValue || unit.MaxDamage.HasValue) return false;
+            if (unit.StandState.HasValue || unit.AnimTier.HasValue) return false;
+            if (unit.AttackPower.HasValue || unit.RangedAttackPower.HasValue) return false;
+            if (unit.BaseMana.HasValue || unit.BaseHealth.HasValue) return false;
+            if (unit.NpcFlags != null)
+                for (int i = 0; i < unit.NpcFlags.Length; i++)
+                    if (unit.NpcFlags[i].HasValue && unit.NpcFlags[i] != 0) return false;
+            if (unit.Power != null)
+                for (int i = 0; i < unit.Power.Length; i++)
+                    if (unit.Power[i].HasValue) return false;
+            if (unit.MaxPower != null)
+                for (int i = 0; i < unit.MaxPower.Length; i++)
+                    if (unit.MaxPower[i].HasValue) return false;
+            if (unit.Stats != null)
+                for (int i = 0; i < unit.Stats.Length; i++)
+                    if (unit.Stats[i].HasValue) return false;
+            if (unit.Resistances != null)
+                for (int i = 0; i < 7; i++)
+                    if (unit.Resistances[i].HasValue) return false;
+        }
+        var player = u.PlayerData;
+        if (player != null)
+        {
+            if (player.PlayerFlags.HasValue || player.PlayerFlagsEx.HasValue) return false;
+            if (player.NativeSex.HasValue || player.HonorLevel.HasValue) return false;
+            if (player.GuildRankID.HasValue || player.GuildLevel.HasValue) return false;
+            if (player.DuelArbiter != null || player.WowAccount != null || player.LootTargetGUID != null) return false;
+        }
+        // ContainerData carries equipped-bag NumSlots and per-slot item GUIDs. A Values
+        // update that clears Slots[X] (e.g. when an item moves out of the quiver into
+        // the main backpack on TC 3.3.5a) populates ContainerData.Slots[X] = Empty and
+        // nothing else — without this probe the filter classified that as empty and
+        // dropped it, leaving a "ghost" item rendered in the source slot of the V3_4_3
+        // bag UI until relog.
+        var ctr = u.ContainerData;
+        if (ctr != null)
+        {
+            if (ctr.NumSlots.HasValue) return false;
+            for (int i = 0; i < 36; i++)
+                if (ctr.Slots[i].HasValue) return false;
+        }
+        // ActivePlayerData has hundreds of fields; check the most common ones cMangos
+        // populates as part of real updates. If none are set, treat as empty.
+        var ap = u.ActivePlayerData;
+        if (ap != null)
+        {
+            if (ap.Coinage.HasValue || ap.XP.HasValue || ap.NextLevelXP.HasValue) return false;
+            // Stable-slot purchases arrive as a lone NumStableSlots delta; without this probe
+            // the filter called them empty and dropped them, so bought slots stayed locked (#224).
+            if (ap.NumStableSlots.HasValue) return false;
+            if (ap.CharacterPoints.HasValue) return false;
+            if (ap.FarsightObject != null) return false;
+            if (ap.SummonedBattlePetGUID != null) return false;
+            // PLAYER_FIELD_BYTES (legacy) splits into these four bytes on the modern
+            // descriptor. A Values delta for CMSG_SET_ACTION_BAR_TOGGLES lights only
+            // MultiActionBars; without this probe the filter dropped the packet and
+            // bars 2-5 visibility never reached the V3_4_3 client.
+            if (ap.MultiActionBars.HasValue) return false;
+            if (ap.LocalFlags.HasValue) return false;
+            if (ap.GrantableLevels.HasValue) return false;
+            if (ap.LifetimeMaxRank.HasValue) return false;
+            if (ap.InvSlots != null)
+                for (int i = 0; i < ap.InvSlots.Length; i++)
+                    if (ap.InvSlots[i] != null) return false;
+            // PackSlots / BankSlots / BankBagSlots / BuyBackSlots / KeyringSlots
+            // are where cMaNGOS stores main-backpack and bank items. A Values
+            // update that only adds a looted item to the backpack populates
+            // PackSlots[N] but no other ActivePlayerData field — without these
+            // checks the filter classified the delta as empty and dropped it,
+            // leaving the V3_4_3 client unaware of the new item until relog.
+            if (ap.PackSlots != null)
+                for (int i = 0; i < ap.PackSlots.Length; i++)
+                    if (ap.PackSlots[i] != null) return false;
+            if (ap.BankSlots != null)
+                for (int i = 0; i < ap.BankSlots.Length; i++)
+                    if (ap.BankSlots[i] != null) return false;
+            if (ap.BankBagSlots != null)
+                for (int i = 0; i < ap.BankBagSlots.Length; i++)
+                    if (ap.BankBagSlots[i] != null) return false;
+            if (ap.BuyBackSlots != null)
+                for (int i = 0; i < ap.BuyBackSlots.Length; i++)
+                    if (ap.BuyBackSlots[i] != null) return false;
+            if (ap.KeyringSlots != null)
+                for (int i = 0; i < ap.KeyringSlots.Length; i++)
+                    if (ap.KeyringSlots[i] != null) return false;
+            if (ap.Toys != null && ap.Toys.Count > 0) return false;
+            if (ap.Skill != null)
+            {
+                for (int i = 0; i < 256; i++)
+                    if (ap.Skill.SkillLineID[i].HasValue) return false;
+            }
+        }
+        // ItemData carries per-item Values. A repair (CMSG_REPAIR_ITEM) makes the
+        // backend push an item Values delta that populates only Durability — without
+        // this probe the filter classified it as empty and dropped it, so the V3_4_3
+        // client's durability bars never updated and "repair did nothing" (the gold
+        // was still deducted because Coinage lives in ActivePlayerData, probed above).
+        // Same applies to any item-only field change (StackCount, Flags, Enchantment…).
+        var item = u.ItemData;
+        if (item != null)
+        {
+            if (item.HasGemsUpdate) return false;
+            if (item.Owner != null || item.ContainedIn != null) return false;
+            if (item.Creator != null || item.GiftCreator != null) return false;
+            if (item.StackCount.HasValue || item.Duration.HasValue || item.Flags.HasValue) return false;
+            if (item.PropertySeed.HasValue || item.RandomProperty.HasValue) return false;
+            if (item.Durability.HasValue || item.MaxDurability.HasValue) return false;
+            if (item.SpellCharges != null)
+                for (int i = 0; i < item.SpellCharges.Length; i++)
+                    if (item.SpellCharges[i].HasValue) return false;
+            if (item.Enchantment != null)
+                for (int i = 0; i < item.Enchantment.Length; i++)
+                    if (item.Enchantment[i] != null) return false;
+        }
+
+        // CorpseData Values deltas are single-field in practice: a battleground corpse gains
+        // or loses the lootable-insignia bit in DynamicFlags and nothing else. Across the
+        // whole 3.3.5 server only two sites write a corpse field after the object is on the
+        // map — Player.cpp SetFlag(CORPSE_DYNFLAG_LOOTABLE) right after ConvertCorpseToBones,
+        // and LootHandler.cpp RemoveFlag once the looting finishes. Everything else is
+        // written on a fresh object before AddToMap and so ships in the CreateObject.
+        //
+        // That one bit is load-bearing: the bones are created with DynamicFlags = 0 and only
+        // become lootable via the delta below, so dropping it leaves the client with a corpse
+        // it will not offer to loot. Confirmed working in a battleground — insignia looted,
+        // payout equal to character level in copper, matching bones->loot.gold = GetLevel().
+        //
+        // KNOWN, AND NOT A REASON TO REMOVE THIS PROBE: forwarding these deltas also makes
+        // the client emit one CMSG_OBJECT_UPDATE_FAILED per corpse. It was removed once on
+        // that basis and had to be restored. The looting works regardless, so the failure is
+        // cosmetic; the likely cause is that Map::ConvertCorpseToBones gives the new bones
+        // the *same guid counter* as the corpse it replaces, so the client sees destroy and
+        // create on one guid with the delta arriving in that window. Fix the ordering, do not
+        // disable the forwarding.
+        var corpse = u.CorpseData;
+        if (corpse != null)
+        {
+            if (corpse.DynamicFlags.HasValue || corpse.Flags.HasValue) return false;
+            if (corpse.Owner != null || corpse.PartyGUID != null || corpse.GuildGUID != null) return false;
+            if (corpse.DisplayID.HasValue || corpse.FactionTemplate.HasValue) return false;
+            if (corpse.RaceId.HasValue || corpse.SexId.HasValue || corpse.ClassId.HasValue) return false;
+            if (corpse.Items != null)
+                for (int i = 0; i < corpse.Items.Length; i++)
+                    if (corpse.Items[i].HasValue) return false;
+        }
+
+        // DynamicObjectData Values deltas carry Radius / CastTime changes on persistent-AoE
+        // spells (Blizzard, Rain of Fire, Consecration, Death and Decay).
+        var dyn = u.DynamicObjectData;
+        if (dyn != null)
+        {
+            if (dyn.Caster != null) return false;
+            if (dyn.Type.HasValue || dyn.SpellID.HasValue) return false;
+            if (dyn.SpellXSpellVisualID.HasValue) return false;
+            if (dyn.Radius.HasValue || dyn.CastTime.HasValue) return false;
+        }
+        return true;
+    }
+
     public override void Write()
     {
+        // Filter is now invoked from UpdateHandler / QueryHandler BEFORE Write() so the
+        // outer code can decide to skip the send when nothing useful remains. Leaving
+        // a no-op call here as a safety net so that any caller that bypasses the
+        // pre-filter still sees Values stripped.
+        FilterV3_4_3Values(this, _gameState);
+
         NumObjUpdates = (uint)ObjectUpdates.Count;
         MapID = (ushort)_gameState.CurrentMapId!;
 
@@ -376,6 +989,25 @@ public class UpdateObject : ServerPacket
     public List<WowGuid128> OutOfRangeGuids = new List<WowGuid128>();
     public List<WowGuid128> DestroyedGuids = new List<WowGuid128>();
     public List<ObjectUpdate> ObjectUpdates = new List<ObjectUpdate>();
+}
+
+public class HealthUpdate : ServerPacket
+{
+    // Modern V3_4_3 SMSG_HEALTH_UPDATE: PackedGuid128 Guid + int64 Health.
+    // Reference: WPP V3_4_0 / TC343 — health is i64 in modern (post-Legion).
+    public HealthUpdate(WowGuid128 guid) : base(Opcode.SMSG_HEALTH_UPDATE, ConnectionType.Instance)
+    {
+        Guid = guid;
+    }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Guid);
+        _worldPacket.WriteInt64(Health);
+    }
+
+    public WowGuid128 Guid;
+    public long Health;
 }
 
 public class PowerUpdate : ServerPacket, ISpanWritable

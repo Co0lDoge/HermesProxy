@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -16,6 +16,7 @@
  */
 
 
+using HermesProxy.Enums;
 using System;
 using Framework.Constants;
 using Framework.GameMath;
@@ -311,6 +312,8 @@ class LootRemoved : ServerPacket, ISpanWritable
         writer.WritePackedGuid128(Owner.Low, Owner.High);
         writer.WritePackedGuid128(LootObj.Low, LootObj.High);
         writer.WriteUInt8(LootListID);
+        if (LootRollWire.WritesDungeonEncounterId)
+            writer.WriteInt32(0);                    // DungeonEncounterID
         return writer.Position;
     }
 
@@ -353,20 +356,38 @@ class StartLootRoll : ServerPacket, ISpanWritable
 {
     public StartLootRoll() : base(Opcode.SMSG_LOOT_START_ROLL) { }
 
+    // V3_4_3 StartLootRoll::Write inserts LootRollIneligibleReason between ValidRolls
+    // and Method: std::array<LootRollIneligibilityReason, 4> where the enum is uint32,
+    // appended as 4 * sizeof(uint32) = 16 bytes. Omitting it lands Method and the whole
+    // Item block 16 bytes early. 3.3.5a has no equivalent — it sends only the ValidRolls
+    // mask — so every entry is written as None (0).
+    private const int IneligibleReasonCount = 4;
+    private const int IneligibleReasonBytes = IneligibleReasonCount * sizeof(uint);
+
+    private static bool WritesIneligibleReasons =>
+        ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+
     public override void Write()
     {
         _worldPacket.WritePackedGuid128(LootObj);
         _worldPacket.WriteUInt32(MapID);
         _worldPacket.WriteUInt32(RollTime);
         _worldPacket.WriteUInt8((byte)ValidRolls);
+        if (WritesIneligibleReasons)
+        {
+            for (int i = 0; i < IneligibleReasonCount; i++)
+                _worldPacket.WriteUInt32(0);         // LootRollIneligibilityReason.None
+        }
         _worldPacket.WriteUInt8((byte)Method);
         Item.Write(_worldPacket);
     }
 
     // LootItemData: 1 (bits) + ItemInstance + 4 + 1 + 1 = 7 + ItemInstanceMaxSize
     private const int LootItemDataSize = 7 + ItemPacketHelpers.ItemInstanceMaxSize;
-    // GUID(18) + 2 uints(8) + 2 bytes(2) + LootItemData
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 8 + 2 + LootItemDataSize;
+    // GUID(18) + 2 uints(8) + 2 bytes(2) + LootRollIneligibleReason(16 on V3_4_3) + LootItemData
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 8 + 2
+        + (WritesIneligibleReasons ? IneligibleReasonBytes : 0)
+        + LootItemDataSize;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -375,6 +396,11 @@ class StartLootRoll : ServerPacket, ISpanWritable
         writer.WriteUInt32(MapID);
         writer.WriteUInt32(RollTime);
         writer.WriteUInt8((byte)ValidRolls);
+        if (WritesIneligibleReasons)
+        {
+            for (int i = 0; i < IneligibleReasonCount; i++)
+                writer.WriteUInt32(0);               // LootRollIneligibilityReason.None
+        }
         writer.WriteUInt8((byte)Method);
 
         // Write LootItemData inline
@@ -417,6 +443,22 @@ class LootRoll : ClientPacket
     public RollType RollType;
 }
 
+/// <summary>
+/// V3_4_3 writes an int32 DungeonEncounterID before the Item block in the loot-roll result
+/// packets. Verified byte-for-byte against a native Wrathion V3_4_3.23121 capture:
+/// SMSG_LOOT_ROLL and SMSG_LOOT_ROLL_WON carry it at offset 17 (after RollType), and
+/// SMSG_LOOT_ROLLS_COMPLETE at offset 8 (after LootListID). 3.3.5a has no dungeon-encounter
+/// concept on this wire and it is zero in every native packet, so it is always written as 0.
+/// SMSG_LOOT_START_ROLL does NOT have this field. Issue #162.
+/// </summary>
+internal static class LootRollWire
+{
+    public static bool WritesDungeonEncounterId =>
+        ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+
+    public static int DungeonEncounterIdBytes => WritesDungeonEncounterId ? 4 : 0;
+}
+
 class LootRollBroadcast : ServerPacket, ISpanWritable
 {
     public LootRollBroadcast() : base(Opcode.SMSG_LOOT_ROLL) { }
@@ -427,6 +469,8 @@ class LootRollBroadcast : ServerPacket, ISpanWritable
         _worldPacket.WritePackedGuid128(Player);
         _worldPacket.WriteInt32(Roll);
         _worldPacket.WriteUInt8((byte)RollType);
+        if (LootRollWire.WritesDungeonEncounterId)
+            _worldPacket.WriteInt32(0);              // DungeonEncounterID
         Item.Write(_worldPacket);
         _worldPacket.WriteBit(Autopassed);
         _worldPacket.FlushBits();
@@ -434,8 +478,9 @@ class LootRollBroadcast : ServerPacket, ISpanWritable
 
     // LootItemData: 1 (bits) + ItemInstance + 6 = 7 + ItemInstanceMaxSize
     private const int LootItemDataSize = 7 + ItemPacketHelpers.ItemInstanceMaxSize;
-    // 2 GUIDs + int + byte + LootItemData + 1 bit
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 4 + 1 + LootItemDataSize + 1;
+    // 2 GUIDs + int + byte + DungeonEncounterID + LootItemData + 1 byte of bits
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 4 + 1
+        + LootRollWire.DungeonEncounterIdBytes + LootItemDataSize + 1;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -444,6 +489,8 @@ class LootRollBroadcast : ServerPacket, ISpanWritable
         writer.WritePackedGuid128(Player.Low, Player.High);
         writer.WriteInt32(Roll);
         writer.WriteUInt8((byte)RollType);
+        if (LootRollWire.WritesDungeonEncounterId)
+            writer.WriteInt32(0);                    // DungeonEncounterID
 
         // Write LootItemData inline
         writer.WriteBits(Item.Type, 2);
@@ -482,14 +529,18 @@ class LootRollWon : ServerPacket, ISpanWritable
         _worldPacket.WritePackedGuid128(Winner);
         _worldPacket.WriteInt32(Roll);
         _worldPacket.WriteUInt8((byte)RollType);
+        if (LootRollWire.WritesDungeonEncounterId)
+            _worldPacket.WriteInt32(0);              // DungeonEncounterID
         Item.Write(_worldPacket);
+        // Native writes MainSpec as a single flushed bit; 128 as a byte is the same 0x80.
         _worldPacket.WriteUInt8(MainSpec);
     }
 
     // LootItemData: 1 (bits) + ItemInstance + 6 = 7 + ItemInstanceMaxSize
     private const int LootItemDataSize = 7 + ItemPacketHelpers.ItemInstanceMaxSize;
-    // 2 GUIDs + int + byte + LootItemData + byte
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 4 + 1 + LootItemDataSize + 1;
+    // 2 GUIDs + int + byte + DungeonEncounterID + LootItemData + MainSpec byte
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 4 + 1
+        + LootRollWire.DungeonEncounterIdBytes + LootItemDataSize + 1;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -498,6 +549,8 @@ class LootRollWon : ServerPacket, ISpanWritable
         writer.WritePackedGuid128(Winner.Low, Winner.High);
         writer.WriteInt32(Roll);
         writer.WriteUInt8((byte)RollType);
+        if (LootRollWire.WritesDungeonEncounterId)
+            writer.WriteInt32(0);                    // DungeonEncounterID
 
         // Write LootItemData inline
         writer.WriteBits(Item.Type, 2);
@@ -573,9 +626,13 @@ class LootRollsComplete : ServerPacket, ISpanWritable
     {
         _worldPacket.WritePackedGuid128(LootObj);
         _worldPacket.WriteUInt8(LootListID);
+        if (LootRollWire.WritesDungeonEncounterId)
+            _worldPacket.WriteInt32(0);              // DungeonEncounterID
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 1; // GUID + byte
+    // GUID + byte + DungeonEncounterID
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 1
+        + LootRollWire.DungeonEncounterIdBytes;
 
     public int WriteToSpan(Span<byte> buffer)
     {

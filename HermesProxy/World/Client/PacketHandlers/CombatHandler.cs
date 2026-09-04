@@ -22,13 +22,45 @@ public partial class WorldClient
 
         SendPacketToClient(attack);
     }
+
+    [PacketHandler(Opcode.SMSG_DISMOUNT)]
+    void HandleDismount(WorldPacket packet)
+    {
+        Dismount dismount = new();
+        dismount.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(dismount);
+    }
+
+    [PacketHandler(Opcode.SMSG_BREAK_TARGET)]
+    void HandleBreakTarget(WorldPacket packet)
+    {
+        BreakTarget pkt = new();
+        pkt.UnitGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(pkt);
+    }
+
+    [PacketHandler(Opcode.SMSG_CLEAR_TARGET)]
+    void HandleClearTarget(WorldPacket packet)
+    {
+        ClearTarget pkt = new();
+        pkt.Guid = packet.ReadGuid().To128(GetSession().GameState);
+        SendPacketToClient(pkt);
+    }
+
     [PacketHandler(Opcode.SMSG_ATTACK_STOP)]
     void HandleAttackStop(WorldPacket packet)
     {
         SAttackStop attack = new();
         attack.Attacker = packet.ReadPackedGuid().To128(GetSession().GameState);
         attack.Victim = packet.ReadPackedGuid().To128(GetSession().GameState);
-        attack.NowDead = packet.ReadUInt32() != 0;
+        // V3_4_3 backends (e.g. AzerothCore) can emit a short SMSG_ATTACKSTOP without the
+        // trailing "now dead" uint32; guard the read so it doesn't kill the WorldClient
+        // receive loop (issue #102). Gated to V3_4_3 so V1_14/V2_5 keep the original
+        // unconditional read (no behaviour change for older modern clients).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            attack.NowDead = packet.CanRead() && packet.ReadUInt32() != 0;
+        else
+            attack.NowDead = packet.ReadUInt32() != 0;
 
         var state = GetSession().GameState;
         if (attack.Attacker == state.CurrentPlayerGuid)
@@ -175,5 +207,84 @@ public partial class WorldClient
         log.Player = packet.ReadGuid().To128(GetSession().GameState);
         log.Victim = packet.ReadGuid().To128(GetSession().GameState);
         SendPacketToClient(log);
+    }
+
+    // SMSG_THREAT_UPDATE / SMSG_HIGHEST_THREAT_UPDATE — re-enabled 2026-05-20 after
+    // native TC 3.4.3 sniffs (`World_questing_level_1_parsed.txt`) confirmed the
+    // V3_4_3.54261 wire shape matches TC 3.4.3 `CombatPackets.cpp:54-79`:
+    //   PackedGuid128 UnitGUID + int32 count + (PackedGuid128 + int64 threat) * count
+    // The earlier ~18 GiB OOM was likely due to a stale guess from WPP V3_4_4+ data,
+    // not the shape itself. ThreatListSanityCap defends against legacy frames where the
+    // count field is garbled (e.g. truncated legacy packet read mid-stream).
+    private const int ThreatListSanityCap = 256;
+
+    [PacketHandler(Opcode.SMSG_THREAT_UPDATE)]
+    void HandleThreatUpdate(WorldPacket packet)
+    {
+        // Wire shape (PackedGuid128 + int32 count + (PackedGuid128 + int64) * count)
+        // verified against V3_4_3.54261 native sniffs only. V1_14 / V2_5 modern clients
+        // may use a different shape — keep them on the pre-fix silent-drop behaviour
+        // until separately verified.
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        ThreatUpdate update = new();
+        update.UnitGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        uint count = packet.ReadUInt32();
+        if (count > ThreatListSanityCap)
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Warn,
+                $"SMSG_THREAT_UPDATE: ThreatList count {count} exceeds sanity cap {ThreatListSanityCap}; dropping packet (UnitGUID={update.UnitGUID})");
+            return;
+        }
+        for (uint i = 0; i < count; i++)
+        {
+            update.ThreatList.Add(new ThreatInfo(
+                packet.ReadPackedGuid().To128(GetSession().GameState),
+                packet.ReadUInt32()));
+        }
+        SendPacketToClient(update);
+    }
+
+    [PacketHandler(Opcode.SMSG_HIGHEST_THREAT_UPDATE)]
+    void HandleHighestThreatUpdate(WorldPacket packet)
+    {
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        HighestThreatUpdate update = new();
+        update.UnitGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        update.HighestThreatGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        uint count = packet.ReadUInt32();
+        if (count > ThreatListSanityCap)
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Warn,
+                $"SMSG_HIGHEST_THREAT_UPDATE: ThreatList count {count} exceeds sanity cap {ThreatListSanityCap}; dropping packet (UnitGUID={update.UnitGUID})");
+            return;
+        }
+        for (uint i = 0; i < count; i++)
+        {
+            update.ThreatList.Add(new ThreatInfo(
+                packet.ReadPackedGuid().To128(GetSession().GameState),
+                packet.ReadUInt32()));
+        }
+        SendPacketToClient(update);
+    }
+
+    [PacketHandler(Opcode.SMSG_THREAT_REMOVE)]
+    void HandleThreatRemove(WorldPacket packet)
+    {
+        ThreatRemove threat = new();
+        threat.UnitGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        threat.AboutGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(threat);
+    }
+
+    [PacketHandler(Opcode.SMSG_THREAT_CLEAR)]
+    void HandleThreatClear(WorldPacket packet)
+    {
+        ThreatClear threat = new();
+        threat.GUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        SendPacketToClient(threat);
     }
 }

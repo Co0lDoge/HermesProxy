@@ -22,7 +22,12 @@ using System.Text;
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using Framework.Logging;
+using HermesProxy.Enums;
+using HermesProxy.World;
 using HermesProxy.World.Enums;
+
+using HermesProxy.World.Logging;
 
 namespace HermesProxy.World.Server.Packets;
 
@@ -33,31 +38,67 @@ public sealed class EnumCharacters : ClientPacket
     public override void Read() { }
 }
 
+public sealed class ReorderCharacters : ClientPacket
+{
+    public ReorderCharacters(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        uint count = _worldPacket.ReadBits<uint>(9);
+        Entries = new ReorderInfo[count];
+        for (uint i = 0; i < count; i++)
+        {
+            Entries[i].PlayerGuid = _worldPacket.ReadPackedGuid128();
+            Entries[i].NewPosition = _worldPacket.ReadUInt8();
+        }
+    }
+
+    public ReorderInfo[] Entries = System.Array.Empty<ReorderInfo>();
+
+    public struct ReorderInfo
+    {
+        public WowGuid128 PlayerGuid;
+        public byte NewPosition;
+    }
+}
+
 public sealed class EnumCharactersResult : ServerPacket
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    // Matches the column the [CallerFilePath] form used to render, so existing greps still work.
+    private static readonly string _logSource = "CharacterPackets".PadRight(15);
+
     public EnumCharactersResult() : base(Opcode.SMSG_ENUM_CHARACTERS_RESULT) { }
 
     public override void Write()
     {
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            $"[Trace] EnumCharactersResult.Write: ENTER expansion={ModernVersion.ExpansionVersion} chars={Characters.Count}");
-        int envStart = _worldPacket.GetData().Length;
+        CharacterEnumLogMessages.EnumEnter(_melServer, _logSource, ModernVersion.ExpansionVersion, Characters.Count);
+        // GetWrittenLength keeps GetData's bit flush — which callers here sit mid-write of —
+        // without copying the whole packet just to read a length.
+        int envStart = _worldPacket.GetWrittenLength();
+
+        _worldPacket.WriteBit(Success);
+        _worldPacket.WriteBit(IsDeletedCharacters);
+        _worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
+        _worldPacket.WriteBit(IsNewPlayerRestricted);
+        _worldPacket.WriteBit(IsNewPlayer);
 
         if (ModernVersion.ExpansionVersion >= 3)
         {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                "[Trace] EnumCharactersResult.Write: branch=V3_4_3 (WPP layout, 7 bits + 5 UInt32s)");
+            CharacterEnumLogMessages.EnumBranchV343(_melServer, _logSource);
             // 3.4.3.54261 (WotLK Classic) envelope per WowPacketParser
             // WowPacketParserModule.V3_4_0_45166/Parsers/CharacterHandler.cs:402-460
             // (gated on ClientVersionBuild.V3_4_3_51505, before V3_4_4_59817 additions).
             // 7 bits + 5 UInt32 size fields. Realmless/DontCreateCharacterDisplays/
             // RegionwideCharacters/WarbandGroups were all added in 3.4.4 — they MUST NOT
             // appear in the 3.4.3 wire format or every byte after them is misaligned.
-            _worldPacket.WriteBit(Success);
-            _worldPacket.WriteBit(IsDeletedCharacters);
-            _worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
-            _worldPacket.WriteBit(IsNewPlayerRestricted);
-            _worldPacket.WriteBit(IsNewPlayer);
+            //_worldPacket.WriteBit(Success);
+            //_worldPacket.WriteBit(IsDeletedCharacters);
+            //_worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
+            //_worldPacket.WriteBit(IsNewPlayerRestricted);
+            //_worldPacket.WriteBit(IsNewPlayer);
+
             _worldPacket.WriteBit(IsTrialAccountRestricted);
             _worldPacket.WriteBit(DisabledClassesMask.HasValue);
             _worldPacket.WriteUInt32((uint)Characters.Count);
@@ -65,6 +106,8 @@ public sealed class EnumCharactersResult : ServerPacket
             _worldPacket.WriteUInt32((uint)RaceUnlockData.Count);
             _worldPacket.WriteUInt32((uint)UnlockedConditionalAppearances.Count);
             _worldPacket.WriteUInt32((uint)RaceLimitDisablesCount);
+
+            //_worldPacket.WriteUInt32(0u);
 
             if (DisabledClassesMask.HasValue)
                 _worldPacket.WriteUInt32(DisabledClassesMask.Value);
@@ -84,19 +127,19 @@ public sealed class EnumCharactersResult : ServerPacket
             foreach (var raceUnlock in RaceUnlockData)
                 raceUnlock.Write(_worldPacket);
 
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[Trace] EnumCharactersResult.Write: EXIT total={_worldPacket.GetData().Length}b (V3_4_3 path)");
+            CharacterEnumLogMessages.EnumExitV343(_melServer, _logSource, _worldPacket.GetWrittenLength());
+
             return;
         }
 
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-            "[Trace] EnumCharactersResult.Write: branch=Legacy (V1_14/V2_5 layout)");
+        CharacterEnumLogMessages.EnumBranchLegacy(_melServer, _logSource);
         // Legacy modern (V1_14, V2_5) envelope.
-        _worldPacket.WriteBit(Success);
-        _worldPacket.WriteBit(IsDeletedCharacters);
-        _worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
-        _worldPacket.WriteBit(IsNewPlayerRestricted);
-        _worldPacket.WriteBit(IsNewPlayer);
+        //_worldPacket.WriteBit(Success);
+        //_worldPacket.WriteBit(IsDeletedCharacters);
+        //_worldPacket.WriteBit(IsNewPlayerRestrictionSkipped);
+        //_worldPacket.WriteBit(IsNewPlayerRestricted);
+        //_worldPacket.WriteBit(IsNewPlayer);
+
         _worldPacket.WriteBit(DisabledClassesMask.HasValue);
         _worldPacket.WriteBit(IsAlliedRacesCreationAllowed);
         _worldPacket.WriteInt32(Characters.Count);
@@ -119,17 +162,21 @@ public sealed class EnumCharactersResult : ServerPacket
 
     private void DumpEnvelope(int start)
     {
+        // Flush unconditionally so the wire is identical whether or not Trace is on; only the
+        // buffer copy and the hex / LINQ formatting are gated.
+        int len = _worldPacket.GetWrittenLength() - start;
+        if (!_melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            return;
+
         byte[] all = _worldPacket.GetData();
-        int len = all.Length - start;
         int dumpLen = Math.Min(40, len);
         string hex = BitConverter.ToString(all, start, dumpLen);
         string customSummary = Characters.Count > 0 && Characters[0].Customizations.Count > 0
             ? string.Join(",", Characters[0].Customizations.Select(c => $"{c.ChrCustomizationOptionID}/{c.ChrCustomizationChoiceID}"))
             : "(none)";
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Network,
-            $"[CharEnumEnv] charsCount={Characters.Count} maxLevel={MaxCharacterLevel} raceCount={RaceUnlockData.Count} envBytes={len} envFirst40={hex}");
-        Framework.Logging.Log.Print(Framework.Logging.LogType.Network,
-            $"[CharEnumEnv] customizations[0]={customSummary}");
+        CharacterEnumLogMessages.EnvelopeSummary(_melServer, _logSource, Characters.Count, MaxCharacterLevel,
+            RaceUnlockData.Count, len, hex);
+        CharacterEnumLogMessages.EnvelopeCustomizations(_melServer, _logSource, customSummary);
     }
 
     public bool Success;
@@ -159,7 +206,7 @@ public sealed class EnumCharactersResult : ServerPacket
     {
         public void Write(WorldPacket data)
         {
-            int startSize = data.GetData().Length;
+            int startSize = data.GetWrittenLength();
 
             if (ModernVersion.ExpansionVersion >= 3)
             {
@@ -172,19 +219,21 @@ public sealed class EnumCharactersResult : ServerPacket
 
             // Phase 5a diagnostic: hex-dump the per-character block so we can compare against
             // a known-good 3.4.3 capture. Drop after character-select renders correctly.
+            // Flush unconditionally so the wire does not depend on the log level; gate only
+            // the buffer copy and the hex formatting, which ran per character on every login.
+            int totalSize = data.GetWrittenLength() - startSize;
+            if (!_melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+                return;
+
             byte[] all = data.GetData();
-            int totalSize = all.Length - startSize;
             int firstLen = Math.Min(40, totalSize);
             int lastLen = Math.Min(30, totalSize);
             string firstHex = BitConverter.ToString(all, startSize, firstLen);
             string lastHex = BitConverter.ToString(all, startSize + totalSize - lastLen, lastLen);
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Network,
-                $"[CharInfo] name={Name} race={RaceId} class={ClassId} level={ExperienceLevel} " +
-                $"visItems={VisualItems.Length} bytes={totalSize}");
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Network,
-                $"[CharInfo] first40={firstHex}");
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Network,
-                $"[CharInfo] last30={lastHex}");
+            CharacterEnumLogMessages.CharInfoSummary(_melServer, _logSource, Name, RaceId, ClassId,
+                ExperienceLevel, VisualItems.Length, totalSize);
+            CharacterEnumLogMessages.CharInfoFirst40(_melServer, _logSource, firstHex);
+            CharacterEnumLogMessages.CharInfoLast30(_melServer, _logSource, lastHex);
         }
 
         // 3.4.3.54261 (WotLK Classic) per-character body per WowPacketParser
@@ -193,9 +242,8 @@ public sealed class EnumCharactersResult : ServerPacket
         // TimerunningSeasonID, separate RestrictionsAndMails struct, etc.).
         private void Write_V3_4_3(WorldPacket data)
         {
-            Framework.Logging.Log.Print(Framework.Logging.LogType.Trace,
-                $"[Trace] CharacterInfo.Write_V3_4_3: ENTER name='{Name}' guid={Guid} race={RaceId} class={ClassId} sex={SexId} " +
-                $"flags=0x{(uint)Flags:X8} flags2=0x{Flags2:X8} flags3=0x{Flags3:X8} flags4=0x{Flags4:X8}");
+            CharacterEnumLogMessages.CharInfoWriteV343Enter(_melServer, _logSource, Name, Guid.Low, Guid.High,
+                RaceId, ClassId, SexId, Flags, Flags2, Flags3, Flags4);
             data.WritePackedGuid128(Guid);
             data.WriteUInt64(GuildClubMemberID);
             data.WriteUInt8(ListPosition);
@@ -1001,6 +1049,65 @@ public class SetActionButton : ClientPacket
     public byte Index;
 }
 
+public class UpdateActionButtons : ServerPacket
+{
+    // V3_4_3 layout: PlayerConst.MaxActionButtonsModern (180) × int64
+    // (packed action+type) + 1 byte Reason. Total 1441 bytes.
+    // Reference: TC reference packet #151 (1441b = 180*8 + 1), HermesProxy-WOTLK
+    // fork Server/Packets/UpdateActionButtons.cs.
+    //
+    // The packed 64-bit format (per WPP V3_4_0_45166 ActionBarHandler.cs:25-36):
+    //   low 56 bits = action ID
+    //   high  8 bits = ActionButtonType
+    //
+    // Legacy 3.3.5a sends a packed int32 where:
+    //   low 24 bits = action ID
+    //   high  8 bits = ActionButtonType
+    //
+    // Forwarding the int32 as int64 directly puts the legacy type byte at bits
+    // 24-31 (garbage middle of the action value) and leaves the V3_4_3 type byte
+    // (bits 56-63) at zero — every slot is read as "type=0" with a mangled
+    // action ID, so the client renders the entire bar as empty on every login.
+    // The fix unpacks the legacy 32-bit value and repacks for V3_4_3.
+    public List<int> ActionButtons = new();
+    public byte Reason;
+
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    private static readonly string _logSource = "CharacterPackets".PadRight(15);
+
+    public UpdateActionButtons() : base(Opcode.SMSG_UPDATE_ACTION_BUTTONS, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        int nonZero = 0;
+        // The sample builder allocated and formatted inside the write loop on every action-bar
+        // update, whatever the log level. Build it only when it will actually be emitted.
+        bool trace = _melServer.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace);
+        var sample = trace ? new System.Text.StringBuilder() : null;
+        for (int i = 0; i < PlayerConst.MaxActionButtonsModern; i++)
+        {
+            int legacy = i < ActionButtons.Count ? ActionButtons[i] : 0;
+            ulong action = (uint)legacy & 0x00FFFFFFu;
+            byte type = (byte)(((uint)legacy >> 24) & 0xFFu);
+            ulong packed = action | ((ulong)type << 56);
+            _worldPacket.WriteInt64((long)packed);
+
+            if (legacy != 0)
+            {
+                nonZero++;
+                if (trace && nonZero <= 5)
+                    sample!.Append($" [{i}]act={action},type={type}");
+            }
+        }
+        _worldPacket.WriteUInt8(Reason);
+
+        if (trace)
+            CharacterEnumLogMessages.ActionButtonsWrite(_melServer, _logSource, ActionButtons.Count, nonZero,
+                PlayerConst.MaxActionButtonsModern, Reason, sample!.ToString());
+    }
+}
+
 public class SetActionBarToggles : ClientPacket
 {
     public SetActionBarToggles(WorldPacket packet) : base(packet) { }
@@ -1017,13 +1124,24 @@ public class LevelUpInfo : ServerPacket, ISpanWritable
 {
     public LevelUpInfo() : base(Opcode.SMSG_LEVEL_UP_INFO) { }
 
+    // V3_4_3 (WotLK Classic) and later expansions reserve 10 power-delta slots
+    // (the legacy 7 plus SoulShards/HolyPower/AlternatePower). Writing only 7
+    // shifts every stat that follows by 12 bytes, so the modern client reads
+    // garbage past the buffer for Spirit and NumNewTalents (observed: "Spirit
+    // increases by 121619977", "1354810122 talent points"). The legacy 3.3.5a
+    // server only sends 7; we pad the trailing slots with zero, matching the
+    // HermesProxy-WOTLK fork's LevelUpInfo writer.
+    private static int GetWirePowerCount() =>
+        ModernVersion.ExpansionVersion >= 3 ? 10 : ModernVersion.GetPowerCountForClientVersion();
+
     public override void Write()
     {
         _worldPacket.WriteInt32(Level);
         _worldPacket.WriteInt32(HealthDelta);
 
-        for (int i = 0; i < ModernVersion.GetPowerCountForClientVersion(); i++)
-            _worldPacket.WriteInt32(PowerDelta[i]);
+        int powerCount = GetWirePowerCount();
+        for (int i = 0; i < powerCount; i++)
+            _worldPacket.WriteInt32(i < PowerDelta.Length ? PowerDelta[i] : 0);
 
         foreach (int stat in StatDelta)
             _worldPacket.WriteInt32(stat);
@@ -1032,8 +1150,8 @@ public class LevelUpInfo : ServerPacket, ISpanWritable
         _worldPacket.WriteInt32(NumNewPvpTalentSlots);
     }
 
-    // Level(4) + Health(4) + 7 powers(28) + 5 stats(20) + 2 ints(8) = 64 bytes
-    public int MaxSize => 4 + 4 + 7 * 4 + 5 * 4 + 4 + 4;
+    // Level(4) + Health(4) + 10 powers(40) + 5 stats(20) + 2 ints(8) = 76 bytes
+    public int MaxSize => 4 + 4 + 10 * 4 + 5 * 4 + 4 + 4;
 
     public int WriteToSpan(Span<byte> buffer)
     {
@@ -1041,9 +1159,9 @@ public class LevelUpInfo : ServerPacket, ISpanWritable
         writer.WriteInt32(Level);
         writer.WriteInt32(HealthDelta);
 
-        int powerCount = ModernVersion.GetPowerCountForClientVersion();
+        int powerCount = GetWirePowerCount();
         for (int i = 0; i < powerCount; i++)
-            writer.WriteInt32(PowerDelta[i]);
+            writer.WriteInt32(i < PowerDelta.Length ? PowerDelta[i] : 0);
 
         foreach (int stat in StatDelta)
             writer.WriteInt32(stat);
@@ -1055,7 +1173,7 @@ public class LevelUpInfo : ServerPacket, ISpanWritable
 
     public int Level = 0;
     public int HealthDelta = 0;
-    public int[] PowerDelta = new int[7];
+    public int[] PowerDelta = new int[10];
     public int[] StatDelta = new int[5];
     public int NumNewTalents;
     public int NumNewPvpTalentSlots;
@@ -1105,6 +1223,13 @@ public class InspectResult : ServerPacket
     public override void Write()
     {
         DisplayInfo.Write(_worldPacket);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            WriteV343();
+            return;
+        }
+
         _worldPacket.WriteInt32(Glyphs.Count);
         _worldPacket.WriteInt32(Talents.Count);
         _worldPacket.WriteInt32(ItemLevel);
@@ -1134,9 +1259,47 @@ public class InspectResult : ServerPacket
             _worldPacket.WriteUInt32((uint)AzeriteLevel);
     }
 
+    // Wrathion InspectPackets.cpp / InspectHandler.cpp. Fixed 71-slot array,
+    // not a counted list. The four constants after honor are from their 3.4.3 sniff.
+    void WriteV343()
+    {
+        _worldPacket.WriteUInt16(0);
+        _worldPacket.WriteUInt16(0);
+        _worldPacket.WriteInt32(ItemLevel);
+        _worldPacket.WriteUInt8(LifetimeMaxRank);
+        _worldPacket.WriteUInt16(TodayHK);
+        _worldPacket.WriteUInt16(YesterdayHK);
+        _worldPacket.WriteUInt32(LifetimeHK);
+        _worldPacket.WriteUInt32(HonorLevel);
+
+        _worldPacket.WriteUInt64(2199023255552UL);
+        _worldPacket.WriteUInt32(1776384);
+        _worldPacket.WriteUInt32(101056512);
+        _worldPacket.WriteUInt32(33554432);
+
+        for (int i = 0; i < 71; ++i)
+        {
+            if (i < InspectedTalents.Count)
+            {
+                _worldPacket.WriteUInt32(InspectedTalents[i].TalentID);
+                _worldPacket.WriteUInt8((byte)InspectedTalents[i].Rank);
+            }
+            else
+            {
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt8(0);
+            }
+        }
+
+        for (int i = 0; i < 61; ++i)
+            _worldPacket.WriteUInt64(0);
+        _worldPacket.WriteUInt32(0);
+    }
+
     public PlayerModelDisplayInfo DisplayInfo = new();
     public List<ushort> Glyphs = new();
     public List<byte> Talents = new();
+    public List<TalentEntry> InspectedTalents = new();
     public InspectGuildData GuildData = null!;
     public PVPBracketData[] Bracket = new PVPBracketData[6];
     public uint? AzeriteLevel;

@@ -1,6 +1,7 @@
-﻿using Framework.Logging;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -19,6 +20,31 @@ public partial class WorldClient
         result.Command = (GuildCommandType)packet.ReadUInt32();
         result.Name = packet.ReadCString();
         result.Result = (GuildCommandError)packet.ReadUInt32();
+        SendPacketToClient(result);
+    }
+
+    [PacketHandler(Opcode.MSG_GUILD_PERMISSIONS)]
+    void HandleGuildPermissions(WorldPacket packet)
+    {
+        // Guild::SendPermissions unsubscribes us from bank delta updates every time it
+        // runs — deliberately, as AzerothCore's "only reliable way to handle /reload".
+        // It fires both for a client permissions query and unprompted after a tab
+        // purchase (HandleBuyBankTab ends with SendPermissions), so keying off this
+        // inbound packet catches both. Issue #157.
+        GetSession().GameState.GuildBankSubscribed = false;
+
+        GuildPermissionsQueryResults result = new();
+        result.RankID = packet.ReadUInt32();
+        result.Flags = packet.ReadInt32();
+        result.WithdrawGoldLimit = packet.ReadInt32();
+        result.NumTabs = packet.ReadInt8();
+        for (int i = 0; i < GuildConst.MaxBankTabs; i++)
+        {
+            GuildRankTabPermissions tab = new();
+            tab.Flags = packet.ReadInt32();
+            tab.WithdrawItemLimit = packet.ReadInt32();
+            result.Tab.Add(tab);
+        }
         SendPacketToClient(result);
     }
 
@@ -158,9 +184,21 @@ public partial class WorldClient
             }
             case GuildEventType.BankTabUpdated:
             {
+                // AC: _BroadcastEvent(GE_BANK_TAB_UPDATED, _, to_string(tabId), name, icon)
+                // Writing tab=0 / name=tabId / icon=name makes 3.4.3 apply a
+                // non-texture to tab 0 and the whole strip turns into ?.
                 GuildEventTabModified tab = new GuildEventTabModified();
-                tab.Name = strings[0];
-                tab.Icon = strings[1];
+                if (strings.Length >= 3 && int.TryParse(strings[0], out int tabId))
+                {
+                    tab.Tab = tabId;
+                    tab.Name = strings[1];
+                    tab.Icon = strings[2];
+                }
+                else if (strings.Length >= 2)
+                {
+                    tab.Name = strings[0];
+                    tab.Icon = strings[1];
+                }
                 SendPacketToClient(tab);
                 break;
             }
@@ -314,6 +352,9 @@ public partial class WorldClient
             member.ClassID = cache.ClassId =(Class)packet.ReadUInt8();
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_4_0_8089))
                 member.SexID = cache.SexId = (Gender)packet.ReadUInt8();
+            if (GetSession().GameState.CachedPlayers.TryGetValue(member.Guid, out var existing)
+                && existing.RaceId != Race.None)
+                member.RaceID = existing.RaceId;
             GetSession().GameState.UpdatePlayerCache(member.Guid, cache);
             member.AreaID = packet.ReadInt32();
 
@@ -387,6 +428,11 @@ public partial class WorldClient
                 tabInfo.Icon = packet.ReadCString();
                 result.TabInfo.Add(tabInfo);
             }
+
+            // Remember how many tabs actually exist. A query for an index at or beyond
+            // this is the client opening the "Buy new guild bank tab" slot, which must
+            // not trigger an activate — see HandleGuildBankQueryTab. Issue #157.
+            GetSession().GameState.GuildBankPurchasedTabs = size;
         }
 
         var slots = packet.ReadUInt8();
@@ -434,7 +480,14 @@ public partial class WorldClient
             result.ItemInfo.Add(itemInfo);
         }
 
-        result.FullUpdate = (hasTabs && slots > 0);
+        // AC only attaches the tab list on tab 0. 3.4.3 will not paint
+        // items unless FullUpdate is set, so any payload with tabs or
+        // items is a full replace.
+        result.FullUpdate = hasTabs || result.ItemInfo.Count > 0;
+
+        WorldClientLogMessages.GuildBankQueryResults(
+            _melLog, _sourceFile, "C<P S", result.Tab, result.TabInfo.Count,
+            result.ItemInfo.Count, result.FullUpdate, result.Money);
 
         SendPacketToClient(result);
     }
@@ -451,8 +504,6 @@ public partial class WorldClient
     [PacketHandler(Opcode.MSG_GUILD_BANK_LOG_QUERY)]
     void HandleGuildBankLongQuery(WorldPacket packet)
     {
-        const int maxTabs = 6;
-
         GuildBankLogQueryResults result = new();
         result.Tab = packet.ReadUInt8();
         byte logSize = packet.ReadUInt8();
@@ -461,17 +512,34 @@ public partial class WorldClient
             GuildBankLogEntry logEntry = new GuildBankLogEntry();
             logEntry.EntryType = packet.ReadInt8();
             logEntry.PlayerGUID = packet.ReadGuid().To128(GetSession().GameState);
-            
-            if (result.Tab != maxTabs)
+
+            // The legacy writer switches on the event type, not the tab index — see
+            // Guild::BankEventLogEntry::WritePacket / GuildBankLogQueryResults::Write on
+            // 3.3.5a. Keying off the tab happened to agree only because money events are
+            // queried with tab 6; a money event in an item tab (or the reverse) desynced
+            // the rest of the packet.
+            //
+            // Count is a uint32 on the wire. Reading it as a single byte left the
+            // following TimeOffset three bytes early, splicing Count's high bytes onto
+            // the real offset — which is why the guild bank Log tab showed ages like
+            // "35 years ago" that jumped around instead of counting up (issue #158).
+            switch ((GuildBankEventType)logEntry.EntryType)
             {
-                logEntry.ItemID = packet.ReadInt32();
-                logEntry.Count = packet.ReadUInt8();
-                if ((GuildBankEventType)logEntry.EntryType == GuildBankEventType.MoveItem ||
-                    (GuildBankEventType)logEntry.EntryType == GuildBankEventType.MoveItem2)
+                case GuildBankEventType.DepositItem:
+                case GuildBankEventType.WithdrawItem:
+                    logEntry.ItemID = packet.ReadInt32();
+                    logEntry.Count = (int)packet.ReadUInt32();
+                    break;
+                case GuildBankEventType.MoveItem:
+                case GuildBankEventType.MoveItem2:
+                    logEntry.ItemID = packet.ReadInt32();
+                    logEntry.Count = (int)packet.ReadUInt32();
                     logEntry.OtherTab = packet.ReadInt8();
+                    break;
+                default:
+                    logEntry.Money = packet.ReadUInt32();
+                    break;
             }
-            else
-                logEntry.Money = packet.ReadUInt32();
 
             logEntry.TimeOffset = packet.ReadUInt32();
             result.Entry.Add(logEntry);

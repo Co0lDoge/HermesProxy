@@ -68,6 +68,8 @@ public abstract class ClientPacket : IDisposable
         {
             sniffFile = new SniffFile("modern", (ushort)context.ClientBuild);
             sniffFile.WriteHeader();
+
+            Log.Print(LogType.Trace, $"Opened modern sniff file: {sniffFile.FilePath}");
         }
         sniffFile.WritePacket(GetOpcode(), true, _worldPacket.GetData());
     }
@@ -88,7 +90,8 @@ public abstract class ServerPacket
         connectionType = ConnectionType.Realm;
 
         uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
-        System.Diagnostics.Trace.Assert(opcode != 0);
+        if (opcode == 0)
+            throw new UnmappedOpcodeException(universalOpcode, isModern: true);
         _worldPacket = new WorldPacket(opcode);
     }
 
@@ -97,7 +100,8 @@ public abstract class ServerPacket
         connectionType = type;
 
         uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
-        System.Diagnostics.Trace.Assert(opcode != 0);
+        if (opcode == 0)
+            throw new UnmappedOpcodeException(universalOpcode, isModern: true);
         _worldPacket = new WorldPacket(opcode);
     }
 
@@ -130,6 +134,8 @@ public abstract class ServerPacket
         {
             sniffFile = new SniffFile("modern", (ushort)context.ClientBuild);
             sniffFile.WriteHeader();
+
+            Log.Print(LogType.Trace, $"Opened modern sniff file: {sniffFile.FilePath}");
         }
         sniffFile.WritePacket(GetOpcode(), false, GetData()!);
     }
@@ -195,13 +201,21 @@ public class WorldPacket : ByteBuffer
     public WorldPacket(Opcode opcode)
     {
         this.opcode = LegacyVersion.GetCurrentOpcode(opcode);
-        System.Diagnostics.Trace.Assert(this.opcode != 0);
+        if (this.opcode == 0)
+            throw new UnmappedOpcodeException(opcode, isModern: false);
     }
 
     public WorldPacket(uint opcode, byte[] data) : base(data)
     {
         this.opcode = opcode;
-        System.Diagnostics.Trace.Assert(this.opcode != 0);
+
+        // Was a Trace.Assert. Both callers are legacy *receive* paths — SMSG_COMPRESSED_MOVES
+        // reads this opcode straight off the wire, and Inflate() copies it from the parent
+        // packet — so a zero here means corrupt or misaligned input, not a programming error.
+        // Aborting the process on malformed server data is the worst possible response; log it
+        // and let the dispatcher drop it as an unknown opcode.
+        if (this.opcode == 0)
+            Log.Print(LogType.Warn, "Constructed a legacy packet with opcode 0 from received data; it will be dropped as unknown.");
     }
 
     public WorldPacket(byte[] data) : base(data)
@@ -384,17 +398,61 @@ public class PacketHeader
 
 public class LegacyServerPacketHeader
 {
+    // WotLK-era cores (AzerothCore/TrinityCore 3.3.5a ServerPktHeader) size the header
+    // by the payload: normally 2 bytes of big-endian size + 2 bytes of opcode, but once
+    // the size (which counts the opcode) passes 0x7FFF the size field grows to 3 bytes
+    // and the first one carries a 0x80 marker:
+    //
+    //     if (isLargePacket())                          // size > 0x7FFF
+    //         header[i++] = 0x80 | (0xFF & (size >> 16));
+    //     header[i++] = 0xFF & (size >> 8);
+    //     header[i++] = 0xFF & size;
+    //
+    // The whole header is encrypted (EncryptSend over getHeaderLength()), so consuming
+    // 4 bytes of a 5-byte header both mis-frames the packet and leaves the RC4 keystream
+    // one byte out of step — the stream never resynchronises. Issue #200: a guild roster
+    // large enough to cross 0x7FFF desynced the legacy socket, after which every opcode
+    // decoded as garbage and the server dropped the connection 60s later.
+    //
+    // Vanilla and TBC cores have no such branch and always emit the 4-byte form.
     public const int StructSize = sizeof(ushort) + sizeof(ushort);
-    public ushort Size;
+    public const int LargeStructSize = StructSize + 1;
+
+    public uint Size;
     public ushort Opcode;
-    public void Read(byte[] buffer)
+
+    public static bool IsLargePacket(byte firstSizeByte) => (firstSizeByte & 0x80) != 0;
+
+    public void Read(byte[] buffer) => Read(buffer, large: false);
+
+    public void Read(byte[] buffer, bool large)
     {
-        Size = BinaryPrimitives.ReadUInt16BigEndian(buffer);
-        Opcode = BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(sizeof(ushort)));
+        if (large)
+        {
+            Size = (uint)(((buffer[0] & 0x7F) << 16) | (buffer[1] << 8) | buffer[2]);
+            Opcode = BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(3));
+        }
+        else
+        {
+            Size = BinaryPrimitives.ReadUInt16BigEndian(buffer);
+            Opcode = BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(sizeof(ushort)));
+        }
     }
+
     public void Write(ByteBuffer byteBuffer)
     {
-        byteBuffer.WriteUInt16(Size);
+        if (Size > 0x7FFF)
+        {
+            byteBuffer.WriteUInt8((byte)(0x80 | ((Size >> 16) & 0xFF)));
+            byteBuffer.WriteUInt8((byte)((Size >> 8) & 0xFF));
+            byteBuffer.WriteUInt8((byte)(Size & 0xFF));
+        }
+        else
+        {
+            // Big-endian, to mirror Read.
+            byteBuffer.WriteUInt8((byte)((Size >> 8) & 0xFF));
+            byteBuffer.WriteUInt8((byte)(Size & 0xFF));
+        }
         byteBuffer.WriteUInt16(Opcode);
     }
 };

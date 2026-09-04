@@ -19,6 +19,7 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -109,6 +110,18 @@ class BattlemasterJoin : ClientPacket
     public int Verification;
     public int BattlefieldInstanceID;
     public bool JoinAsGroup;
+}
+
+class BattlefieldListRequest : ClientPacket
+{
+    public BattlefieldListRequest(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        ListID = _worldPacket.ReadInt32();
+    }
+
+    public int ListID;
 }
 
 public class BattlefieldStatusNeedConfirmation : ServerPacket, ISpanWritable
@@ -335,6 +348,16 @@ public class RideTicket
         Id = data.ReadUInt32();
         Type = (RideType)data.ReadUInt32();
         Time = data.ReadInt64();
+        // V3_4_3.54261 RideTicket carries a trailing "Unknown925" bit (added ~9.2.5) and then
+        // byte-aligns (TC LFGPacketsCommon RideTicket >> ... ReadBit + ResetBitPos). Without
+        // consuming it, the next bit read — BattlefieldPort.AcceptedInvite — lands on THIS bit
+        // instead of the real accept bit in the following byte, so "Enter Battle" was read as a
+        // decline and the player never entered the popped battleground (#102).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            data.HasBit();         // Unknown925
+            data.ResetBitReader(); // byte-align to the next field's bit byte
+        }
     }
 
     public void Write(WorldPacket data)
@@ -484,12 +507,19 @@ public class PVPMatchStatisticsMessage : ServerPacket
 
     public override void Write()
     {
+        // V3_4_3 dropped the arena team name block from this packet, and its opcode slot is
+        // the old SMSG_PVP_LOG_DATA (0x2934) rather than retail's SMSG_PVP_MATCH_STATISTICS
+        // (0x2933, which is what Classic Era and TBC Classic use). Wrathion, a native
+        // 3.4.3.54261 server, hardcodes the HasNames bit to false with the comment
+        // "ArenaTeams no longer in 3.4.3".
+        bool writeArenaTeams = ArenaTeams != null && ModernVersion.Build != ClientVersionBuild.V3_4_3_54261;
+
         _worldPacket.WriteBit(Ratings != null);
-        _worldPacket.WriteBit(ArenaTeams != null);
+        _worldPacket.WriteBit(writeArenaTeams);
         _worldPacket.WriteBit(Winner != null);
 
-        if (ArenaTeams != null)
-            ArenaTeams.Write(_worldPacket);
+        if (writeArenaTeams)
+            ArenaTeams!.Write(_worldPacket);
 
         _worldPacket.WriteInt32(Statistics.Count);
 
@@ -574,7 +604,11 @@ public class PVPMatchStatisticsMessage : ServerPacket
             data.WriteUInt32(HealingDone);
             data.WriteInt32(Stats.Count);
             data.WriteInt32(PrimaryTalentTree);
-            data.WriteUInt32((uint)Sex);
+            // 3.4.3 narrows Sex to a single byte; wider writes shift every following field.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+                data.WriteInt8((sbyte)Sex);
+            else
+                data.WriteUInt32((uint)Sex);
             data.WriteUInt32((uint)PlayerRace);
             data.WriteUInt32((uint)PlayerClass);
             data.WriteInt32(CreatureID);

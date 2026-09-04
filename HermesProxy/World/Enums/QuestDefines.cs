@@ -33,6 +33,17 @@ public enum QuestGiverStatusVanilla : uint
     Reward               = 7,
 }
 
+// Modern (V2_0_1+) gossip QuestIcon byte sent in SMSG_GOSSIP_MESSAGE per-quest
+// entries. Same convention used by all clients from TBC onwards through V3_4_3.
+// Vanilla pre-2.0 backends emit QuestGiverStatusVanilla ordinals instead — see
+// `ReadGossipQuestOption` in `QuestHandler.cs` for the translation table.
+public enum GossipQuestIcon : int
+{
+    AvailableRepeatable = 0,
+    Available           = 2,
+    Complete            = 4,
+}
+
 public enum QuestGiverStatusTBC : uint
 {
     None                 = 0,
@@ -86,6 +97,53 @@ public enum QuestGiverStatusModern : uint
     AvailableCovenantCalling  = 0x080000,
     Reward2CovenantCalling    = 0x100000,
     RewardCovenantCalling     = 0x200000,
+}
+
+// V3_4_3 (WotLK Classic) client status bit-flags. Layout taken from CypherCore's
+// QuestGiverStatus enum (Source/Framework/Constants/QuestConst.cs). DIFFERENT from
+// both QuestGiverStatusModern AND WPP's QuestGiverStatus4x — bits 5-12 use entirely
+// different semantics. Most notable: Quest=0x400 (yellow !), Reward=0x020 (yellow ?).
+[Flags]
+public enum QuestGiverStatusV343 : uint
+{
+    None                    = 0x0000,
+    Future                  = 0x0002,  // Modern.Unavailable
+    Trivial                 = 0x0004,  // Modern.LowLevelAvailable
+    TrivialRepeatableTurnin = 0x0008,  // Modern.LowLevelRewardRep
+    TrivialDailyQuest       = 0x0010,  // Modern.LowLevelAvailableRep
+    Reward                  = 0x0020,  // Modern.Reward — generic reward signal
+    RepeatableTurnin        = 0x0100,  // Modern.RewardRep — blue ?
+    DailyQuest              = 0x0200,  // Modern.AvailableRep — blue !
+    Quest                   = 0x0400,  // Modern.Available — yellow ! (regular)
+    RewardCompleteNoPOI     = 0x0800,  // Reward turn-in, hides minimap POI
+    RewardCompletePOI       = 0x1000,  // Reward turn-in, shows minimap POI — yellow ?
+}
+
+public static class QuestGiverStatusV343Converter
+{
+    // Maps QuestGiverStatusModern (HermesProxy's internal) to V3_4_3.54261 wire bits.
+    // The legacy WotLK byte ordinal is mapped to Modern by name in
+    // LegacyVersion.ConvertQuestGiverStatus; this converter then emits the V3_4_3
+    // bit. CypherCore sets BOTH `Reward` AND `RewardCompletePOI` for an active
+    // turn-in (Player.Quest.cs:2092-2108) — the latter is what renders the
+    // yellow ? marker over the NPC's head. Incomplete/Reward2 have no clean
+    // V3_4_3 equivalent on a 3.3.5a backend — Incomplete → None (client renders
+    // nothing for in-progress; that's expected).
+    public static uint FromModern(QuestGiverStatusModern modern) => modern switch
+    {
+        QuestGiverStatusModern.None                 => (uint)QuestGiverStatusV343.None,
+        QuestGiverStatusModern.Unavailable          => (uint)QuestGiverStatusV343.Future,
+        QuestGiverStatusModern.LowLevelAvailable    => (uint)QuestGiverStatusV343.Trivial,
+        QuestGiverStatusModern.LowLevelRewardRep    => (uint)QuestGiverStatusV343.TrivialRepeatableTurnin,
+        QuestGiverStatusModern.LowLevelAvailableRep => (uint)QuestGiverStatusV343.TrivialDailyQuest,
+        QuestGiverStatusModern.Incomplete           => (uint)QuestGiverStatusV343.Reward,
+        QuestGiverStatusModern.RewardRep            => (uint)QuestGiverStatusV343.RepeatableTurnin,
+        QuestGiverStatusModern.AvailableRep         => (uint)QuestGiverStatusV343.DailyQuest,
+        QuestGiverStatusModern.Available            => (uint)QuestGiverStatusV343.Quest,
+        QuestGiverStatusModern.Reward2              => (uint)(QuestGiverStatusV343.Reward | QuestGiverStatusV343.RewardCompletePOI),
+        QuestGiverStatusModern.Reward               => (uint)(QuestGiverStatusV343.Reward | QuestGiverStatusV343.RewardCompletePOI),
+        _                                           => (uint)QuestGiverStatusV343.None,
+    };
 }
 
 public enum QuestObjectiveType
@@ -144,20 +202,44 @@ public enum QuestFailedReasons
     HasInProgress = 30        // "Progress Bar Objective Not Completed"
 }
 
-public enum QuestPushReason
+// AC 3.3.5 QuestShareMessages. 3.4.3 inserted Dead=5, so AC LogFull=5
+// is the client's "%s is dead" if we pass the byte through.
+public enum QuestPushReasonWotLK
 {
     Success = 0,
     Invalid = 1,
     Accepted = 2,
     Declined = 3,
     Busy = 4,
-    Dead = 5,
-    LogFull = 6,
-    OnQuest = 7,
-    AlreadyDone = 8,
-    NotDaily = 9,
-    TimerExpired = 10,
-    NotInParty = 11,
-    DifferentServerDaily = 12,
-    NotAllowed = 13
+    LogFull = 5,
+    OnQuest = 6,
+    AlreadyDone = 7,
+    NotDaily = 8,
+    TimerExpired = 9,
+    NotInParty = 10,
+}
+
+// V3_4_3.54261 client layout. TooFar = 4 was missing, which shifted every value from
+// Busy onward one too low -- a quest shared with a party member standing next to you
+// reported "is too far away", and a full quest log reported "is busy".
+// Confirmed on the wire against a live 3.4.3 client: 4 -> "is too far away to receive
+// your quest", 5 -> "is busy", 6 -> "is dead". Matches TrinityCore wotlk_classic
+// QuestDef.h; CypherCore's ClassicWOTLK layout (Declined = 4, LogFull = 8) does not fit.
+public enum QuestPushReason
+{
+    Success = 0,
+    Invalid = 1,
+    Accepted = 2,
+    Declined = 3,
+    TooFar = 4,
+    Busy = 5,
+    Dead = 6,
+    LogFull = 7,
+    OnQuest = 8,
+    AlreadyDone = 9,
+    NotDaily = 10,
+    TimerExpired = 11,
+    NotInParty = 12,
+    DifferentServerDaily = 13,
+    NotAllowed = 14
 }

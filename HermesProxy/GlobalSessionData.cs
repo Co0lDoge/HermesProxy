@@ -5,6 +5,7 @@ using HermesProxy.World.Client;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server;
+using HermesProxy.World.Server.Packets;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -13,7 +14,6 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using Framework.Realm;
-using HermesProxy.World.Server.Packets;
 using ArenaTeamInspectData = HermesProxy.World.Server.Packets.ArenaTeamInspectData;
 using System;
 
@@ -55,8 +55,55 @@ public sealed class PendingObjectUpdate
     public required HashSet<uint> WaitingForItemIds;
 }
 
+// Death Knight rune snapshot. Allocated only for DK players on V3_4_3, where
+// the modern client expects rune state inside ActivePlayerData (CREATE) and in
+// SpellCastData.RemainingRunes (per cast). The legacy 3.3.5 server delivers
+// state via SMSG_RESYNC_RUNES / SMSG_CONVERT_RUNE / SMSG_ADD_RUNE_POWER plus
+// embedded CastFlag.RuneInfo; those handlers mutate this snapshot.
+public sealed class RuneStateData
+{
+    public const int MaxRunes = 6;
+
+    // Wire byte semantics confirmed against a CypherCore native V3_4_3 sniff:
+    //   255 = rune is fully ready (cooldown elapsed)
+    //     0 = rune is on full cooldown (just consumed)
+    // Initialize to 255 so a freshly-allocated RuneState (e.g. on player login)
+    // represents all 6 runes available.
+    public readonly byte[] Cooldowns =
+    {
+        255, 255, 255, 255, 255, 255,
+    };
+
+    // Current rune type per slot: Blood=0, Unholy=1, Frost=2, Death=3 (TC convention).
+    public readonly byte[] RuneTypes = { 0, 0, 1, 1, 2, 2 };
+
+    // Last seen RunicPower value (from SMSG_POWER_UPDATE for the local player).
+    // V3_4_3 SpellGo for rune-cost spells embeds a RemainingPower entry with
+    // Type=RunicPower, Cost=<post-cast value>. We cache the most recent value so
+    // we can inject it inline per CypherCore's wire shape.
+    public int LastRunicPower;
+
+    public byte RechargingRuneMask
+    {
+        get
+        {
+            byte mask = 0;
+            for (int i = 0; i < MaxRunes; i++)
+                if (Cooldowns[i] != 255)
+                    mask |= (byte)(1 << i);
+            return mask;
+        }
+    }
+
+    public byte UsableRuneMask => (byte)(~RechargingRuneMask & 0x3F);
+}
+
 public sealed class GameSessionData
 {
+    // Back-reference to the owning session. Set by CreateNewGameSessionData. Used by writers
+    // (e.g. ObjectUpdateBuilder) that need helpers on GlobalSessionData like
+    // GetBnetAccountGuidForPlayer without threading the session through every call.
+    public GlobalSessionData GlobalSession = null!;
     public bool HasWsgHordeFlagCarrier;
     public bool HasWsgAllyFlagCarrier;
     public bool ChannelDisplayList;
@@ -77,20 +124,46 @@ public sealed class GameSessionData
     public Queue<ServerPacket> PendingRealmPackets = new();
     public readonly Lock PendingRealmPacketsLock = new();
     public bool IsInWorld;
+    // Purchased stable slots, learned from legacy MSG_LIST_STABLED_PETS. V3_4_3 keeps this
+    // in ActivePlayerData, and the client greys out every slot it thinks is unpurchased,
+    // so a hardcoded 0 here makes bought slots stay locked (issue #224).
+    public byte NumStableSlots;
+    // Stable master currently being talked to. Needed because a slot purchase has to
+    // re-request the stable list to learn the new count (#224).
+    public WowGuid128? LastStableMaster;
     public uint? CurrentMapId;
     public uint CurrentZoneId;
     public uint CurrentTaxiNode;
     public List<byte> UsableTaxiNodes = [];
     public uint PendingTransferMapId;
+
+    // Non-zero while a pending map change is being driven by a transport the player is
+    // standing on. The legacy SMSG_NEW_WORLD that follows carries a transport-relative
+    // offset instead of an absolute position, so the position needs different handling.
+    public uint TransferPendingShipEntry;
     public uint LastEnteredAreaTrigger;
     public uint LastDispellSpellId;
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
+    public ulong LastUsedEquipmentSetGuid;
     public int GroupUpdateCounter;
     public uint GroupReadyCheckResponses;
     public World.Server.Packets.PartyUpdate?[] CurrentGroups = new World.Server.Packets.PartyUpdate?[2];
+    // Raid-frame tank/healer/dps assignments. AC never accepts CMSG_GROUP_SET_ROLES,
+    // so the proxy keeps the last CMSG_SET_ROLE per guid and overlays it on GROUP_LIST.
+    public Dictionary<WowGuid128, byte> GroupAssignedRoles = new();
     public bool WeWantToLeaveGroup; // Only send kick message when we dont initiated the group-leave
     public List<OwnCharacterInfo> OwnCharacters = [];
+
+    // V3_4_3 SMSG_CREATE_CHAR.Guid synthesis. Legacy 3.3.5 SMSG_CHAR_CREATE is a
+    // 1-byte response (code only) — but the V3_4_3 client uses the GUID in the
+    // modern reply to auto-select the just-created char on the next char-list
+    // render. We cache the requested name on CMSG_CREATE_CHARACTER, defer the
+    // modern SMSG_CREATE_CHAR until we issue our own internal CMSG_CHAR_ENUM,
+    // look up the FirstLogin entry by name, and stamp its GUID into the reply.
+    public string? PendingCreateCharName;
+    public byte? PendingCreateCharLegacyResult;
+    public bool IsInternalCharEnumPending;
     public WowGuid128 CurrentPlayerGuid;
     public long CurrentPlayerCreateTime;
     public OwnCharacterInfo? CurrentPlayerInfo;
@@ -98,7 +171,145 @@ public sealed class GameSessionData
     public uint CurrentGuildCreateTime;
     public uint CurrentGuildNumAccounts;
     public WowGuid128 CurrentInteractedWithNPC;
+    public readonly Dictionary<uint, int> GossipQuestTypesById = new();
+    public uint AwaitingQuestRewardId;
+    public WowGuid128 AwaitingQuestGiver = WowGuid128.Empty;
+    public bool JustSentOfferReward;
+    public bool JustSentRequestItems;
+    public HermesProxy.World.Server.Packets.QuestGiverRequestItems? LastRequestItems;
+    public GossipMessagePkt? LastGossip;
+    public QuestGiverQuestListMessage? LastQuestList;
+    public QuestGiverQuestDetails? LastQuestDetails;
+    public bool QuestDetailsOpen;
+    public bool JustLeftGossipForDetails;
+    // Last (quest, item) count pushed to the client as SMSG_QUEST_UPDATE_ADD_CREDIT.
+    // Resends are skipped so an unrelated pickup does not replay every objective toast.
+    public readonly Dictionary<(uint QuestId, uint ItemId), ushort> SentItemQuestCredits = new();
+    public readonly HashSet<uint> RequestedQuestTemplateIds = new();
+    public bool InventoryChangedSinceQuestResync;
+
+    /// The last currency snapshot published to the client, so an unchanged inventory does not
+    /// re-emit SMSG_SETUP_CURRENCY on every item update, and so a currency the client has already
+    /// seen can be republished at zero instead of silently vanishing when the last one is spent.
+    public Dictionary<uint, uint>? LastPublishedCurrencies;
     public WowGuid128 CurrentInteractedWithGO;
+    // Per-slot QuestID cache used by ReadQuestLogEntry. Legacy 3.3.5a often sends
+    // partial Values updates where StateFlags / Progress changes but the QuestID
+    // field isn't re-marked dirty. Without this cache, those partial updates
+    // produce QuestLog entries with QuestID=null which our writer treats as
+    // empty slots — making active quests "disappear" from the V3_4_3 client log.
+    public readonly int[] QuestLogQuestIDs = new int[QuestConst.MaxQuestLogSize];
+    // Last known 3.4.3 objective counters per log slot. AC often sends a
+    // StateFlags-only Values update (item turn-in flips complete). The writer
+    // emits all 24 counters, so missing inbound progress would wipe ADD_CREDIT.
+    public readonly short[] QuestLogProgress = new short[QuestConst.MaxQuestLogSize * QuestConst.MaxQuestCounts];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    Span<short> QuestLogProgressSlot(int slot) =>
+        QuestLogProgress.AsSpan(slot * QuestConst.MaxQuestCounts, QuestConst.MaxQuestCounts);
+
+    public void ClearQuestLogProgress(int slot)
+    {
+        if ((uint)slot < (uint)QuestConst.MaxQuestLogSize)
+            QuestLogProgressSlot(slot).Clear();
+    }
+
+    public void RememberQuestLogProgress(int slot, QuestLog log)
+    {
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
+            return;
+        Span<short> dest = QuestLogProgressSlot(slot);
+        for (int i = 0; i < dest.Length; i++)
+        {
+            if (log.ObjectiveProgress[i].HasValue)
+                dest[i] = log.ObjectiveProgress[i]!.Value;
+        }
+    }
+
+    /// <summary>
+    /// Fills counters the inbound update did not carry. A null counter means "not in this
+    /// update", so the cached value stands; a counter the server really cleared arrives as 0,
+    /// not null. Returns how many non-zero counters were recovered.
+    /// </summary>
+    public int RestoreQuestLogProgress(int slot, QuestLog log)
+    {
+        if ((uint)slot >= (uint)QuestConst.MaxQuestLogSize)
+            return 0;
+        Span<short> src = QuestLogProgressSlot(slot);
+        int recovered = 0;
+        for (int i = 0; i < src.Length; i++)
+        {
+            if (log.ObjectiveProgress[i].HasValue)
+                continue;
+            log.ObjectiveProgress[i] = src[i];
+            if (src[i] != 0)
+                recovered++;
+        }
+        return recovered;
+    }
+
+    public void RememberObjectiveCount(uint questId, QuestObjectiveType type, int objectId, short count)
+    {
+        for (int slot = 0; slot < QuestLogQuestIDs.Length; slot++)
+        {
+            if (QuestLogQuestIDs[slot] != (int)questId)
+                continue;
+            QuestTemplate? template = GameData.GetQuestTemplate(questId);
+            if (template == null)
+            {
+                if (type != QuestObjectiveType.Item)
+                    QuestLogProgressSlot(slot)[0] = count;
+                return;
+            }
+            foreach (QuestObjective obj in template.Objectives)
+            {
+                if (obj.Type != type || obj.ObjectID != objectId)
+                    continue;
+                if ((uint)obj.StorageIndex < (uint)QuestConst.MaxQuestCounts)
+                    QuestLogProgressSlot(slot)[obj.StorageIndex] = count;
+                return;
+            }
+        }
+    }
+
+    // Drops every per-quest cache keyed on a quest that just left the log, so
+    // re-accepting it later starts from a clean slate instead of a stale count.
+    public void ForgetQuestState(uint questId)
+    {
+        if (questId == 0)
+            return;
+
+        RequestedQuestTemplateIds.Remove(questId);
+        GossipQuestTypesById.Remove(questId);
+        for (int slot = 0; slot < QuestLogQuestIDs.Length; slot++)
+        {
+            if (QuestLogQuestIDs[slot] == (int)questId)
+                ClearQuestLogProgress(slot);
+        }
+        if (SentItemQuestCredits.Count == 0)
+            return;
+        foreach (var key in SentItemQuestCredits.Keys.ToList())
+        {
+            if (key.QuestId == questId)
+                SentItemQuestCredits.Remove(key);
+        }
+    }
+
+    public void ClearQuestRewardWait()
+    {
+        AwaitingQuestRewardId = 0;
+        AwaitingQuestGiver = WowGuid128.Empty;
+        LastRequestItems = null;
+        JustSentOfferReward = false;
+        JustSentRequestItems = false;
+    }
+
+    public void CloseQuestDetails()
+    {
+        QuestDetailsOpen = false;
+        JustLeftGossipForDetails = false;
+        LastQuestDetails = null;
+    }
     public uint LastWhoRequestId;
     public WowGuid128 CurrentPetGuid;
     public WowGuid64 CurrentAttackTarget;        // active CMSG_ATTACK_SWING victim, cleared on ATTACK_STOP/CANCEL_COMBAT
@@ -108,13 +319,96 @@ public sealed class GameSessionData
     public ConcurrentQueue<ClientCastRequest> PendingNormalCasts = new();  // regular spell casts (queue for proper FIFO handling)
     public ClientCastRequest? CurrentClientNextMeleeCast; // next melee spells (Raptor Strike, Heroic Strike, etc.)
     public ClientCastRequest? CurrentClientAutoRepeatCast; // auto repeat spells (Auto Shot, Shoot, etc.)
+    // SPELL_GO dequeues the pending cast. AC EffectDuel (and other hit-time
+    // checks) then send SMSG_CAST_FAILED. Keep the last completed one so that
+    // fail can still be forwarded instead of disappearing.
+    public ClientCastRequest? LastCompletedNormalCast;
     public ConcurrentQueue<ClientCastRequest> PendingPetCasts = new();  // pet spell casts (queue for proper FIFO handling)
     public WowGuid64 LastLootTargetGuid;
     public List<WowGuid128>? MasterLootCandidates;
     public WowGuid64 LastMasterLootSentTarget;
+    // V3_4_3 only: legacy 3.3.5a backends emit SMSG_LOOT_RELEASE mid-drain (after each
+    // auto-looted item), which closes the modern client's loot session before subsequent
+    // SMSG_LOOT_REMOVED packets can clear the remaining slots. We track which legacy
+    // LootListIDs are still un-drained, plus coins, to recognize a genuinely-drained
+    // session, and a flag for client-initiated releases. The list also doubles as the
+    // slot-translation table for TC 3.3.5 master's auto-loot, which echoes the *clicked*
+    // slot byte for every drained item rather than the real per-item slot.
+    public bool ExpectingLootReleaseResponse;
+    public List<byte> RemainingLootSlots = new();
+    public uint RemainingLootCoins;
+    // V3_4_3 only: set when HandleLootItem pre-claims coins via an injected CMSG_LOOT_MONEY
+    // (TC 3.3.5 master closes the loot session after auto-looting items, orphaning any
+    // un-claimed coins). The next CMSG_LOOT_MONEY from the modern client is the redundant
+    // half of the client's auto-loot pair and must be suppressed to avoid "+0 copper"
+    // feedback when the legacy session is already drained.
+    public bool LootMoneyPreClaimed;
     public List<int> ActionButtons = [];
-    public ushort[] ActiveGlyphs = new ushort[6];
+    public ushort[] ActiveGlyphs = new ushort[PlayerConst.MaxGlyphSlots];
+    // Per-class GlyphSlot.dbc record IDs, read from legacy PLAYER_FIELD_GLYPH_SLOTS_1..6.
+    // Default {21..26} preserves prior hardcoded behavior until the legacy server's first
+    // Values update arrives. The V3_4_3 client renders UI position + Major/Minor from these.
+    public uint[] ActiveGlyphSlotIds = [21, 22, 23, 24, 25, 26];
     public byte GlyphsEnabled;
+    // Set true when ActiveGlyphs[6] changes (talent push, spec switch, glyph apply/remove
+    // via legacy PLAYER_FIELD_GLYPHS_1..6). Consumed by V3_4_3 ObjectUpdateBuilder, which
+    // writes the new GlyphSlots in the next player Values update. Without this re-emit,
+    // the modern client's UnitData.GlyphSlots stays stale after a spec switch and the
+    // "already applied this glyph" check fires against the previous spec's glyphs.
+    public bool ActiveGlyphsDirty;
+    // Last-received talent state from legacy SMSG_UPDATE_TALENT_DATA. Populated by
+    // WorldClient.HandleTalentsInfoUpdate; consumed by CharacterHandler.HandleLoginVerifyWorld
+    // (V3_4_3) so a relog re-emits real data without waiting for the legacy server's
+    // post-login push.
+    public TalentInfoCache? TalentInfo;
+    // Companion / battle-pet journal. KnownSpells is the full legacy spellbook
+    // (SMSG_SEND_KNOWN_SPELLS + SMSG_LEARNED_SPELL). BattlePetGuidToSummonSpell
+    // is rebuilt whenever we emit SMSG_BATTLE_PET_JOURNAL.
+    public HashSet<uint> KnownSpells = [];
+
+    /// <summary>
+    /// LootObj per open group-loot roll, keyed by item slot (LootListID).
+    ///
+    /// 3.3.5a only sends the loot object in SMSG_LOOT_START_ROLL and SMSG_LOOT_ALL_PASSED
+    /// (both use <c>roll.itemGUID</c>). The result packets pass <c>ObjectGuid::Empty</c> —
+    /// see AzerothCore Group.cpp SendLootRoll / SendLootRollWon — so forwarding what the
+    /// wire carries gave the modern client a roll for a loot object it had never been told
+    /// about, and it could not tie the roll back to the open dialog. Native 3.4.3 repeats
+    /// the same guid in every packet of the roll. Issue #162.
+    /// </summary>
+    public Dictionary<byte, WowGuid128> LootRollObjects = [];
+
+    /// <summary>
+    /// Whether the legacy server still has us subscribed to guild-bank delta updates.
+    ///
+    /// AzerothCore subscribes on CMSG_GUILD_BANKER_ACTIVATE (Guild::SendBankTabsInfo) and
+    /// deliberately unsubscribes on every permissions query (Guild::SendPermissions —
+    /// "the only reliable way to handle /reload"). The 3.4.3 client sends
+    /// CMSG_GUILD_PERMISSIONS_QUERY regularly and never sends an activate of its own, so
+    /// the proxy has to re-activate after each permissions query or post-move deltas stop
+    /// arriving. Re-sending it on *every* tab query instead made the server answer with a
+    /// full tab-0 list that dragged the UI back, which is why the "Buy new guild bank tab"
+    /// slot could never be opened. Issue #157.
+    /// </summary>
+    public bool GuildBankSubscribed;
+
+    /// <summary>
+    /// Number of guild bank tabs actually purchased, from the last SMSG_GUILD_BANK_QUERY_RESULTS
+    /// that carried the tab list. A query for an index at or beyond this is the client opening
+    /// the purchase slot rather than a real tab.
+    /// </summary>
+    public int GuildBankPurchasedTabs;
+    public Dictionary<WowGuid128, uint> BattlePetGuidToSummonSpell = [];
+    public WowGuid128 SummonedBattlePetGuid;
+    public WowGuid128 SummonedCompanionCreatureGuid;
+    public WowGuid64 SummonedCompanionLegacyGuid;
+    public CollectionFavorites? CollectionFavorites;
+    public uint[] LastSentUsableToys = [];
+    // V3_4_3 DK rune snapshot. Null for non-DK or non-V3_4_3 sessions; allocated by
+    // CharacterHandler.HandlePlayerLogin when the chosen char is a DK and the modern
+    // client is V3_4_3_54261. Read by V3_4_3 ObjectUpdateBuilder (CREATE path) and
+    // mutated by the rune handlers in SpellHandler.
+    public RuneStateData? RuneState;
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationUpdateTime = [];
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationLeft = [];
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationFull = [];
@@ -127,7 +421,8 @@ public sealed class GameSessionData
     public Dictionary<WowGuid128, UpdateFieldsArray> ObjectCacheModern = [];
     public Dictionary<WowGuid128, ObjectType> OriginalObjectTypes = [];
     public Dictionary<WowGuid128, uint[]> ItemGems = [];
-    public Dictionary<uint, Class> CreatureClasses = [];
+    public Dictionary<WowGuid128, Class> CreatureClasses = [];
+
     public Dictionary<string, int> ChannelIds = [];
     public Dictionary<int, string> ChannelNamesById = [];
     public Dictionary<uint, uint> ItemBuyCount = [];
@@ -137,17 +432,79 @@ public sealed class GameSessionData
     public HashSet<uint> RequestedItemTextIds = [];
     public Dictionary<uint, string> ItemTexts = [];
     public Dictionary<uint, uint> BattleFieldQueueTypes = [];
+    public Dictionary<uint, byte> BattleFieldQueueArenaTypes = [];
+    public Dictionary<uint, byte> BattleFieldQueueBracketIds = [];
     public Dictionary<uint, long> BattleFieldQueueTimes = [];
     public Dictionary<uint, uint> DailyQuestsDone = [];
     public HashSet<WowGuid128> FlagCarrierGuids = [];
     public Dictionary<WowGuid64, ushort> ObjectSpawnCount = [];
+
+    // GameObjects already established as WMO map objects, i.e. that need GO_FLAG_MAP_OBJECT.
+    // A Values update only carries the type and display when its mask happened to include
+    // GAMEOBJECT_BYTES_1 / GAMEOBJECT_DISPLAYID, so the flag cannot be re-derived from a
+    // delta alone. Only transports and destructible buildings ever land here.
+    public HashSet<WowGuid128> WmoMapObjectGuids = [];
+
+    // Type 11 GAMEOBJECT_TYPE_TRANSPORT objects whose parking and sailing the proxy drives
+    // itself, because the backend never relocates them (TrinityCore 3.3.5a leaves
+    // GameObjectRelocation commented out). Captured from the create: a later state flip
+    // arrives as a Values update carrying only GAMEOBJECT_BYTES_1, so the stop frame it has
+    // to sail to is no longer on the wire, and a rider's deck-relative offset can only be
+    // derived from where the deck actually is. Keyed by the modern guid; a struct value so
+    // registering a boat does not allocate.
+    public Dictionary<WowGuid128, SynthesizedTransport> SynthesizedTransports = [];
+
+    // The transport guid the client last reported in its own movement, so boarding and
+    // leaving can be logged as transitions rather than on every packet.
+    public WowGuid128 LastReportedTransportGuid;
+
+    // gameobject_template.data[18] (destructibleData -> DestructibleModelData.db2 id) keyed by
+    // GameObject entry, harvested from SMSG_QUERY_GAME_OBJECT_RESPONSE as it passes through.
+    // A V3_4_3 client resolves a type-33 object's model through this id and will draw nothing
+    // without a valid one. See the ParentRotation handling in UpdateHandler. Issue #184.
+    public Dictionary<uint, int> DestructibleModelIdByEntry = [];
     public HashSet<WowGuid64> DespawnedGameObjects = [];
     public HashSet<WowGuid128> HunterPetGuids = [];
+
+    // Pet GUID translation tables for cMaNGOS-style backends. MaNGOS-era TBC/WotLK
+    // encodes Pet GUIDs with pet_number (a per-character spawn counter) in the entry
+    // slot, while the modern client expects creature_template.entry there. The legacy
+    // server's OBJECT_FIELD_ENTRY does carry the real entry, so on the first
+    // CreateObject for a pet we register the mapping and rewrite the modern GUID.
+    // On TC backends pet_number == real entry, so the rewrite branch is skipped.
+    // All access guarded by ObjectCacheLock to match ObjectCacheLegacy/Modern style.
+    public Dictionary<WowGuid64, uint> PetRealEntryByLegacyGuid = [];
+    public Dictionary<WowGuid128, WowGuid64> PetLegacyGuidByModern = [];
+    public Dictionary<uint, WowGuid128> PetModernGuidByNumber = [];
+    // GUIDs for which we've successfully forwarded a modern CreateObject to the V3_4_3
+    // client. Used by the Values-update filter so we don't ship deltas for objects the
+    // client doesn't have in its world model — those would round-trip as
+    // CMSG_OBJECT_UPDATE_FAILED rejections (e.g. Transports we filter at create time).
+    public HashSet<WowGuid128> ClientKnownGuids = [];
+    // Hold corpse DESTROY until the next UPDATE_OBJECT; a same-guid create cancels both.
+    public HashSet<WowGuid128> DeferredCorpseDestroys = [];
+    // V3_4_3-only: set when CollectionSync.SendToys was asked to publish the Toy Box
+    // while the player's CreateObject had not yet reached the client. The Toys list
+    // lives on ActivePlayerData, so it ships as a Values delta on the player guid —
+    // and the client discards (and CMSG_OBJECT_UPDATE_FAILED's) any Values for an
+    // object it does not know yet, which on login leaves it unable to instantiate
+    // further objects until a zone change rebuilds the grid. UpdateHandler flushes
+    // this once the player CreateObject has actually been forwarded.
+    public bool PendingToysSync;
     public Dictionary<WowGuid128, ArenaTeamInspectData[]> PlayerArenaTeams = [];
     public HashSet<string> AddonPrefixes = [];
     public Dictionary<byte, Dictionary<byte, int>> FlatSpellMods = [];
     public Dictionary<byte, Dictionary<byte, int>> PctSpellMods = [];
     public Dictionary<WowGuid128, Dictionary<uint, WowGuid128>> LastAuraCasterOnTarget = [];
+
+    // Live aura state per unit, keyed by slot. Updated on every legacy SMSG_AURA_UPDATE
+    // (and SMSG_AURA_UPDATE_ALL clears the unit's dict before reapplying). Used by the
+    // post-CreateObject deferred-flush to re-send the player's auras AFTER the V3_4_3
+    // client has created the player object — pre-Create aura updates are dropped client-
+    // side, and the cached legacy UNIT_FIELD_AURA fields don't carry SMSG_AURA_UPDATE
+    // payloads (TC sends shapeshift / debuff state via the aura packet, not via the
+    // CreateObject's UnitData), so a separate authoritative tracker is required.
+    public Dictionary<WowGuid128, Dictionary<byte, AuraInfo>> KnownAuras = [];
     public TradeSession? CurrentTrade = null;
     public HashSet<uint> RequestedItemHotfixes = [];
     public HashSet<uint> RequestedItemSparseHotfixes = [];
@@ -159,6 +516,104 @@ public sealed class GameSessionData
     public List<PendingObjectUpdate> DeferredObjectUpdates = [];
     public Lock DeferredObjectUpdatesLock = new();
 
+    // Cache of the last SMSG_INIT_WORLD_STATES we sent to the modern client. TC reference
+    // re-emits INIT_WORLD_STATES AFTER the player CreateObject (#146 in World_login_parsed.txt),
+    // but cmangos sends it earlier and we forward immediately. The deferred-flush re-emits this
+    // cached copy AFTER the player Create so the V3_4_3 client sees TC's ordering.
+    public InitWorldStates? LastInitWorldStates;
+
+    // Dungeon IDs (low 24 bits of an LFG slot) the legacy backend listed in
+    // SMSG_LFG_PLAYER_INFO, available and locked alike. The V3_4_3 client offers
+    // content that shipped after 3.3.5a (Titan Rune Protocol), and queueing for it
+    // makes the legacy server drop CMSG_LFG_JOIN without any reply, leaving the
+    // client waiting forever. Used to answer those joins ourselves.
+    // Roles the client asked for in CMSG_DF_JOIN / CMSG_DF_SET_ROLES. Legacy
+    // SMSG_LFG_UPDATE_PLAYER carries no roles, but the modern DF frame checks
+    // RequestedRoles against the queued dungeons: at 0 it greys out Leave Queue
+    // with "Role unavailable for some dungeons". Native 3.4.3 echoes the stored
+    // roles back (LFGHandler.cpp: sLFGMgr->GetRoles).
+    // Last time a party-member state update was forwarded, per member. A bot-filled
+    // battleground on AzerothCore produced 1,608 SMSG_PARTY_MEMBER_PARTIAL_STATE per
+    // second (roughly 107 per member per second): every bot step re-sends position and
+    // health for the whole raid. Only high-frequency-only updates are rate limited, and
+    // only for members the client cannot see — AzerothCore sends this packet exclusively
+    // to group members outside visibility range, so the data feeds raid frames and minimap
+    // dots, never a rendered unit's position.
+    // Interval is configurable: ThrottlingOptions.PartyMemberStateMinIntervalMs.
+    public readonly Dictionary<WowGuid128, long> LastPartyMemberStateTickMs = new();
+
+    public byte LfgRequestedRoles;
+    public readonly HashSet<uint> LfgKnownDungeonIds = new();
+
+    // Dungeon ID -> the full LFG slot (dungeon ID with the type in the high byte) the legacy
+    // backend used for it. SMSG_LFG_PLAYER_INFO / SMSG_LFG_PARTY_INFO carry full slots, but
+    // SMSG_LFG_UPDATE_PLAYER / SMSG_LFG_UPDATE_PARTY carry bare dungeon IDs (AC masks incoming
+    // slots with 0x00FFFFFF and stores the remainder), while the V3_4_3 client expects the full
+    // slot everywhere — TC 3.4.3 sends LFGDungeonData::Entry() == id + (type << 24). The proxy
+    // has no LFGDungeons table of its own, so it learns the type byte from the info packets.
+    // Written on the WorldClient thread, read on the WorldSocket thread.
+    private readonly ConcurrentDictionary<uint, uint> _lfgDungeonSlots = new();
+
+    // Which party category (PartyIndex: 0 = home, 1 = instance) the last non-empty
+    // SMSG_GROUP_LIST was announced under. A disbanded group arrives with its type flags
+    // already cleared, so the LFG/BG bits that put it in the instance category are gone by
+    // then — without remembering it, the destroy notification would be addressed to the home
+    // category and the client would keep showing the instance group (stale minimap LFG eye).
+    public byte LastAnnouncedPartyIndex;
+
+    // Whether the last SMSG_GROUP_LIST described an LFG group. Legacy never announces the end
+    // of an LFG association: AC's LFGMgr::LeaveLfg has no LFG_STATE_DUNGEON case and disbanding
+    // an LFG group emits only SMSG_GROUP_LIST, so the client keeps whatever LFG status it last
+    // received and the minimap eye stays up forever. Watching this flag go true -> false is the
+    // only signal the proxy has that the association is over.
+    public bool LastGroupWasLfg;
+
+    // TC creates exactly one RideTicket per queue in LFGMgr::JoinLfg (Id = GetQueueId,
+    // Time = GameTime::GetGameTime()), stores it per player and reuses it for every subsequent
+    // LFG packet via GetTicket(). The proxy used to stamp Time with UtcNow on every call, so
+    // each packet carried a different ticket and nothing the client received could be tied back
+    // to the queue it actually knew about.
+    private RideTicket? _lfgTicket;
+
+    /// <summary>
+    /// The session's stable LFG ride ticket, created on first use and reused until the LFG
+    /// association ends.
+    /// </summary>
+    public RideTicket GetOrCreateLfgTicket(WowGuid128 requesterGuid, long unixTime)
+    {
+        return _lfgTicket ??= new RideTicket
+        {
+            RequesterGuid = requesterGuid,
+            Id = 1,
+            Type = RideType.Lfg,
+            Time = unixTime,
+        };
+    }
+
+    /// <summary>Forgets the ticket so the next queue gets a fresh one.</summary>
+    public void ResetLfgTicket() => _lfgTicket = null;
+
+    /// <summary>
+    /// Records the type byte carried by a full LFG slot so bare dungeon IDs can be widened later.
+    /// </summary>
+    public void RememberLfgSlot(uint slot)
+    {
+        _lfgDungeonSlots[slot & 0xFFFFFF] = slot;
+    }
+
+    /// <summary>
+    /// Widens a bare legacy dungeon ID back into the full LFG slot the modern client expects.
+    /// Falls back to the value as-given when the backend never mentioned that dungeon, and
+    /// passes through anything that already carries a type byte.
+    /// </summary>
+    public uint GetLfgSlotForDungeon(uint dungeonIdOrSlot)
+    {
+        if ((dungeonIdOrSlot & 0xFF000000) != 0)
+            return dungeonIdOrSlot;
+
+        return _lfgDungeonSlots.TryGetValue(dungeonIdOrSlot, out uint slot) ? slot : dungeonIdOrSlot;
+    }
+
     private GameSessionData()
     {
         
@@ -167,6 +622,7 @@ public sealed class GameSessionData
     public static GameSessionData CreateNewGameSessionData(GlobalSessionData globalSession)
     {
         var self = new GameSessionData();
+        self.GlobalSession = globalSession;
         self.CurrentPlayerStorage = new CurrentPlayerStorage(globalSession);
         return self;
     }
@@ -206,7 +662,14 @@ public sealed class GameSessionData
     }
     public World.Server.Packets.PartyUpdate? GetCurrentGroup()
     {
-        return CurrentGroups[GetCurrentPartyIndex()];
+        // A group is filed under one of two categories: home (0) or instance (1).
+        // GetCurrentPartyIndex only recognises battlegrounds, so an LFG dungeon group
+        // - which the group-list handler files under the instance category, matching
+        // TC's GROUP_CATEGORY_INSTANCE - was stored in slot 1 and looked up in slot 0,
+        // and every caller saw "no group" while the client showed a party. Prefer the
+        // category matching the current context, then fall back to the other.
+        var index = GetCurrentPartyIndex();
+        return CurrentGroups[index] ?? CurrentGroups[index == 0 ? 1 : 0];
     }
     public sbyte GetCurrentPartyIndex()
     {
@@ -261,6 +724,23 @@ public sealed class GameSessionData
         }
         return 0;
     }
+    /// <summary>
+    /// A legacy SMSG_ENCHANTMENTLOG waiting for the item UPDATE_OBJECT that names the
+    /// guid and slot it applies to. The legacy packet carries only (owner, caster,
+    /// item entry, enchant id) — see AzerothCore Item.cpp SendEnchantmentLog — while the
+    /// modern SMSG_ENCHANTMENT_LOG needs the item guid and enchantment slot too.
+    /// </summary>
+    public struct PendingEnchantmentLogData
+    {
+        public bool IsSet;
+        public WowGuid128 Owner;
+        public WowGuid128 Caster;
+        public uint ItemId;
+        public int EnchantId;
+    }
+
+    public PendingEnchantmentLogData PendingEnchantmentLog;
+
     public uint GetItemId(WowGuid128 guid)
     {
         int OBJECT_FIELD_ENTRY = LegacyVersion.GetUpdateField(ObjectField.OBJECT_FIELD_ENTRY);
@@ -386,6 +866,85 @@ public sealed class GameSessionData
 
         return total;
     }
+    // WotLK keeps currency-like items - emblems, battleground marks, Champion's Seals - out of
+    // the bags entirely, in 32 dedicated slots behind PLAYER_FIELD_CURRENCYTOKEN_SLOT_1
+    // (CURRENCYTOKEN_SLOT_START 118 .. CURRENCYTOKEN_SLOT_END 150). A bag sweep never sees them,
+    // which is why the modern currency panel came up empty for a character holding emblems.
+    public Dictionary<uint, uint> GetCurrencyTokenCounts()
+    {
+        const int CurrencyTokenSlots = 32;
+
+        Dictionary<uint, uint> counts = new();
+        int tokenSlotField = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_CURRENCYTOKEN_SLOT_1);
+        if (tokenSlotField < 0)
+            return counts;
+
+        var updates = GetCachedObjectFieldsLegacy(CurrentPlayerGuid);
+        if (updates == null)
+            return counts;
+
+        for (int slot = 0; slot < CurrencyTokenSlots; slot++)
+        {
+            var guid64 = updates.GetGuidValue(tokenSlotField + slot * 2);
+            if (guid64 == WowGuid64.Empty)
+                continue;
+
+            var guid128 = guid64.To128(this);
+            uint id = GetItemId(guid128);
+            if (id == 0)
+                continue;
+
+            counts.TryGetValue(id, out uint have);
+            counts[id] = have + GetItemStackCount(guid128);
+        }
+
+        return counts;
+    }
+
+    // One pass over equipped slots and bags. Callers that need counts for several
+    // item ids at once must use this instead of GetItemCountInInventory per id.
+    public Dictionary<uint, uint> GetInventoryItemCounts()
+    {
+        Dictionary<uint, uint> counts = new();
+        void Add(WowGuid64 guid64)
+        {
+            if (guid64 == WowGuid64.Empty)
+                return;
+            var guid128 = guid64.To128(this);
+            uint id = GetItemId(guid128);
+            if (id == 0)
+                return;
+            counts.TryGetValue(id, out uint have);
+            counts[id] = have + GetItemStackCount(guid128);
+        }
+
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+            Add(GetInventorySlotItem(i));
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return counts;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null)
+                continue;
+            if (!bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+                Add(bagFields.GetGuidValue(containerSlotField + slot * 2));
+        }
+
+        return counts;
+    }
     public (byte containerSlot, byte slot)? FindItemInInventory(WowGuid64 itemGuid64)
     {
         // Search main backpack
@@ -425,6 +984,133 @@ public sealed class GameSessionData
         }
 
         return null;
+    }
+    (WowGuid128 guid, byte containerSlot, byte slot)? MatchInventorySlotItem(byte slot, uint itemId)
+    {
+        var itemGuid64 = GetInventorySlotItem(slot);
+        if (itemGuid64 == WowGuid64.Empty)
+            return null;
+        var itemGuid128 = itemGuid64.To128(this);
+        if (GetItemId(itemGuid128) != itemId)
+            return null;
+        return (itemGuid128, ItemConst.NullSlot, slot);
+    }
+    public (WowGuid128 guid, byte containerSlot, byte slot)? FindItemInInventoryById(uint itemId)
+    {
+        // Equipped first so Use Toy finds a worn trinket/head instead of a bag copy
+        for (int i = EquipmentSlot.Start; i < EquipmentSlot.End; i++)
+        {
+            var equipped = MatchInventorySlotItem((byte)i, itemId);
+            if (equipped != null)
+                return equipped;
+        }
+
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+        {
+            var packed = MatchInventorySlotItem((byte)i, itemId);
+            if (packed != null)
+                return packed;
+        }
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return null;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null)
+                continue;
+            if (!bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                if (slotGuid == WowGuid64.Empty)
+                    continue;
+                var slotGuid128 = slotGuid.To128(this);
+                if (GetItemId(slotGuid128) == itemId)
+                    return (slotGuid128, (byte)bagIdx, (byte)slot);
+            }
+        }
+
+        return null;
+    }
+    public bool CanUseToy(uint itemId)
+    {
+        if (FindItemInInventoryById(itemId) != null)
+            return true;
+        return GameData.TryGetItemOnUseSpellId(itemId, out uint spellId)
+            && spellId != 0
+            && KnownSpells.Contains(spellId);
+    }
+    public uint[] GetUsableToysOrdered()
+    {
+        var usable = new List<uint>();
+        if (!CurrentPlayerGuid.IsEmpty() && ObjectCacheLock != null)
+            CollectInventoryToyIds(usable);
+        var learned = CollectionFavorites?.LearnedToys;
+        if (learned != null)
+        {
+            foreach (uint id in learned)
+            {
+                if (usable.Contains(id))
+                    continue;
+                if (GameData.TryGetItemOnUseSpellId(id, out uint spellId)
+                    && spellId != 0
+                    && KnownSpells.Contains(spellId))
+                    usable.Add(id);
+            }
+        }
+        if (usable.Count == 0)
+            return [];
+        usable.Sort();
+        return usable.ToArray();
+    }
+    void CollectInventoryToyIds(List<uint> dest)
+    {
+        void Consider(WowGuid64 guid64)
+        {
+            if (guid64 == WowGuid64.Empty)
+                return;
+            uint itemId = GetItemId(guid64.To128(this));
+            if (itemId == 0 || !GameData.IsToyItem(itemId) || dest.Contains(itemId))
+                return;
+            dest.Add(itemId);
+        }
+
+        for (int i = EquipmentSlot.Start; i < EquipmentSlot.End; i++)
+            Consider(GetInventorySlotItem(i));
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+            Consider(GetInventorySlotItem(i));
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid64.To128(this));
+            if (bagFields == null || !bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+            int numSlots = (int)numSlotsValue.UInt32Value;
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                Consider(slotGuid);
+            }
+        }
     }
     public (byte containerSlot, byte slot)? FindEmptyInventorySlot()
     {
@@ -486,11 +1172,34 @@ public sealed class GameSessionData
         else
             DailyQuestsDone.Remove(slot);
     }
+    public bool TryGetCachedPlayerAppearance(WowGuid128 guid, out Race race, out Class classId, out Gender sex)
+    {
+        race = Race.None;
+        classId = Class.None;
+        sex = Gender.None;
+        if (CachedPlayers.TryGetValue(guid, out var cache))
+        {
+            race = cache.RaceId;
+            classId = cache.ClassId;
+            sex = cache.SexId;
+        }
+        if (race == Race.None)
+        {
+            uint bytes0 = GetLegacyFieldValueUInt32(guid, UnitField.UNIT_FIELD_BYTES_0);
+            if (bytes0 != 0)
+            {
+                race = (Race)(bytes0 & 0xFF);
+                classId = (Class)((bytes0 >> 8) & 0xFF);
+                sex = (Gender)((bytes0 >> 16) & 0xFF);
+            }
+        }
+        return race != Race.None;
+    }
+
     public bool IsAlliancePlayer(WowGuid128 guid)
     {
-        PlayerCache? cache;
-        if (CachedPlayers.TryGetValue(guid, out cache))
-            return GameData.IsAllianceRace(cache.RaceId);
+        if (TryGetCachedPlayerAppearance(guid, out var race, out _, out _))
+            return GameData.IsAllianceRace(race);
         return false;
     }
     public bool IsInBattleground()
@@ -537,6 +1246,33 @@ public sealed class GameSessionData
     public uint GetBattleFieldQueueType(uint queueSlot)
     {
         return BattleFieldQueueTypes.TryGetValue(queueSlot, out var value) ? value : 0u;
+    }
+    public void StoreBattleFieldQueueArenaType(uint queueSlot, byte arenaType)
+    {
+        BattleFieldQueueArenaTypes[queueSlot] = arenaType;
+    }
+    public byte GetBattleFieldQueueArenaType(uint queueSlot)
+    {
+        return BattleFieldQueueArenaTypes.TryGetValue(queueSlot, out var value) ? value : (byte)0;
+    }
+    // Legacy CMSG_BATTLEFIELD_PORT packs (BattlemasterListId, BracketId, TeamSize) into
+    // the leading uint64. TrinityCore matches the whole struct, so a hardcoded bracket
+    // misses the queue of any character above the first level bracket. The value comes
+    // back on every SMSG_BATTLEFIELD_STATUS.
+    public void StoreBattleFieldQueueBracketId(uint queueSlot, byte bracketId)
+    {
+        BattleFieldQueueBracketIds[queueSlot] = bracketId;
+    }
+    public byte GetBattleFieldQueueBracketId(uint queueSlot)
+    {
+        return BattleFieldQueueBracketIds.TryGetValue(queueSlot, out var value) ? value : (byte)0;
+    }
+    public void RemoveBattleFieldQueue(uint queueSlot)
+    {
+        BattleFieldQueueTypes.Remove(queueSlot);
+        BattleFieldQueueArenaTypes.Remove(queueSlot);
+        BattleFieldQueueBracketIds.Remove(queueSlot);
+        BattleFieldQueueTimes.Remove(queueSlot);
     }
     public void StoreAuraDurationLeft(WowGuid128 guid, byte slot, int duration, int currentTime)
     {
@@ -884,7 +1620,7 @@ public sealed class GameSessionData
     {
         return ItemGems.TryGetValue(guid, out var gems) ? gems : null;
     }
-    public void SaveGemsForItem(WowGuid128 guid, uint?[] gems)
+    public void SaveGemsForItem(WowGuid128 guid, ReadOnlySpan<uint?> gems)
     {
         ref var existing = ref CollectionsMarshal.GetValueRefOrAddDefault(ItemGems, guid, out _);
         existing ??= new uint[ItemConst.MaxGemSockets];
@@ -899,17 +1635,76 @@ public sealed class GameSessionData
     {
         lock (ObjectCacheLock)
         {
-            foreach (var itr in ObjectCacheModern)
-            {
-                if (itr.Key.GetHighType() == HighGuidType.Pet &&
-                    itr.Key.GetEntry() == petNumber)
-                {
-                    return itr.Key;
-                }
-            }
-            return default;
+            return PetModernGuidByNumber.TryGetValue(petNumber, out var guid) ? guid : default;
         }
     }
+
+    public void RegisterPet(WowGuid64 legacyGuid, WowGuid128 modernGuid, uint realEntry, uint petNumber)
+    {
+        lock (ObjectCacheLock)
+        {
+            PetRealEntryByLegacyGuid[legacyGuid] = realEntry;
+            PetLegacyGuidByModern[modernGuid] = legacyGuid;
+            PetModernGuidByNumber[petNumber] = modernGuid;
+        }
+    }
+
+    public uint? GetPetRealEntryFromLegacy(WowGuid64 legacyGuid)
+    {
+        lock (ObjectCacheLock)
+        {
+            return PetRealEntryByLegacyGuid.TryGetValue(legacyGuid, out var entry) ? entry : null;
+        }
+    }
+
+    public WowGuid64? GetLegacyPetGuid(WowGuid128 modernGuid)
+    {
+        lock (ObjectCacheLock)
+        {
+            return PetLegacyGuidByModern.TryGetValue(modernGuid, out var legacy) ? legacy : null;
+        }
+    }
+
+    // Re-resolve a possibly-stale modern Pet GUID (entry=pet_number, because the .To128
+    // translation ran before RegisterPet had populated the map) to the corrected modern
+    // Pet GUID (entry=creature_template.entry). PetModernGuidByNumber maps pet_number →
+    // corrected GUID. Returns null if not a Pet GUID or the pet isn't registered (TC
+    // native repacks where realEntry is encoded directly — lookup by realEntry returns
+    // nothing, leaving the field unchanged).
+    public WowGuid128? ResolveStalePetGuid(WowGuid128 stale)
+    {
+        if (stale.GetHighType() != HighGuidType.Pet) return null;
+        lock (ObjectCacheLock)
+        {
+            return PetModernGuidByNumber.TryGetValue(stale.GetEntry(), out var corrected)
+                ? corrected
+                : null;
+        }
+    }
+
+    // Buffer for SMSG_PET_SPELLS_MESSAGE that arrives before its pet's CreateObject
+    // has been delivered to the modern client. cmangos sends the spells message
+    // FIRST (forwarded immediately) then the pet's CreateObject in a follow-up
+    // SMSG_COMPRESSED_UPDATE_OBJECT. The legacy pet GUID's entry slot is pet_number,
+    // and at parse-time RegisterPet hasn't fired yet — so .To128 falls back to
+    // pet_number instead of creature_template.entry. The spells message ends up
+    // with PetGUID=(entry=pet_number) but the pet's later CreateObject ships with
+    // PetGUID=(entry=realEntry). The V3_4_3 client sees these as two different
+    // GUIDs and never binds the pet UI. Hold the parsed message here, then once
+    // the pet CreateObject is in ClientKnownGuids (post-RegisterPet), re-translate
+    // PetGUID and forward. No-op when pet is already known (TC backends, second
+    // tame on the same login, pet already in client world).
+    public PetSpells? PendingPetSpells;
+    public WowGuid64? PendingPetSpellsLegacyGuid;
+
+    // SMSG_UPDATE_OBJECT batches that contain a Pet CreateObject but arrived while the
+    // player CreateObject was still in the DeferredObjectUpdates queue (waiting on item
+    // hotfixes). The V3_4_3 client needs the player object to exist in its world model
+    // BEFORE a child pet arrives, otherwise the pet's SummonedBy back-reference can't
+    // bind and the pet UI (portrait, action bar) never renders. Merged into the player's
+    // deferred batch in QueryHandler.FlushDeferredUpdatesFor so they ship in a single
+    // SMSG_UPDATE_OBJECT alongside the player. No-op when not V3_4_3.
+    public List<UpdateObject> PendingPetUpdateBatches = [];
     public void StoreOriginalObjectType(WowGuid128 guid, ObjectType type)
     {
         OriginalObjectTypes[guid] = type;
@@ -926,9 +1721,9 @@ public sealed class GameSessionData
     {
         return RealSpellToLearnSpell.TryGetValue(spellId, out var learnSpell) ? learnSpell : spellId;
     }
-    public void StoreCreatureClass(uint entry, Class classId)
+    public void StoreCreatureClass(WowGuid128 guid, Class classId)
     {
-        CreatureClasses[entry] = classId;
+        CreatureClasses[guid] = classId;
     }
     public void SetItemBuyCount(uint itemId, uint buyCount)
     {
@@ -998,7 +1793,7 @@ public sealed class GameSessionData
         if (CachedPlayers.TryGetValue(guid, out var cache))
             return cache.ClassId;
 
-        if (CreatureClasses.TryGetValue(guid.GetEntry(), out var classId))
+        if (CreatureClasses.TryGetValue(guid, out var classId))
             return classId;
 
         return Class.Warrior;
@@ -1060,11 +1855,13 @@ public sealed class GameSessionData
             return array;
         }
     }
+
 }
 
 public class ClientCastRequest
 {
     public bool HasStarted;
+    public bool PrepareSent;
     public uint SpellId;
     public uint LegacySpellId; // 0 = same as SpellId; non-zero when modern client used a renumbered spell (e.g. SoM 1.14.1+ items)
     public uint SpellXSpellVisualId;
@@ -1113,6 +1910,11 @@ public class GlobalSessionData
     public AuthClient AuthClient = null!;
     public WorldClient? WorldClient;
     public SniffFile ModernSniff = null!;
+    // Sniff of the cMangos↔HermesProxy legacy stream. Created lazily by WorldClient
+    // on the first incoming SMSG once decryption is established. Used to capture an
+    // (almost-)unaltered view of what the legacy server sends, so we can diff cMangos's
+    // CreateObject content against TC's reference parse for the V3_4_3 canary investigation.
+    public SniffFile LegacySniff = null!;
 
     public Dictionary<string, WowGuid128> GuildsByName = [];
     public Dictionary<uint, List<string>> GuildRanks = [];
@@ -1124,6 +1926,7 @@ public class GlobalSessionData
     public LegacyServerOptions LegacyServerOptions { get; }
     public ProxyNetworkOptions NetworkOptions { get; }
     public DiagnosticsOptions DiagnosticsOptions { get; }
+    public ThrottlingOptions ThrottlingOptions { get; }
 
     // Pre-computed read-only struct used on the per-packet LogPacket hot path to avoid
     // an IOptions<T> getter chain on every send/recv.
@@ -1133,12 +1936,14 @@ public class GlobalSessionData
         ClientOptions clientOptions,
         LegacyServerOptions legacyServerOptions,
         ProxyNetworkOptions networkOptions,
-        DiagnosticsOptions diagnosticsOptions)
+        DiagnosticsOptions diagnosticsOptions,
+        ThrottlingOptions throttlingOptions)
     {
         ClientOptions = clientOptions;
         LegacyServerOptions = legacyServerOptions;
         NetworkOptions = networkOptions;
         DiagnosticsOptions = diagnosticsOptions;
+        ThrottlingOptions = throttlingOptions;
         PacketLogContext = new PacketLogContext(diagnosticsOptions.PacketsLog, clientOptions.ClientBuild);
 
         RealmManager = new RealmManager(clientOptions, networkOptions);
@@ -1204,6 +2009,11 @@ public class GlobalSessionData
         {
             ModernSniff.CloseFile();
             ModernSniff = null!;
+        }
+        if (LegacySniff != null)
+        {
+            LegacySniff.CloseFile();
+            LegacySniff = null!;
         }
         if (AuthClient != null)
         {

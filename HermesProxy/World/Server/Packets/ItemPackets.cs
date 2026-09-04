@@ -20,7 +20,10 @@ using System;
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
 
@@ -76,14 +79,32 @@ public class BuyItem : ClientPacket
         VendorGUID = _worldPacket.ReadPackedGuid128();
         ContainerGUID = _worldPacket.ReadPackedGuid128();
         Quantity = _worldPacket.ReadUInt32();
-        Slot = _worldPacket.ReadUInt32();
-        BagSlot = _worldPacket.ReadUInt32();
-        Item.Read(_worldPacket);
-        ItemType = (ItemVendorType)_worldPacket.ReadBits<int>(3);
+
+        // V3_4_3 (WotLK Classic) reordered the trailing fields and inserted MuID
+        // (the 1-based vendor slot index returned in SMSG_VENDOR_INVENTORY).
+        // Reading the older (pre-WotLK) layout against this packet shifts every
+        // following field, so the proxy forwarded a garbage Slot to the legacy
+        // server and the buy was silently rejected. Layout mirrors fork
+        // HermesProxy-WOTLK Server/Packets/BuyItem.cs:Read for ExpansionVersion>=3.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            MuID = _worldPacket.ReadUInt32();
+            Slot = _worldPacket.ReadUInt32();
+            ItemType = (ItemVendorType)_worldPacket.ReadInt32();
+            Item.Read(_worldPacket);
+        }
+        else
+        {
+            Slot = _worldPacket.ReadUInt32();
+            BagSlot = _worldPacket.ReadUInt32();
+            Item.Read(_worldPacket);
+            ItemType = (ItemVendorType)_worldPacket.ReadBits<int>(3);
+        }
     }
 
     public WowGuid128 VendorGUID;
     public ItemInstance Item;
+    public uint MuID;
     public uint Slot;
     public uint BagSlot;
     public ItemVendorType ItemType;
@@ -259,25 +280,45 @@ public class SellResponse : ServerPacket, ISpanWritable
 
     public override void Write()
     {
-        _worldPacket.WritePackedGuid128(VendorGUID);
-        _worldPacket.WritePackedGuid128(ItemGUID);
-        _worldPacket.WriteUInt8(Reason);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WritePackedGuid128(VendorGUID);
+            _worldPacket.WriteUInt32(1);
+            _worldPacket.WriteInt32(Reason);
+            _worldPacket.WritePackedGuid128(ItemGUID);
+        }
+        else
+        {
+            _worldPacket.WritePackedGuid128(VendorGUID);
+            _worldPacket.WritePackedGuid128(ItemGUID);
+            _worldPacket.WriteUInt8((byte)Reason);
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 1; // 2 GUIDs + byte
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 8; // 2 GUIDs + max(uint32 count + int32 reason, uint8 reason)
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
-        writer.WritePackedGuid128(VendorGUID.Low, VendorGUID.High);
-        writer.WritePackedGuid128(ItemGUID.Low, ItemGUID.High);
-        writer.WriteUInt8(Reason);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WritePackedGuid128(VendorGUID.Low, VendorGUID.High);
+            writer.WriteUInt32(1);
+            writer.WriteInt32(Reason);
+            writer.WritePackedGuid128(ItemGUID.Low, ItemGUID.High);
+        }
+        else
+        {
+            writer.WritePackedGuid128(VendorGUID.Low, VendorGUID.High);
+            writer.WritePackedGuid128(ItemGUID.Low, ItemGUID.High);
+            writer.WriteUInt8((byte)Reason);
+        }
         return writer.Position;
     }
 
     public WowGuid128 VendorGUID;
     public WowGuid128 ItemGUID;
-    public byte Reason;
+    public int Reason;
 }
 
 public class SplitItem : ClientPacket
@@ -352,6 +393,24 @@ public class AutoEquipItem : ClientPacket
     public byte Slot;
     public InvUpdate Inv;
     public byte PackSlot;
+}
+
+public class AutoStoreBagItem : ClientPacket
+{
+    public AutoStoreBagItem(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Inv = new InvUpdate(_worldPacket);
+        ContainerSlotA = _worldPacket.ReadUInt8();
+        ContainerSlotB = _worldPacket.ReadUInt8();
+        SlotA = _worldPacket.ReadUInt8();
+    }
+
+    public InvUpdate Inv;
+    public byte ContainerSlotA;
+    public byte ContainerSlotB;
+    public byte SlotA;
 }
 
 class AutoEquipItemSlot : ClientPacket
@@ -601,11 +660,26 @@ class ReadItemResultOK : ServerPacket, ISpanWritable
 
 public class InventoryChangeFailure : ServerPacket, ISpanWritable
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melServer =
+        Framework.Logging.Log.CreateMelLogger(Framework.Logging.Log.CategoryServer);
+    // Matches the column the [CallerFilePath] form used to render, so existing greps still work.
+    private static readonly string _logSource = "ItemPackets".PadRight(15);
+
     public InventoryChangeFailure() : base(Opcode.SMSG_INVENTORY_CHANGE_FAILURE) { }
 
     public override void Write()
     {
-        _worldPacket.WriteInt8((sbyte)BagResult);
+        ItemLogMessages.InventoryChangeFailureWrite(_melServer, _logSource, "write", BagResult, (int)BagResult,
+            Item[0].Low, Item[1].Low, ContainerBSlot, Level, LimitCategory);
+
+        // BagResult width is version-dependent: V3_4_3 reads it as Int32, while
+        // 1.14.x / 2.5.x read a single byte. Writing the wrong width shifts every
+        // subsequent field, so Item[0]/[1] and ContainerBSlot decode as garbage and
+        // the inventory UI leaves the slot greyed out until the player relogs.
+        if (ModernVersion.ExpansionVersion >= 3)
+            _worldPacket.WriteInt32((int)BagResult);
+        else
+            _worldPacket.WriteInt8((sbyte)BagResult);
         _worldPacket.WritePackedGuid128(Item[0]);
         _worldPacket.WritePackedGuid128(Item[1]);
         _worldPacket.WriteUInt8(ContainerBSlot); // bag type subclass, used with EQUIP_ERR_EVENT_AUTOEQUIP_BIND_CONFIRM and EQUIP_ERR_WRONG_BAG_TYPE_2
@@ -629,15 +703,21 @@ public class InventoryChangeFailure : ServerPacket, ISpanWritable
         }
     }
 
-    // Fixed: sbyte + 2 GUIDs + byte = 2 + 36 = 38
+    // Fixed: int32 (worst case; 1.14/2.5 write 1 byte) + 2 GUIDs + byte = 5 + 36 = 41
     // Max additional (EventAutoEquipBindConfirm): 2 GUIDs + int = 40
-    public int MaxSize => 2 + PackedGuidHelper.MaxPackedGuid128Size * 2 +
+    public int MaxSize => 5 + PackedGuidHelper.MaxPackedGuid128Size * 2 +
                           PackedGuidHelper.MaxPackedGuid128Size * 2 + 4;
 
     public int WriteToSpan(Span<byte> buffer)
     {
+        ItemLogMessages.InventoryChangeFailureWrite(_melServer, _logSource, "span-write", BagResult, (int)BagResult,
+            Item[0].Low, Item[1].Low, ContainerBSlot, Level, LimitCategory);
+
         var writer = new SpanPacketWriter(buffer);
-        writer.WriteInt8((sbyte)BagResult);
+        if (ModernVersion.ExpansionVersion >= 3)
+            writer.WriteInt32((int)BagResult);
+        else
+            writer.WriteInt8((sbyte)BagResult);
         writer.WritePackedGuid128(Item[0].Low, Item[0].High);
         writer.WritePackedGuid128(Item[1].Low, Item[1].High);
         writer.WriteUInt8(ContainerBSlot);
@@ -862,7 +942,7 @@ class EnchantmentLog : ServerPacket, ISpanWritable
     public WowGuid128 ItemGUID;
     public int ItemID;
     public int Enchantment;
-    public int EnchantSlot = 1;
+    public int EnchantSlot;
 }
 
 public class CancelTempEnchantment : ClientPacket

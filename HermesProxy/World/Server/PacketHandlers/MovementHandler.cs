@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -11,9 +12,11 @@ namespace HermesProxy.World.Server;
 
 public partial class WorldSocket
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _melTransportRider =
+        Log.CreateMelLogger(Log.CategoryServer);
+
     // Handlers for CMSG opcodes coming from the modern client
     [PacketHandler(Opcode.CMSG_MOVE_CHANGE_TRANSPORT)]
-    [PacketHandler(Opcode.CMSG_MOVE_DISMISS_VEHICLE)]
     [PacketHandler(Opcode.CMSG_MOVE_FALL_LAND)]
     [PacketHandler(Opcode.CMSG_MOVE_FALL_RESET)]
     [PacketHandler(Opcode.CMSG_MOVE_HEARTBEAT)]
@@ -51,10 +54,33 @@ public partial class WorldSocket
         if (opcode == 0)
             opcode = Opcodes.GetOpcodeValueForVersion("MSG_MOVE_SET_FACING", LegacyVersion.Build);
 
+        // The client attaches itself to a transport WMO it stands on, the way a 3.3.5a
+        // client does, and that is what the backend's Strand of the Ancients boarding relies
+        // on. Log the moment that changes -- boarding, leaving -- with the world position and
+        // the deck offset side by side. Not every packet: a rider sends a dozen a second.
+        var moveInfo = movement.MoveInfo;
+        var gameState = GetSession().GameState;
+        if (moveInfo.TransportGuid != gameState.LastReportedTransportGuid)
+        {
+            if (_melTransportRider.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Trace))
+            {
+                // Both halves: a HighGuid::Transport guid keeps its identity in High and
+                // has Low = 0, so Low alone reads as "0 -> 0" on AzerothCore.
+                TransportLogMessages.ClientTransportChanged(_melTransportRider, opcodeName,
+                    gameState.LastReportedTransportGuid.Low, gameState.LastReportedTransportGuid.High,
+                    moveInfo.TransportGuid.Low, moveInfo.TransportGuid.High,
+                    moveInfo.StandingOnGameObjectGuid.Low,
+                    moveInfo.TransportOffset.X, moveInfo.TransportOffset.Y, moveInfo.TransportOffset.Z,
+                    moveInfo.TransportOrientation, moveInfo.TransportSeat,
+                    moveInfo.Position.X, moveInfo.Position.Y, moveInfo.Position.Z);
+            }
+            gameState.LastReportedTransportGuid = moveInfo.TransportGuid;
+        }
+
         WorldPacket packet = new WorldPacket(opcode);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
             packet.WritePackedGuid(movement.Guid.To64());
-        movement.MoveInfo.WriteMovementInfoLegacy(packet);
+        moveInfo.WriteMovementInfoLegacy(packet);
         SendPacketToServer(packet);
     }
 
@@ -160,9 +186,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_MOVE_SET_COLLISION_HEIGHT_ACK)]
     void HandleMoveSetCollisionHeightAck(MoveSetCollisionHeightAck collisionHeightAck)
     {
-        // This opcode doesn't exist in legacy servers (Vanilla/TBC/WotLK).
-        // The modern client sends it in response to SMSG_MOVE_SET_COLLISION_HEIGHT,
-        // but legacy servers don't expect or need it. Simply discard the packet.
+        // 3.3.5 does have CMSG_MOVE_SET_COLLISION_HGT_ACK (0x517), but Hermes
+        // already emits SMSG_MOVE_SET_COLLISION_HEIGHT from UNIT_FIELD_MOUNTDISPLAYID
+        // Values. Forwarding the ACK would make AC emit MSG 0x518 and we would
+        // double-send SET. Discard.
     }
 
     [PacketHandler(Opcode.CMSG_SET_ACTIVE_MOVER)]
@@ -203,6 +230,28 @@ public partial class WorldSocket
         else
             packet.WriteGuid(movement.MoverGUID.To64());
         packet.WriteUInt32(movement.TimeSkipped);
+        SendPacketToServer(packet);
+    }
+
+    // "Leave Vehicle" button on the modern V3_4_3 vehicle UI emits CMSG_MOVE_DISMISS_VEHICLE
+    // (with a MovementInfo body) — the legacy 3.3.5a equivalent is CMSG_REQUEST_VEHICLE_EXIT,
+    // which is empty and resolves the vehicle from session state. Rewrite the opcode and drop
+    // the body to translate. Without this the click was getting routed through HandlePlayerMove
+    // and silently degraded to MSG_MOVE_SET_FACING, leaving the player stuck in the vehicle
+    // (e.g. Grand Theft Palomino quest 12680).
+    //
+    // PREV_SEAT / NEXT_SEAT / REQUEST_VEHICLE_EXIT all share the same empty wire shape and
+    // are wired here as well, since they did not have any handler at all before.
+    [PacketHandler(Opcode.CMSG_REQUEST_VEHICLE_EXIT)]
+    [PacketHandler(Opcode.CMSG_REQUEST_VEHICLE_PREV_SEAT)]
+    [PacketHandler(Opcode.CMSG_REQUEST_VEHICLE_NEXT_SEAT)]
+    [PacketHandler(Opcode.CMSG_MOVE_DISMISS_VEHICLE)]
+    void HandleRequestVehicleSeatChange(RequestVehicleSeatChange request)
+    {
+        Opcode targetOpcode = request.GetUniversalOpcode();
+        if (targetOpcode == Opcode.CMSG_MOVE_DISMISS_VEHICLE)
+            targetOpcode = Opcode.CMSG_REQUEST_VEHICLE_EXIT;
+        WorldPacket packet = new WorldPacket(targetOpcode);
         SendPacketToServer(packet);
     }
 }

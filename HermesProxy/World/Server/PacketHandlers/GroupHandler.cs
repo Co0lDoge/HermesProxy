@@ -94,6 +94,13 @@ public partial class WorldSocket
     void HandleConvertRaid(ConvertRaid raid)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CONVERT_RAID);
+        // wotlk_classic TC reads a single bit: true = ConvertToRaid, false = ConvertToGroup.
+        // Without this bit the server reads past EOF, defaults to "raid", and "Convert to Party" silently no-ops.
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_4_3_54261))
+        {
+            packet.WriteBit(raid.Raid);
+            packet.FlushBits();
+        }
         SendPacketToServer(packet);
     }
 
@@ -111,10 +118,14 @@ public partial class WorldSocket
         packet.WriteBool(raid.IsReady);
         SendPacketToServer(packet);
 
+        // The legacy server broadcasts MSG_RAID_READY_CHECK_CONFIRM to the leader and
+        // assistants only, so a plain member never sees its own answer come back. Echo it
+        // locally under the real party GUID - a placeholder GUID does not match the party
+        // the client is tracking, so the echo was discarded.
         ReadyCheckResponse ready = new ReadyCheckResponse();
         ready.Player = GetSession().GameState.CurrentPlayerGuid;
         ready.IsReady = raid.IsReady;
-        ready.PartyGUID = WowGuid128.Create(HighGuidType703.Party, 1000);
+        ready.PartyGUID = GetSession().GameState.GetCurrentGroupGuid();
         SendPacket(ready);
     }
 
@@ -180,5 +191,113 @@ public partial class WorldSocket
         packet.WriteCString(GetSession().GameState.GetPlayerName(group.FirstTarget));
         packet.WriteCString(GetSession().GameState.GetPlayerName(group.SecondTarget));
         SendPacketToServer(packet);
+    }
+
+    [PacketHandler(Opcode.CMSG_SET_ROLE)]
+    void HandleSetRole(SetRole packet)
+    {
+        // AC has no CMSG_GROUP_SET_ROLES. Native 3.4.3 replies with
+        // SMSG_ROLE_CHANGED_INFORM and stores the role on the group.
+        byte newRole = packet.Role;
+        byte oldRole = 0;
+        var assigned = GetSession().GameState.GroupAssignedRoles;
+        if (assigned.TryGetValue(packet.ChangedUnit, out var stored))
+            oldRole = stored;
+
+        PartyUpdate? group = FindGroupForRoleAssign(packet.PartyIndex, packet.ChangedUnit);
+
+        if (group != null)
+        {
+            for (int i = 0; i < group.PlayerList.Count; i++)
+            {
+                var member = group.PlayerList[i];
+                if (member.GUID != packet.ChangedUnit)
+                    continue;
+                if (!assigned.ContainsKey(packet.ChangedUnit))
+                    oldRole = member.RolesAssigned;
+                member.RolesAssigned = newRole;
+                group.PlayerList[i] = member;
+                break;
+            }
+        }
+
+        if (oldRole == newRole)
+            return;
+
+        assigned[packet.ChangedUnit] = newRole;
+
+        if (packet.ChangedUnit == GetSession().GameState.CurrentPlayerGuid)
+        {
+            GetSession().GameState.LfgRequestedRoles = newRole;
+            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+            {
+                WorldPacket legacy = new WorldPacket(Opcode.CMSG_LFG_SET_ROLES);
+                legacy.WriteUInt8(newRole);
+                SendPacketToServer(legacy);
+            }
+        }
+
+        RoleChangedInform inform = new();
+        inform.PartyIndex = packet.PartyIndex;
+        inform.From = GetSession().GameState.CurrentPlayerGuid;
+        inform.ChangedUnit = packet.ChangedUnit;
+        inform.OldRole = oldRole;
+        inform.NewRole = packet.Role;
+        SendPacket(inform);
+
+        // INFORM is the chat line. The Set Role radio and UnitGroupRolesAssigned
+        // come from SMSG_PARTY_UPDATE.RolesAssigned.
+        if (group != null)
+        {
+            for (int i = 0; i < group.PlayerList.Count; i++)
+            {
+                var member = group.PlayerList[i];
+                if (assigned.TryGetValue(member.GUID, out var role))
+                {
+                    member.RolesAssigned = role;
+                    group.PlayerList[i] = member;
+                }
+            }
+
+            var update = group.CloneUnwritten();
+            update.SequenceNum = GetSession().GameState.GroupUpdateCounter++;
+            if (update.PartyIndex < GetSession().GameState.CurrentGroups.Length)
+                GetSession().GameState.CurrentGroups[update.PartyIndex] = update;
+            SendPacket(update);
+        }
+    }
+
+    PartyUpdate? FindGroupForRoleAssign(byte partyIndex, WowGuid128 changedUnit)
+    {
+        var groups = GetSession().GameState.CurrentGroups;
+        if (partyIndex < groups.Length && GroupContains(groups[partyIndex], changedUnit))
+            return groups[partyIndex];
+
+        foreach (var candidate in groups)
+        {
+            if (GroupContains(candidate, changedUnit))
+                return candidate;
+        }
+
+        if (GetSession().GameState.LastAnnouncedPartyIndex < groups.Length)
+        {
+            var last = groups[GetSession().GameState.LastAnnouncedPartyIndex];
+            if (last != null)
+                return last;
+        }
+
+        return GetSession().GameState.GetCurrentGroup();
+    }
+
+    static bool GroupContains(PartyUpdate? group, WowGuid128 guid)
+    {
+        if (group == null)
+            return false;
+        foreach (var member in group.PlayerList)
+        {
+            if (member.GUID == guid)
+                return true;
+        }
+        return false;
     }
 }

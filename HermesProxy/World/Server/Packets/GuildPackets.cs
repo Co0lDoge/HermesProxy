@@ -21,6 +21,7 @@ using System.Text;
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
@@ -153,6 +154,40 @@ public class GuildPermissionsQuery : ClientPacket
     public override void Read() { }
 }
 
+public class GuildPermissionsQueryResults : ServerPacket
+{
+    public GuildPermissionsQueryResults() : base(Opcode.SMSG_GUILD_PERMISSIONS_QUERY_RESULTS) { }
+
+    public override void Write()
+    {
+        // 3.4.3 / Wrathion GuildPackets.cpp GuildPermissionsQueryResults::Write.
+        // AC 3.3.5 MSG_GUILD_PERMISSIONS is the same fields minus the Tab.count
+        // uint32 (it writes a fixed 6-tab array after int8 NumTabs).
+        _worldPacket.WriteUInt32(RankID);
+        _worldPacket.WriteInt32(Flags);
+        _worldPacket.WriteInt32(WithdrawGoldLimit);
+        _worldPacket.WriteInt32(NumTabs);
+        _worldPacket.WriteUInt32((uint)Tab.Count);
+        foreach (var tab in Tab)
+        {
+            _worldPacket.WriteInt32(tab.Flags);
+            _worldPacket.WriteInt32(tab.WithdrawItemLimit);
+        }
+    }
+
+    public uint RankID;
+    public int Flags;
+    public int WithdrawGoldLimit;
+    public int NumTabs;
+    public List<GuildRankTabPermissions> Tab = new();
+}
+
+public struct GuildRankTabPermissions
+{
+    public int Flags;
+    public int WithdrawItemLimit;
+}
+
 public class GuildBankRemainingWithdrawMoneyQuery : ClientPacket
 {
     public GuildBankRemainingWithdrawMoneyQuery(WorldPacket packet) : base(packet) { }
@@ -215,11 +250,22 @@ public class GuildRosterMemberData
         data.WriteUInt8((byte)ClassID);
         data.WriteUInt8((byte)SexID);
 
+        // V3_4_3 (lineagedr/3.4.3_Source GuildPackets.cpp GuildRosterMemberData)
+        // inserts GuildClubMemberID + RaceID before the name/note bits.
+        // Without them the client reads those 9 bytes as the name length
+        // and the MOTD/info strings after the members land on garbage.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            data.WriteUInt64(GuildClubMemberID);
+            data.WriteUInt8((byte)RaceID);
+        }
+
         data.WriteBits(Name.GetByteCount(), 6);
         data.WriteBits(Note.GetByteCount(), 8);
         data.WriteBits(OfficerNote.GetByteCount(), 8);
         data.WriteBit(Authenticated);
         data.WriteBit(SorEligible);
+        data.FlushBits();
 
         data.WriteString(Name);
         data.WriteString(Note);
@@ -245,6 +291,8 @@ public class GuildRosterMemberData
     public Gender SexID;
     public bool Authenticated;
     public bool SorEligible;
+    public ulong GuildClubMemberID;
+    public Race RaceID = Race.None;
     public GuildRosterProfessionData[] Profession = new GuildRosterProfessionData[2];
 }
 
@@ -356,6 +404,7 @@ public class GuildEventMotd : ServerPacket, ISpanWritable
     public override void Write()
     {
         _worldPacket.WriteBits(MotdText.GetByteCount(), 11);
+        _worldPacket.FlushBits();
         _worldPacket.WriteString(MotdText);
     }
 
@@ -991,15 +1040,34 @@ public class PlayerTabardVendorActivate : ServerPacket, ISpanWritable
 
     public override void Write()
     {
+        // V3_4_3 wire-opcode 10378 is SMSG_NPC_INTERACTION_OPEN_RESULT
+        // (Guid + Int32 InteractionType + bit Success). Same shape as
+        // ShowBank / BinderConfirm. WPP V3_4_3_51666 has no
+        // SMSG_PLAYER_TABARD_VENDOR_ACTIVATE; type GuildTabardVendor (14)
+        // opens TabardFrame. AC still sends MSG_TABARDVENDOR_ACTIVATE
+        // with no guild check; the no-guild error is on save.
         _worldPacket.WritePackedGuid128(DesignerGUID);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteInt32((int)PlayerInteractionType.GuildTabardVendor);
+            _worldPacket.WriteBit(true);
+            _worldPacket.FlushBits();
+        }
     }
 
-    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size
+        + (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 ? 5 : 0);
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
         writer.WritePackedGuid128(DesignerGUID.Low, DesignerGUID.High);
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteInt32((int)PlayerInteractionType.GuildTabardVendor);
+            writer.WriteBit(true);
+            writer.FlushBits();
+        }
         return writer.Position;
     }
 
@@ -1125,6 +1193,7 @@ public class GuildBankQueryResults : ServerPacket
             _worldPacket.WriteInt32(tab.TabIndex);
             _worldPacket.WriteBits(tab.Name.GetByteCount(), 7);
             _worldPacket.WriteBits(tab.Icon.GetByteCount(), 9);
+            _worldPacket.FlushBits();
 
             _worldPacket.WriteString(tab.Name);
             _worldPacket.WriteString(tab.Icon);

@@ -1,9 +1,13 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
+using HermesProxy.World.Server;
 using HermesProxy.World.Server.Packets;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace HermesProxy.World.Client;
 
@@ -23,7 +27,12 @@ public partial class WorldClient
         // result as "new account, no characters yet" and the client suppresses the list.
         charEnum.IsNewPlayer = false;
         charEnum.IsAlliedRacesCreationAllowed = false;
-        charEnum.DisabledClassesMask = null;
+        // Attempt 3 (per _charenum_diff_report.md): TC always sends
+        // HasDisabledClassesMask=true with DisabledClassesMask=0 (a 4-byte explicit
+        // zero) in the V3_4_3 envelope. We were sending HasDisabledClassesMask=false
+        // and skipping the field entirely, producing a 4-byte-shorter envelope.
+        // Match TC's wire layout. Was: DisabledClassesMask = null.
+        charEnum.DisabledClassesMask = 0u;
 
         GetSession().GameState.OwnCharacters.Clear();
 
@@ -34,6 +43,12 @@ public partial class WorldClient
         for (byte i = 0; i < count; i++)
         {
             EnumCharactersResult.CharacterInfo char1 = new EnumCharactersResult.CharacterInfo();
+            // Unique per-char slot. With ListPosition=0 for all chars, the V3_4_3 client
+            // collapses multi-char enums into a single slot and renders nothing — confirmed
+            // by the 1-char-works-vs-2-char-doesn't A/B against TC backend on 2026-04-30.
+            // The earlier "TC ships all at 0" observation in _charenum_diff_report.md was
+            // a misread of a single-char TC capture; with 2 chars TC also assigns unique
+            // positions.
             char1.ListPosition = i;
             char1.VirtualRealmAddress = virtualRealmAddress;
             PlayerCache cache = new PlayerCache();
@@ -49,13 +64,6 @@ public partial class WorldClient
             byte hairColor = packet.ReadUInt8();
             byte facialHair = packet.ReadUInt8();
             char1.Customizations = CharacterCustomizations.ConvertLegacyCustomizationsToModern((Race)char1.RaceId, (Gender)char1.SexId, skin, face, hairStyle, hairColor, facialHair);
-            // Phase 5a diagnostic: clear customizations to test whether the choice IDs from
-            // GetModernCustomizationChoice (17160-17209 range — looks like Shadowlands retail
-            // DB2 IDs) are rejected by the 3.4.3.54261 client's ChrCustomizationChoice.db2.
-            // If the character renders with default appearance after this, the IDs are wrong
-            // and we need DB2-correct values from wago.tools.
-            if (ClientVersionBuild.V3_4_3_54261 == ModernVersion.Build)
-                char1.Customizations.Clear();
 
             char1.ExperienceLevel = cache.Level = packet.ReadUInt8();
             if (char1.ExperienceLevel > charEnum.MaxCharacterLevel)
@@ -70,20 +78,31 @@ public partial class WorldClient
             GetSession().GameState.StorePlayerGuildId(char1.Guid, guildId);
             char1.GuildGuid = guildId != 0 ? WowGuid128.Create(HighGuidType703.Guild, guildId) : WowGuid128.Empty;
             char1.Flags = (CharacterFlags)packet.ReadUInt32();
-            // Phase 5a diagnostic: log what flags cmangos set, then zero them out for 3.4.3.
-            // If the character now renders, one of cmangos's CharacterFlags (RenameRequired,
-            // DeclineRequired, LockedForTransfer, etc.) is being treated as "hide me" by the
-            // 3.4.3 client. We'll then look up the specific flag and translate it correctly.
-            if (ClientVersionBuild.V3_4_3_54261 == ModernVersion.Build)
-            {
-                Log.Print(LogType.Network, $"[CharFlags] legacy flags=0x{(uint)char1.Flags:X8} — overriding to 0 for diagnostic");
-                char1.Flags = 0;
-            }
+            // Attempt 2 (per _charenum_diff_report.md): TC sends Flags=0 for ALL
+            // chars (verified across all 4 chars in TC capture). cMangos sets the
+            // Declined bit (0x02000000) on all chars by default. Strip it here to
+            // match TC's wire pattern. Combined with the ListPosition=0 change
+            // above — neither change individually unblocked rendering this evening.
+            char1.Flags &= ~CharacterFlags.Declined;
 
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 char1.Flags2 = packet.ReadUInt32(); // Customization Flags
 
-            char1.FirstLogin = packet.ReadUInt8() != 0;
+            byte legacyFirstLogin = packet.ReadUInt8();
+            char1.FirstLogin = legacyFirstLogin != 0;
+
+            // V3_4_3 client validates ZoneId/MapId against the race's starting-zone DB
+            // iff FirstLogin=true. Both cMangos (Map=0, Zone=0) and TC (Map=valid,
+            // Zone=0) under-populate the new char's location; either shape breaks the
+            // client's auto-select on the just-created entry. Synthesize the canonical
+            // starting (Map, Zone, Position) whenever ZoneId=0 — the legacy server
+            // overwrites these on the real login.
+            if (char1.FirstLogin
+                && ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+                && char1.ZoneId == 0)
+            {
+                ApplyStartingLocation(char1);
+            }
             char1.PetCreatureDisplayId = packet.ReadUInt32();
             char1.PetExperienceLevel = packet.ReadUInt32();
             char1.PetCreatureFamilyId = packet.ReadUInt32();
@@ -118,12 +137,18 @@ public partial class WorldClient
             char1.LastPlayedTime = (ulong) Time.UnixTime;
             char1.SpecID = 0;
             char1.Unknown703 = 0;
-            char1.LastLoginVersion = (uint)ModernVersion.BuildInt;
+            // Attempt 1 (per _charenum_diff_report.md): TC sends LastLoginVersion=11201
+            // (the historical legacy WotLK build number) for ALL chars in V3_4_3
+            // SMSG_ENUM_CHARACTERS_RESULT, even when the modern V3_4_3 client connects.
+            // The field describes "what build did this character last play on", not
+            // "what build is the client" — so the right value is the legacy build.
+            // Was: (uint)ModernVersion.BuildInt = 54261. Now matches TC.
+            char1.LastLoginVersion = (uint)LegacyVersion.BuildInt;
             char1.OverrideSelectScreenFileDataID = 0;
             char1.BoostInProgress = false;
             char1.unkWod61x = 0;
             char1.ExpansionChosen = true;
-            Log.Print(LogType.Network,
+            Log.Print(LogType.Trace,
                 $"[Trace] HandleEnumCharactersResult: built char[{i}] guid={char1.Guid} name='{char1.Name}' " +
                 $"race={char1.RaceId} class={char1.ClassId} sex={char1.SexId} level={char1.ExperienceLevel} " +
                 $"zone={char1.ZoneId} map={char1.MapId} guildGuid={char1.GuildGuid} customizations={char1.Customizations.Count}");
@@ -157,10 +182,54 @@ public partial class WorldClient
             charEnum.RaceUnlockData.Add(new EnumCharactersResult.RaceUnlock(10, true, false, false));
             charEnum.RaceUnlockData.Add(new EnumCharactersResult.RaceUnlock(11, true, false, false));
         }
-        Log.Print(LogType.Network,
+        Log.Print(LogType.Trace,
             $"[Trace] HandleEnumCharactersResult: SEND — chars={charEnum.Characters.Count} maxLvl={charEnum.MaxCharacterLevel} " +
             $"races={charEnum.RaceUnlockData.Count} success={charEnum.Success} isNewPlayer={charEnum.IsNewPlayer} " +
             $"disabledClassesMask={(charEnum.DisabledClassesMask.HasValue ? "set" : "null")}");
+
+        // Internal-enum consumer: this enum was requested by HandleCreateChar to
+        // resolve the just-created char's GUID. Look up the FirstLogin entry by
+        // name, send the deferred SMSG_CREATE_CHAR with the real GUID, and DO
+        // NOT forward this enum to the modern client (the client will request
+        // its own next, in response to SMSG_CREATE_CHAR).
+        var state = GetSession().GameState;
+        if (state.IsInternalCharEnumPending && state.PendingCreateCharLegacyResult.HasValue)
+        {
+            // Case-insensitive match: legacy server normalises names to title case
+            // ("dk" submitted → "Dk" stored), so the requested-name string we cached
+            // on CMSG_CREATE_CHARACTER won't byte-match the enum entry.
+            var match = charEnum.Characters.FirstOrDefault(c =>
+                c.FirstLogin && string.Equals(c.Name, state.PendingCreateCharName, StringComparison.OrdinalIgnoreCase));
+
+            CreateChar createChar = new CreateChar();
+            createChar.Code = ModernVersion.ConvertResponseCodesValue(state.PendingCreateCharLegacyResult.Value);
+            createChar.Guid = match != null ? match.Guid : new WowGuid128();
+            SendPacketToClient(createChar);
+
+            state.PendingCreateCharName = null;
+            state.PendingCreateCharLegacyResult = null;
+            state.IsInternalCharEnumPending = false;
+            return;
+        }
+
+        var realmName = GetSession().Realm?.Name;
+        if (!string.IsNullOrEmpty(realmName))
+        {
+            var saved = GetSession().AccountMetaDataMgr.LoadCharacterListOrder(realmName);
+            var pruned = CharacterListOrder.Apply(charEnum.Characters, saved);
+            if (pruned.Count != saved.Count)
+            {
+                GetSession().AccountMetaDataMgr.SaveCharacterListOrder(realmName, CharacterListOrder.Normalize(pruned));
+                Log.Print(LogType.Debug, $"[CharEnum] pruned {saved.Count - pruned.Count} missing character(s) from list order");
+            }
+            Log.Print(LogType.Debug,
+                $"[CharEnum] applied order=[{string.Join(", ", charEnum.Characters.ConvertAll(c => $"{c.Name}:{c.ListPosition}"))}]");
+
+            GetSession().AccountMetaDataMgr.RememberRealmFromCharacterList(
+                realmName,
+                charEnum.Characters.ConvertAll(c => (c.Name!, c.Guid.Low)));
+        }
+
         SendPacketToClient(charEnum);
         Log.Print(LogType.Trace, "[Trace] HandleEnumCharactersResult: EXIT — translation complete, packet queued for modern client");
     }
@@ -169,6 +238,28 @@ public partial class WorldClient
     void HandleCreateChar(WorldPacket packet)
     {
         byte result = packet.ReadUInt8();
+        var state = GetSession().GameState;
+
+        // V3_4_3 client uses the GUID in SMSG_CREATE_CHAR to auto-select the
+        // just-created character on the next char-list render. Legacy 3.3.5
+        // SMSG_CHAR_CREATE doesn't carry a GUID, so we defer the modern reply,
+        // request a fresh CMSG_CHAR_ENUM ourselves, and stamp the matching
+        // FirstLogin entry's GUID into SMSG_CREATE_CHAR before forwarding.
+        // Failure paths skip this dance (no GUID needed for an error reply).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && result == (byte)Enums.V3_3_5a_12340.ResponseCodes.CharCreateSuccess
+            && !string.IsNullOrEmpty(state.PendingCreateCharName))
+        {
+            state.PendingCreateCharLegacyResult = result;
+            state.IsInternalCharEnumPending = true;
+            SendPacketToServer(new WorldPacket(Opcode.CMSG_ENUM_CHARACTERS));
+            return;
+        }
+
+        // Failure or non-V3_4_3 path — clear pending state and forward as before.
+        state.PendingCreateCharName = null;
+        state.PendingCreateCharLegacyResult = null;
+        state.IsInternalCharEnumPending = false;
 
         CreateChar createChar = new CreateChar();
         createChar.Guid = new WowGuid128();
@@ -258,6 +349,17 @@ public partial class WorldClient
 
         GetSession().GameState.IsInWorld = true;
 
+        bool isModernWotLK = ModernVersion.ExpansionVersion >= 3;
+
+        // V3_4_3 modern client expects EmptyInitWorldStates BEFORE WorldServerInfo
+        // (per HermesProxy-WOTLK fork's WorldClient.cs:1106).
+        if (isModernWotLK)
+        {
+            EmptyInitWorldStates worldStates = new();
+            worldStates.MapId = verify.MapID;
+            SendPacketToClient(worldStates);
+        }
+
         WorldServerInfo info = new();
         if (verify.MapID > 1)
         {
@@ -266,8 +368,13 @@ public partial class WorldClient
         }
         SendPacketToClient(info);
 
-        SetAllTaskProgress tasks = new();
-        SendPacketToClient(tasks);
+        // SetAllTaskProgress is for pre-WotLK-Classic clients only — V3_4_3 doesn't expect it
+        // and the fork explicitly skips it for ExpansionVersion >= 3.
+        if (!isModernWotLK)
+        {
+            SetAllTaskProgress tasks = new();
+            SendPacketToClient(tasks);
+        }
 
         InitialSetup setup = new();
         setup.ServerExpansionLevel = (byte)(LegacyVersion.ExpansionVersion - 1);
@@ -288,6 +395,63 @@ public partial class WorldClient
                 "[HermesProxy] Wand tip: type |cff00ff00/console autoRangedCombat 0|r to keep your wand firing when mobs enter melee range.");
             SendPacketToClient(hint);
         }
+
+        // V3_4_3 modern client requires a batch of "I have no X data" announcements
+        // before it dismisses the loading screen and sends CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE.
+        // Legacy 3.3.5a doesn't emit these (the modern protocol added them), so the proxy
+        // synthesizes empty/default versions. Ported from HermesProxy-WOTLK fork's
+        // WorldClient.cs:1130-1147 — this is the actual unblock for the loading-screen stall.
+        if (isModernWotLK)
+        {
+            // SMSG_ALL_ACHIEVEMENT_DATA arrives async from the legacy 3.3.5a server
+            // and is translated by AchievementHandler.HandleAllAchievementData.
+            SendPacketToClient(new EmptyAllAccountCriteria());
+            SendPacketToClient(new EmptySetupCurrency());
+            SendPacketToClient(new EmptySpellHistory());
+            SendPacketToClient(new EmptySpellCharges());
+            // Use cached talent state if the legacy server already pushed it (relog case);
+            // otherwise send the empty stub as a placeholder. The legacy server emits
+            // SMSG_UPDATE_TALENT_DATA after world-enter on first login, and the handler
+            // (TalentHandler.HandleTalentsInfoUpdate) will refresh the panel then.
+            var talentCache = GetSession().GameState.TalentInfo;
+            if (talentCache != null)
+                SendPacketToClient(talentCache.ToPacket());
+            else
+                SendPacketToClient(new EmptyTalentData());
+            SendPacketToClient(BuildActiveGlyphsPacket(GetSession().GameState));
+            SendPacketToClient(new EmptyEquipmentSetList());
+            SendPacketToClient(new EmptyAccountMountUpdate());
+            if (GetSession().GameState.CollectionFavorites == null)
+                GetSession().GameState.CollectionFavorites = GetSession().AccountMetaDataMgr.LoadCollectionFavorites();
+            SendPacketToClient(AccountToyUpdate.FromSession(GetSession().GameState));
+            SendPacketToClient(new AccountHeirloomUpdate());
+            SendPacketToClient(new BattlePetJournalLockAcquired());
+
+            PhaseShiftChange phaseShift = new();
+            phaseShift.Client = GetSession().GameState.CurrentPlayerGuid;
+            SendPacketToClient(phaseShift);
+        }
+    }
+
+    // Build a real SMSG_ACTIVE_GLYPHS packet from cached glyph state. The cache is
+    // populated by TalentHandler.HandleTalentsInfoUpdate (active spec's glyph block from
+    // legacy SMSG_UPDATE_TALENT_DATA). Each non-zero GlyphID is mapped to its passive
+    // SpellID via GameData.GlyphSpellById (loaded from CSV/Hotfix/GlyphProperties3.csv).
+    // IsFullUpdate=true means "this is the complete current glyph set" — what the client
+    // needs at world-enter and on talent push.
+    static ActiveGlyphs BuildActiveGlyphsPacket(GameSessionData state)
+    {
+        var packet = new ActiveGlyphs { IsFullUpdate = true };
+        foreach (ushort glyphId in state.ActiveGlyphs)
+        {
+            if (glyphId == 0)
+                continue;
+            uint spellId = GameData.GlyphSpellById.GetValueOrDefault(glyphId);
+            if (spellId == 0)
+                continue;  // glyph not in our DBC — drop rather than emit a half-built entry
+            packet.Glyphs.Add((spellId, glyphId));
+        }
+        return packet;
     }
 
     [PacketHandler(Opcode.SMSG_CHARACTER_LOGIN_FAILED)]
@@ -303,31 +467,73 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_UPDATE_ACTION_BUTTONS)]
     void HandleUpdateActionButtons(WorldPacket packet)
     {
+        byte reason = 0;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
         {
-            byte type = packet.ReadUInt8();
-            if (type == 2)
+            reason = packet.ReadUInt8();
+            if (reason == 2)
                 return;
         }
 
         List<int> buttons = new List<int>();
 
-        int buttonCount = 120;
+        // Legacy SMSG_UPDATE_ACTION_BUTTONS array size grew across expansions:
+        // Vanilla=120, TBC=132, WotLK 3.2+=144 (mangos-wotlk Player.h:201).
+        int buttonCount = PlayerConst.MaxActionButtonsVanilla;
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
-            buttonCount = 144;
+            buttonCount = PlayerConst.MaxActionButtonsWotLK;
         else if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            buttonCount = 132;
+            buttonCount = PlayerConst.MaxActionButtonsTbc;
 
+        int nonZeroCount = 0;
         for (int i = 0; i < buttonCount; i++)
         {
             int packed = packet.ReadInt32();
             buttons.Add(packed);
+            if (packed != 0)
+            {
+                int actionId = packed & 0x00FFFFFF;
+                int type = (packed >> 24) & 0xFF;
+                Log.Print(LogType.Debug,
+                    $"[V343Trace][LoadButtons] legacy slot={i} action={actionId} type={type} packed=0x{packed:X8}");
+                nonZeroCount++;
+            }
         }
+        Log.Print(LogType.Debug,
+            $"[V343Trace][LoadButtons] legacy total={buttonCount} nonZero={nonZeroCount} legacyReason={reason}");
 
-        while (buttons.Count < 132)
+        // Pad to TBC's 132 if we read fewer (Vanilla only sends 120). The V1_14 /
+        // V2_5 ObjectUpdateBuilders later read m_gameState.ActionButtons[i] by
+        // index for i = 0..131 during CreateObject — without this pad they'd
+        // throw IndexOutOfRangeException for a 1.x source. WotLK's 144 entries
+        // are larger than 132, so the pad is a no-op there (extras are kept).
+        while (buttons.Count < PlayerConst.MaxActionButtonsTbc)
             buttons.Add(0);
 
         GetSession().GameState.ActionButtons = buttons;
+
+        // V3_4_3-only: forward as a standalone modern SMSG_UPDATE_ACTION_BUTTONS. TC
+        // reference at packet #151 sends this AFTER the player CreateObject2 — the
+        // 1441-byte emission (180 × int64 + 1 byte Reason) is a prerequisite the
+        // V3_4_3 client requires before it sends CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE
+        // and dismisses the loading screen. UpdateActionButtons.Write pads to 180
+        // internally, so we don't need to pad the list here.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            // Hardcode Reason=0 (Initial sync). cmangos sends reason=1 (spec swap)
+            // sometimes but the V3_4_3 client interprets reason=0 as "world-entry
+            // initial" and reason=1 as "you swapped specs" — only the former gates
+            // the world-ready handshake. Matches HermesProxy-WOTLK fork behaviour.
+            UpdateActionButtons modern = new UpdateActionButtons
+            {
+                Reason = 0,
+            };
+            modern.ActionButtons.AddRange(buttons);
+            SendPacketToClient(modern);
+
+            Log.Print(LogType.Trace,
+                $"[ActionButtonsTrace] forwarded {modern.ActionButtons.Count} legacy buttons to V3_4_3 client (legacyReason={reason} sentReason=0; Write pads to {PlayerConst.MaxActionButtonsModern})");
+        }
     }
 
     [PacketHandler(Opcode.SMSG_LOGOUT_RESPONSE)]
@@ -408,6 +614,7 @@ public partial class WorldClient
     {
         ObjectUpdate updateData = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
         updateData.ActivePlayerData.ComboTarget = packet.ReadPackedGuid().To128(GetSession().GameState);
+        updateData.UnitData.ComboTarget = updateData.ActivePlayerData.ComboTarget;
         byte comboPoints = packet.ReadUInt8();
         sbyte powerSlot = ClassPowerTypes.GetPowerSlotForClass(GetSession().GameState.GetUnitClass(GetSession().GameState.CurrentPlayerGuid), PowerType.ComboPoints);
         if (powerSlot >= 0)
@@ -491,16 +698,35 @@ public partial class WorldClient
             }
         }
 
-        // TODO: format seems to be different in new client
         if (packet.GetUniversalOpcode(false) == Opcode.SMSG_INSPECT_TALENT)
         {
-            uint talentsCount = packet.ReadUInt32();
-            for (uint i = 0; i < talentsCount; i++)
+            // BuildPlayerTalentsInfoData (no isPet prefix). Unspent points are
+            // not a rank-byte count — treating them as one emptied the tree.
+            uint unspent = packet.ReadUInt32();
+            byte specsCount = packet.ReadUInt8();
+            byte activeSpec = packet.ReadUInt8();
+            int totalTalents = 0;
+
+            for (byte specIdx = 0; specIdx < specsCount; ++specIdx)
             {
-                byte talent = packet.ReadUInt8();
-                if (i < 25)
-                    inspect.Talents.Add(talent);
+                byte talentCount = packet.ReadUInt8();
+                for (byte t = 0; t < talentCount; ++t)
+                {
+                    uint talentId = packet.ReadUInt32();
+                    byte rank = packet.ReadUInt8();
+                    if (specIdx == activeSpec)
+                        inspect.InspectedTalents.Add(new TalentEntry { TalentID = talentId, Rank = rank });
+                }
+
+                byte glyphSlots = packet.ReadUInt8();
+                for (byte g = 0; g < glyphSlots; ++g)
+                    packet.ReadUInt16();
+
+                totalTalents += talentCount;
             }
+
+            WorldClientLogMessages.InspectTalents(
+                _melLog, _sourceFile, _netDirRecv, unspent, specsCount, activeSpec, totalTalents);
         }
 
         SendPacketToClient(inspect);
@@ -627,5 +853,74 @@ public partial class WorldClient
             rename.Name = packet.ReadCString();
         }
         SendPacketToClient(rename);
+    }
+
+    // Synthesizes the canonical (MapId, ZoneId, Position) for a freshly-created
+    // character when the legacy backend (e.g. cMangos) returns ZoneId=0/MapId=0
+    // in SMSG_ENUM_CHARACTERS_RESULT. Without this, the V3_4_3 client rejects
+    // the entire enum because FirstLogin=true triggers a starting-zone DB
+    // lookup that fails on (0, 0). Death Knights (class 6) take precedence
+    // over the race default since they share a starting area regardless of race.
+    static void ApplyStartingLocation(EnumCharactersResult.CharacterInfo char1)
+    {
+        if (char1.ClassId == Class.Deathknight)
+        {
+            char1.MapId = 609;          // Plaguelands: The Scarlet Enclave
+            char1.ZoneId = 4298;
+            char1.PreloadPos = new Vector3(2381.33f, -5894.55f, 154.626f);
+            return;
+        }
+
+        switch (char1.RaceId)
+        {
+            case Race.Human:
+                char1.MapId = 0;        // Eastern Kingdoms
+                char1.ZoneId = 12;      // Elwynn Forest
+                char1.PreloadPos = new Vector3(-8949.95f, -132.493f, 83.5312f);
+                break;
+            case Race.Orc:
+            case Race.Troll:
+                char1.MapId = 1;        // Kalimdor
+                char1.ZoneId = 14;      // Durotar
+                char1.PreloadPos = new Vector3(-618.518f, -4251.67f, 38.718f);
+                break;
+            case Race.Dwarf:
+            case Race.Gnome:
+                char1.MapId = 0;
+                char1.ZoneId = 1;       // Dun Morogh
+                char1.PreloadPos = new Vector3(-6240.32f, 331.033f, 382.758f);
+                break;
+            case Race.NightElf:
+                char1.MapId = 1;
+                char1.ZoneId = 141;     // Teldrassil
+                char1.PreloadPos = new Vector3(10311.3f, 832.463f, 1326.41f);
+                break;
+            case Race.Undead:
+                char1.MapId = 0;
+                char1.ZoneId = 85;      // Tirisfal Glades
+                char1.PreloadPos = new Vector3(1676.71f, 1677.45f, 121.671f);
+                break;
+            case Race.Tauren:
+                char1.MapId = 1;
+                char1.ZoneId = 215;     // Mulgore
+                char1.PreloadPos = new Vector3(-2917.58f, -257.98f, 52.9968f);
+                break;
+            case Race.BloodElf:
+                char1.MapId = 530;      // Outland
+                char1.ZoneId = 3431;    // Eversong Woods
+                char1.PreloadPos = new Vector3(10349.6f, -6357.29f, 33.4308f);
+                break;
+            case Race.Draenei:
+                char1.MapId = 530;
+                char1.ZoneId = 3524;    // Azuremyst Isle
+                char1.PreloadPos = new Vector3(-3961.64f, -13931.2f, 100.615f);
+                break;
+            default:
+                // Last-resort fallback to keep the enum valid even for unknown races.
+                char1.MapId = 0;
+                char1.ZoneId = 12;
+                char1.PreloadPos = new Vector3(-8949.95f, -132.493f, 83.5312f);
+                break;
+        }
     }
 }

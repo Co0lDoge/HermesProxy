@@ -29,6 +29,9 @@ dotnet run --project HermesProxy.Benchmarks -c Release -- --list flat
 | `SpanPacketBenchmarks.cs` | `SpanPacketReader`/`SpanPacketWriter` vs `ByteBuffer` |
 | `BnetPacketParserBenchmarks.cs` | BNet packet parsing performance |
 | `ExtensionsBenchmarks.cs` | Extension method performance |
+| `PacketDispatchBenchmarks.cs` | Inbound dispatch on real `ClientPacket`s: Activator path vs direct vs `SpanPacketReader` floor |
+| `SendPipelineBenchmarks.cs` | `ServerPacket` construct → `WritePacketData` → framed + encrypted wire bytes, per stage |
+| `PackedGuidBenchmarks.cs` | `WorldPacket` vs `PackedGuidHelper` packed-GUID encode/decode |
 
 ## Conventions
 

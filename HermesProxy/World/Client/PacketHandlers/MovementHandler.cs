@@ -93,6 +93,18 @@ public partial class WorldClient
         control.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
         control.HasControl = packet.ReadBool();
         SendPacketToClient(control);
+
+        // V3_4_3 client routes WASD via a separate active-mover slot updated only by
+        // SMSG_MOVE_SET_ACTIVE_MOVER. 3.3.5 only emits SMSG_CLIENT_CONTROL_UPDATE, so
+        // without this synthesis the modern client treats CONTROL_UPDATE as camera-only
+        // and never sends client movement for vehicle/charm/possess targets like the
+        // Eye of Acherus (quest 12641).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 && control.HasControl)
+        {
+            MoveSetActiveMover setMover = new MoveSetActiveMover();
+            setMover.MoverGUID = control.Guid;
+            SendPacketToClient(setMover);
+        }
     }
 
     [PacketHandler(Opcode.MSG_MOVE_TELEPORT_ACK)]
@@ -117,8 +129,20 @@ public partial class WorldClient
         moveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
         moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
         moveInfo.ValidateMovementInfo();
-        teleport.Position = moveInfo.Position;
-        teleport.Orientation = moveInfo.Orientation;
+        // A mover riding something expects deck-relative Pos/Facing, not world coords:
+        // Unit::SendTeleportPacket runs the position through CalculatePassengerOffset
+        // before filling MoveTeleport. Sending world coords makes the client add them
+        // to the transport's own position and strands the player off the map.
+        if (moveInfo.TransportGuid != default)
+        {
+            teleport.Position = moveInfo.TransportOffset;
+            teleport.Orientation = moveInfo.TransportOrientation;
+        }
+        else
+        {
+            teleport.Position = moveInfo.Position;
+            teleport.Orientation = moveInfo.Orientation;
+        }
         teleport.TransportGUID = moveInfo.TransportGuid;
         if (moveInfo.TransportSeat > 0)
         {
@@ -140,6 +164,26 @@ public partial class WorldClient
         TransferPending transfer = new TransferPending();
         transfer.MapID = GetSession().GameState.PendingTransferMapId = packet.ReadUInt32();
         transfer.OldMapPosition = Vector3.Zero;
+
+        // A map change driven by a transport carries the transport's entry and the map it
+        // is leaving (AzerothCore Player.cpp:1609-1613). Without it the modern client
+        // treats this as an ordinary teleport, so it detaches the player from the deck and
+        // they arrive in freefall.
+        if (packet.CanRead(8))
+        {
+            transfer.Ship = new TransferPending.ShipTransferPending
+            {
+                Id = packet.ReadUInt32(),
+                OriginMapID = packet.ReadInt32(),
+            };
+            GetSession().GameState.TransferPendingShipEntry = transfer.Ship.Id;
+            Log.Print(LogType.Trace,
+                $"[Transport] SMSG_TRANSFER_PENDING on transport entry={transfer.Ship.Id} " +
+                $"fromMap={transfer.Ship.OriginMapID} toMap={transfer.MapID}");
+        }
+        else
+            GetSession().GameState.TransferPendingShipEntry = 0;
+
         SendPacketToClient(transfer);
         GetSession().GameState.IsFirstEnterWorld = false;
         GetSession().GameState.IsWaitingForNewWorld = true;
@@ -189,6 +233,16 @@ public partial class WorldClient
         {
             GetSession().GameState.IsWaitingForNewWorld = false;
             GetSession().GameState.IsWaitingForWorldPortAck = true;
+
+            // SMSG_NEW_WORLD tears down the client's entire world model, the player object
+            // included, and the server re-sends a CreateObject for everything on the new map.
+            // ClientKnownGuids has to follow or it stays stale across the transition: the
+            // Values filter would then forward deltas for objects the client no longer has,
+            // which come straight back as CMSG_OBJECT_UPDATE_FAILED. Observed as a player
+            // Values sent in the gap between the teleport and the re-create.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+                GetSession().GameState.ClientKnownGuids.Clear();
+
             SendPacketToClient(teleport);
             if (teleport.MapID > 1)
             {
@@ -198,12 +252,17 @@ public partial class WorldClient
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                     SendPacketToClient(new TimeSyncRequest());
-
-                ResumeToken resume = new();
-                resume.SequenceIndex = 3;
-                resume.Reason = 1;
-                SendPacketToClient(resume);
             }
+
+            // HandleTransferPending sends a SuspendToken for every transfer, so the resume
+            // has to be unconditional or the client stays suspended. It used to be nested
+            // in the MapID > 1 branch, which left the two continents unbalanced: riding a
+            // zeppelin to Northrend (571) arrived fine while the return trip to Tirisfal
+            // (0), and Orgrimmar (1), dropped the player through the deck on arrival.
+            ResumeToken resume = new();
+            resume.SequenceIndex = 3;
+            resume.Reason = 1;
+            SendPacketToClient(resume);
 
             WorldServerInfo info = new();
             if (teleport.MapID > 1)
@@ -583,6 +642,15 @@ public partial class WorldClient
                 $"orient={moveSpline.FinalOrientation:F3} faceGuid=0x{moveSpline.FinalFacingGuid.Low:X}");
 
         MonsterMove monsterMove = new MonsterMove(guid, moveSpline);
+
+        // Monster-moves are forwarded unconditionally. A rate limit used to live here, on the
+        // theory that mob-patrol volume exhausted the V3_4_3 client's per-move allocation
+        // budget. Dropping splines is not a safe trade: the client keeps extrapolating the
+        // last spline it received, so a dropped update renders a *wrong* trajectory rather
+        // than a slightly stale one — visible as units sliding past patrol endpoints, and as
+        // melee targets becoming untrackable. SMSG_MONSTER_MOVE also carries any server-driven
+        // spline, not just creatures (AzerothCore's MoveSplineInit takes a Unit*), so bots and
+        // charge/knockback on real players went through the same limiter.
         SendPacketToClient(monsterMove);
 
         if (isTaxiFlight)

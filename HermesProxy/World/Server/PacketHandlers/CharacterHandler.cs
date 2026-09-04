@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using Framework.Constants;
 using Framework.Logging;
@@ -19,6 +20,23 @@ public partial class WorldSocket
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_ENUM_CHARACTERS);
         SendPacketToServer(packet);
+    }
+
+    [PacketHandler(Opcode.CMSG_REORDER_CHARACTERS)]
+    void HandleReorderCharacters(ReorderCharacters reorder)
+    {
+        var realm = GetSession().Realm;
+        if (realm == null || reorder.Entries.Length == 0)
+            return;
+
+        var incoming = new List<CharacterListSlot>(reorder.Entries.Length);
+        foreach (var entry in reorder.Entries)
+            incoming.Add(new CharacterListSlot(entry.PlayerGuid.Low, entry.NewPosition));
+        var merged = CharacterListOrder.Merge(
+            GetSession().AccountMetaDataMgr.LoadCharacterListOrder(realm.Name),
+            incoming);
+        GetSession().AccountMetaDataMgr.SaveCharacterListOrder(realm.Name, merged);
+        Log.Print(LogType.Debug, $"[CharEnum] saved list order count={merged.Count} incoming={incoming.Count} pos=[{string.Join(",", merged.ConvertAll(s => s.ListPosition.ToString()))}]");
     }
 
     [PacketHandler(Opcode.CMSG_GET_ACCOUNT_CHARACTER_LIST)]
@@ -62,6 +80,11 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_CREATE_CHARACTER)]
     void HandleCreateCharacter(CreateCharacter charCreate)
     {
+        // Cache the requested name so HandleCreateChar can resolve the new char's
+        // GUID via an internal CMSG_CHAR_ENUM and stamp it into SMSG_CREATE_CHAR
+        // (V3_4_3 client uses that GUID for auto-select on the next char list).
+        GetSession().GameState.PendingCreateCharName = charCreate.CreateInfo.Name;
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CREATE_CHARACTER);
         packet.WriteCString(charCreate.CreateInfo.Name);
         packet.WriteUInt8((byte)charCreate.CreateInfo.RaceId);
@@ -89,7 +112,14 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_LOADING_SCREEN_NOTIFY)]
     void HandleLoadScreen(LoadingScreenNotify loadingScreenNotify)
     {
-        if (loadingScreenNotify.MapID >= 0)
+        // Authoritative map comes from SMSG_LOGIN_VERIFY_WORLD / SMSG_NEW_WORLD.
+        // The 3.4.3 client also sends this CMSG when the loading screen hides:
+        // MapID=0xFFFFFFFF (cinematic) or MapID=0 + Showing=false (mid-BG relog).
+        // Storing either writes UPDATE_OBJECT.MapID=0/65535 and the client
+        // drops Values (frozen HP, broken walk). Only keep a real map while showing.
+        if (loadingScreenNotify.Showing
+            && loadingScreenNotify.MapID != 0
+            && loadingScreenNotify.MapID != 0xFFFFFFFFu)
             GetSession().GameState.CurrentMapId = loadingScreenNotify.MapID;
     }
 
@@ -125,6 +155,7 @@ public partial class WorldSocket
         if (!GetSession().GameState.CachedPlayers.TryGetValue(playerLogin.Guid, out var selectedChar))
         {
             Log.Print(LogType.Error, $"Player tried to log in with unknown char id: {playerLogin.Guid}");
+            AbortLogin(LoginFailureReason.NoCharacter);
             return;
         }
 
@@ -132,20 +163,49 @@ public partial class WorldSocket
         if (realm == null)
         {
             Log.Print(LogType.Error, $"Player tried to log in to unknown realm id: {GetSession().RealmId}");
+            AbortLogin(LoginFailureReason.NoWorld);
             return;
         }
 
         GetSession().AccountMetaDataMgr.SaveLastSelectedCharacter(realm.Name, selectedChar.Name!, playerLogin.Guid.Low, Time.UnixTime);
+        GetSession().GameState.CollectionFavorites ??= GetSession().AccountMetaDataMgr.LoadCollectionFavorites();
 
         if (GetSession().AuthClient != null)
             GetSession().AuthClient.Disconnect();
 
-        SendConnectToInstance(ConnectToSerial.WorldAttempt1);
-        GetSession().GameState.IsConnectedToInstance = true;
+        var ownCharacter = GetSession().GameState.OwnCharacters.FirstOrDefault(x => x.CharacterGuid == playerLogin.Guid);
+        if (ownCharacter == null)
+        {
+            Log.Print(LogType.Error, $"Player tried to log in with a char missing from the enumerated list: {playerLogin.Guid}");
+            AbortLogin(LoginFailureReason.NoCharacter);
+            return;
+        }
+
+        // All GameState must be published BEFORE the client is told to open the instance
+        // connection. The instance socket runs on its own network thread and the client
+        // starts pushing packets (CMSG_SET_ACTION_BAR_TOGGLES first) the moment it is up,
+        // so anything set after SendConnectToInstance is a live race. That race crashed
+        // the proxy with a NullReferenceException on every enter-world attempt.
         GetSession().GameState.IsFirstEnterWorld = true;
         GetSession().GameState.CurrentPlayerGuid = playerLogin.Guid;
-        GetSession().GameState.CurrentPlayerInfo = GetSession().GameState.OwnCharacters.Single(x => x.CharacterGuid == playerLogin.Guid);
+        GetSession().GameState.CurrentPlayerInfo = ownCharacter;
         GetSession().GameState.CurrentPlayerStorage.LoadCurrentPlayer();
+
+        // V3_4_3-only: DKs need rune state in ActivePlayerData CREATE. Without it
+        // the client starts up believing all 6 runes are on cooldown and refuses to
+        // send rune-cost CMSG_CAST_SPELL until a SpellGo proves otherwise. SMSG_RESYNC_RUNES
+        // from the legacy server later overwrites this default with authoritative values.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
+            GetSession().GameState.CurrentPlayerInfo!.ClassId == Class.Deathknight)
+        {
+            GetSession().GameState.RuneState = new RuneStateData();
+        }
+
+        Log.Print(LogType.Server,
+            $"[Login] entering world as '{ownCharacter.Name}' ({ownCharacter.RaceId} {ownCharacter.ClassId} lvl {ownCharacter.Level}) " +
+            $"guid={playerLogin.Guid} realm='{realm.Name}': state published, opening instance connection");
+        SendConnectToInstance(ConnectToSerial.WorldAttempt1);
+        GetSession().GameState.IsConnectedToInstance = true;
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PLAYER_LOGIN);
         packet.WriteGuid(playerLogin.Guid.To64());
@@ -202,16 +262,96 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_SET_ACTION_BUTTON)]
     void HandleSetActionButton(SetActionButton button)
     {
+        // Legacy 3.3.5a CMSG_SET_ACTION_BUTTON wire format (per mangos-wotlk
+        // Player.cpp + WPP V3_4_0_45166 ActionBarHandler.cs:12-19):
+        //   byte 0   = button index (uint8)
+        //   bytes 1-4 = packed uint32 (low 24 bits = action ID, high 8 bits = type)
+        // Total: 5 bytes.
+        //
+        // The CLIENT-side wire format differs by version:
+        //   - V1_14 / V2_5 (per WPP V1_13_2 ActionBarHandler.cs): two
+        //     INDEPENDENT fields — Int16 Action + Int16 Type + Byte Slot.
+        //     SetActionButton.Read() reads them as such; we just repack the
+        //     byte-shifted legacy form.
+        //   - V3_4_3 (per WPP V3_4_0_45166): Int32 packed (low 24 = action,
+        //     high 8 = ActionButtonType) + Byte Slot. SetActionButton.Read()
+        //     splits that int32 across two uint16 fields (Action = low 16,
+        //     Type = high 16 = (action_high8 | (type<<8))), so the V3_4_3
+        //     branch must recombine the bits.
+        //
+        // Picking the wrong branch silently miscoded macros/items/mounts/
+        // equipment-sets/companions as SPELLs with truncated IDs — observed
+        // crashing the V3_4_3 client when the resulting bogus slot was
+        // rendered on a side bar.
+        ushort actionLow16 = button.Action;
+        ushort typeHi16    = button.Type;
+        uint actionReal;
+        byte typeReal;
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            actionReal = (uint)actionLow16 | (((uint)typeHi16 & 0xFFu) << 16);
+            typeReal   = (byte)((typeHi16 >> 8) & 0xFFu);
+        }
+        else
+        {
+            // V1_14 / V2_5 / pre-V3_4_3: independent uint16 fields.
+            actionReal = (uint)actionLow16;
+            typeReal   = (byte)(typeHi16 & 0xFFu);
+        }
+        uint packed = (actionReal & 0x00FFFFFFu) | ((uint)typeReal << 24);
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_ACTION_BUTTON);
         packet.WriteUInt8(button.Index);
-        packet.WriteUInt16(button.Action);
-        packet.WriteUInt16(button.Type);
+        packet.WriteUInt32(packed);
         SendPacketToServer(packet);
+
+        Log.Print(LogType.Debug,
+            $"[V343Trace][SaveButton] modern→legacy idx={button.Index} ({DescribeActionButtonSlot(button.Index)}) " +
+            $"wire(action=0x{actionLow16:X4} type=0x{typeHi16:X4}) build={ModernVersion.Build} → " +
+            $"actionReal={actionReal} typeReal=0x{typeReal:X2} ({DescribeActionButtonType(typeReal)}) " +
+            $"packedLE=0x{packed:X8}");
+
+        // Mark a 10-second watch window so SendPacket dumps every SMSG that
+        // follows. The client crashes ~6s after a problematic CMSG_SET_ACTION_BUTTON
+        // and we want to know exactly which SMSG it choked on.
+        GetSession().RealmSocket?.MarkActionButtonWatchWindow();
     }
+
+    // 3.3.5a action-button slot mapping (idx → "which bar"). Helps spot
+    // off-by-bar issues and matches the labels the user sees in Options.
+    private static string DescribeActionButtonSlot(byte idx) => idx switch
+    {
+        < 12  => $"MainBar btn{idx + 1}",
+        < 24  => $"BonusBar btn{idx - 11}",
+        < 36  => $"MultiBarRight (Bar 4) btn{idx - 23}",
+        < 48  => $"MultiBarLeft (Bar 5) btn{idx - 35}",
+        < 60  => $"MultiBarBottomRight (Bar 3) btn{idx - 47}",
+        < 72  => $"MultiBarBottomLeft (Bar 2) btn{idx - 59}",
+        < 84  => $"PetBar/Bonus2 btn{idx - 71}",
+        < 144 => $"slot {idx}",
+        _     => $"OOB slot {idx}"
+    };
+
+    private static string DescribeActionButtonType(byte t) => t switch
+    {
+        0x00 => "SPELL",
+        0x01 => "C",
+        0x20 => "EQSET",
+        0x30 => "DROPDOWN",
+        0x40 => "MACRO",
+        0x50 => "CMACRO",
+        0x60 => "MOUNT",
+        0x80 => "ITEM",
+        0x90 => "COMPANION",
+        _    => $"unknown 0x{t:X2}"
+    };
 
     [PacketHandler(Opcode.CMSG_SET_ACTION_BAR_TOGGLES)]
     void HandleSetActionBarToggles(SetActionBarToggles bars)
     {
+        Log.Print(LogType.Trace,
+            $"[ActionBarTrace] CMSG_SET_ACTION_BAR_TOGGLES mask=0x{bars.Mask:X2} ({Convert.ToString(bars.Mask, 2).PadLeft(8, '0')}b) → forwarding to legacy server");
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_ACTION_BAR_TOGGLES);
         packet.WriteUInt8(bars.Mask);
         SendPacketToServer(packet);

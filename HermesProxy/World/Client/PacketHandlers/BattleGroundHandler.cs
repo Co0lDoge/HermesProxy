@@ -1,5 +1,6 @@
 ﻿using Framework.Logging;
 using HermesProxy.Enums;
+using HermesProxy.World;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -77,9 +78,10 @@ public partial class WorldClient
             int instanceId = packet.ReadInt32();
             bglist.BattlefieldInstances.Add(instanceId);
         }
+        Log.Print(LogType.Debug, $"[BG] SMSG_BATTLEFIELD_LIST (WotLK): BattlemasterListID={bglist.BattlemasterListID} guid={bglist.BattlemasterGuid} MinLevel={bglist.MinLevel} MaxLevel={bglist.MaxLevel} PvpAnywhere={bglist.PvpAnywhere} HasRandomWinToday={bglist.HasRandomWinToday} instances={bglist.BattlefieldInstances.Count} [{string.Join(",", bglist.BattlefieldInstances)}].");
         SendPacketToClient(bglist);
     }
-    
+
     [PacketHandler(Opcode.SMSG_BATTLEFIELD_STATUS, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
     void HandleBattlefieldStatusVanilla(WorldPacket packet)
     {
@@ -167,7 +169,7 @@ public partial class WorldClient
             failed.Reason = 30;
             failed.BattlefieldListId = GameData.GetBattlegroundIdFromMapId(queuedMapId);
             SendPacketToClient(failed);
-            GetSession().GameState.BattleFieldQueueTimes.Remove(hdr.Ticket.Id);
+            GetSession().GameState.RemoveBattleFieldQueue(hdr.Ticket.Id);
         }
         GetSession().GameState.StoreBattleFieldQueueType(hdr.Ticket.Id, mapId);
     }
@@ -182,9 +184,11 @@ public partial class WorldClient
         hdr.Ticket.Type = RideType.Battlegrounds;
 
         hdr.ArenaTeamSize = packet.ReadUInt8();
-        packet.ReadUInt8(); // unk
+        byte bracketId = packet.ReadUInt8(); // bracket id, echoed back on PORT/LEAVE
         uint battlefieldListId = packet.ReadUInt32();
         packet.ReadUInt16(); // 0x1F90
+
+        Log.Print(LogType.Debug, $"[BG] SMSG_BATTLEFIELD_STATUS (TBC+): ticketId={hdr.Ticket.Id} battlefieldListId={battlefieldListId} arenaTeamSize={hdr.ArenaTeamSize} (listId=0 means the legacy server reports no/removed BG -> client sees FAILED).");
 
         if (battlefieldListId != 0)
         {
@@ -254,9 +258,14 @@ public partial class WorldClient
             failed.Reason = 30;
             failed.BattlefieldListId = GetSession().GameState.GetBattleFieldQueueType(hdr.Ticket.Id);
             SendPacketToClient(failed);
-            GetSession().GameState.BattleFieldQueueTimes.Remove(hdr.Ticket.Id);
+            GetSession().GameState.RemoveBattleFieldQueue(hdr.Ticket.Id);
         }
         GetSession().GameState.StoreBattleFieldQueueType(hdr.Ticket.Id, battlefieldListId);
+        if (battlefieldListId != 0)
+        {
+            GetSession().GameState.StoreBattleFieldQueueArenaType(hdr.Ticket.Id, hdr.ArenaTeamSize);
+            GetSession().GameState.StoreBattleFieldQueueBracketId(hdr.Ticket.Id, bracketId);
+        }
     }
 
     [PacketHandler(Opcode.MSG_PVP_LOG_DATA, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
@@ -282,20 +291,8 @@ public partial class WorldClient
             for (int j = 0; j < statsCount; j++)
                 player.Stats.Add(packet.ReadUInt32());
 
-            PlayerCache? cache;
-            if (GetSession().GameState.CachedPlayers.TryGetValue(player.PlayerGUID, out cache))
-            {
-                player.Sex = cache.SexId;
-                player.PlayerRace = cache.RaceId;
-                player.PlayerClass = cache.ClassId;
-                player.Faction = GameData.IsAllianceRace(cache.RaceId);
-            }
-            else
-            {
-                player.Sex = Gender.Male;
-                player.PlayerRace = Race.Human;
-                player.PlayerClass = Class.Warrior;
-            }
+            FillBgScoreAppearance(player, setFactionFromRace: true);
+            pvp.PlayerCount[player.Faction ? 1 : 0]++;
             pvp.Statistics.Add(player);
         }
         SendPacketToClient(pvp);
@@ -355,25 +352,41 @@ public partial class WorldClient
             for (int j = 0; j < statsCount; j++)
                 player.Stats.Add(packet.ReadUInt32());
 
-            PlayerCache? cache;
-            if (GetSession().GameState.CachedPlayers.TryGetValue(player.PlayerGUID, out cache))
-            {
-                player.Sex = cache.SexId;
-                player.PlayerRace = cache.RaceId;
-                player.PlayerClass = cache.ClassId;
-
-                if (pvp.ArenaTeams == null)
-                    player.Faction = GameData.IsAllianceRace(cache.RaceId);
-            }
-            else
-            {
-                player.Sex = Gender.Male;
-                player.PlayerRace = Race.Human;
-                player.PlayerClass = Class.Warrior;
-            }
+            FillBgScoreAppearance(player, setFactionFromRace: pvp.ArenaTeams == null);
+            if (pvp.ArenaTeams == null)
+                pvp.PlayerCount[player.Faction ? 1 : 0]++;
             pvp.Statistics.Add(player);
         }
         SendPacketToClient(pvp);
+    }
+
+    void FillBgScoreAppearance(PVPMatchPlayerStatistics player, bool setFactionFromRace)
+    {
+        if (GetSession().GameState.TryGetCachedPlayerAppearance(player.PlayerGUID, out var race, out var classId, out var sex))
+        {
+            player.Sex = sex;
+            player.PlayerRace = race;
+            player.PlayerClass = classId;
+            if (setFactionFromRace)
+                player.Faction = GameData.IsAllianceRace(race);
+            return;
+        }
+
+        player.Sex = Gender.Male;
+        player.PlayerRace = Race.Human;
+        player.PlayerClass = Class.Warrior;
+        if (setFactionFromRace)
+            player.Faction = InferBgFactionFromRaid(player.PlayerGUID);
+    }
+
+    bool InferBgFactionFromRaid(WowGuid128 guid)
+    {
+        var bgRaid = GetSession().GameState.CurrentGroups[1];
+        if (bgRaid?.PlayerList == null)
+            return false;
+        bool inOurRaid = bgRaid.PlayerList.Exists(m => m.GUID == guid);
+        bool weAreAlliance = GetSession().GameState.IsAlliancePlayer(GetSession().GameState.CurrentPlayerGuid);
+        return inOurRaid ? weAreAlliance : !weAreAlliance;
     }
 
     BattlegroundPlayerPosition ReadBattlegroundPlayerPosition(WorldPacket packet)
@@ -447,6 +460,47 @@ public partial class WorldClient
             GetSession().GameState.FlagCarrierGuids.Add(position.Guid);
         }
         SendPacketToClient(bglist);
+    }
+
+    // Legacy 0x2E8 is SMSG_GROUP_JOINED_BATTLEGROUND (int32 result). The 3.3.5
+    // table names it SMSG_BATTLEFIELD_STATUS_QUEUED. Rated join-as-group failures
+    // only send this packet, so dropping it made Join as Group look like a no-op.
+    [PacketHandler(Opcode.SMSG_BATTLEFIELD_STATUS_QUEUED)]
+    void HandleGroupJoinedBattleground(WorldPacket packet)
+    {
+        int result = packet.ReadInt32();
+        WowGuid128? playerGuid = null;
+        if (packet.CanRead())
+            playerGuid = packet.ReadGuid().To128(GetSession().GameState);
+
+        Log.Print(LogType.Debug, $"[BG] SMSG_GROUP_JOINED_BATTLEGROUND: result={result} hasGuid={playerGuid.HasValue}.");
+
+        if (result > 0 || result == -1)
+            return;
+
+        string? playerName = playerGuid.HasValue
+            ? GetSession().GameState.GetPlayerName(playerGuid.Value)
+            : null;
+        string? text = BattlefieldQueueArenaType.JoinErrorText(result, playerName);
+        if (!string.IsNullOrEmpty(text))
+        {
+            PrintNotification notify = new PrintNotification();
+            notify.NotifyText = text;
+            SendPacketToClient(notify);
+        }
+
+        BattlefieldStatusFailed failed = new BattlefieldStatusFailed();
+        failed.Ticket.Id = 1;
+        failed.Ticket.RequesterGuid = GetSession().GameState.CurrentPlayerGuid;
+        failed.Ticket.Time = GetSession().GameState.GetBattleFieldQueueTime(failed.Ticket.Id);
+        failed.Ticket.Type = RideType.Battlegrounds;
+        failed.BattlefieldListId = GetSession().GameState.GetBattleFieldQueueType(failed.Ticket.Id);
+        if (failed.BattlefieldListId == 0)
+            failed.BattlefieldListId = 6; // BATTLEGROUND_AA
+        failed.Reason = BattlefieldQueueArenaType.ToModernJoinError(result);
+        if (playerGuid.HasValue)
+            failed.ClientID = playerGuid.Value;
+        SendPacketToClient(failed);
     }
 
     [PacketHandler(Opcode.SMSG_BATTLEGROUND_PLAYER_JOINED)]

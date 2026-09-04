@@ -1,5 +1,6 @@
 ﻿using Framework;
 using HermesProxy.Enums;
+using HermesProxy.World.Chat;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -209,6 +210,11 @@ public partial class WorldClient
 
         uint textLength = packet.ReadUInt32();
         string text = packet.ReadString(textLength);
+        // See HandleServerChatMessageWotLK — legacy servers include the trailing
+        // NUL byte inside textLength; modern V3_4_3 SMSG_CHAT carries
+        // non-NUL-terminated strings, so the trailing \0 must be trimmed before
+        // we forward.
+        text = text.TrimEnd('\0');
         var chatTag = (ChatTag)packet.ReadUInt8();
         var chatFlags = chatTag.CastEnum<ChatFlags>();
 
@@ -226,6 +232,11 @@ public partial class WorldClient
         string addonPrefix = "";
         if (!ChatPkt.CheckAddonPrefix(GetSession().GameState.AddonPrefixes, ref language, ref text, ref addonPrefix))
             return;
+
+        // No-op until a vanilla codec is registered. Counterpart to the outbound rewrite in
+        // SendMessageChatVanilla. Issue 139.
+        if (addonPrefix.Length == 0)
+            text = ItemLinkTranslator.LegacyToModern(text);
 
         ChatMessageTypeModern chatTypeModern = chatType.CastEnum<ChatMessageTypeModern>();
         ChatPkt chat = new ChatPkt(GetSession(), chatTypeModern, text, language, sender, senderName, receiver, "", channelName, chatFlags, addonPrefix);
@@ -331,6 +342,13 @@ public partial class WorldClient
 
         uint textLength = packet.ReadUInt32();
         string text = packet.ReadString(textLength);
+        // Legacy 3.3.5a SMSG_CHAT / SMSG_GM_MESSAGECHAT include the trailing
+        // NUL byte inside textLength. Modern V3_4_3 SMSG_CHAT carries a
+        // non-NUL-terminated string — when we forwarded "gooday\0" (textLen=7),
+        // the V3_4_3 client either rejected the packet or rendered nothing,
+        // producing the "chat scrolls but message invisible" symptom for
+        // SAY/GM/System messages and the empty-emote fallback for /e.
+        text = text.TrimEnd('\0');
         var chatFlags = (ChatFlags)packet.ReadUInt8();
 
         if (LegacyVersion.InVersion(ClientVersionBuild.V2_0_1_6180, ClientVersionBuild.V3_0_2_9056) &&
@@ -360,18 +378,38 @@ public partial class WorldClient
         if (!ChatPkt.CheckAddonPrefix(GetSession().GameState.AddonPrefixes, ref language, ref text, ref addonPrefix))
             return;
 
+        // Counterpart to the outbound rewrite: the server broadcasts links in the legacy
+        // layout, where the random-property id is signed and sits at a different index than
+        // the modern client reads. Without this a suffix lands in a gem slot and the tooltip
+        // renders the base item. Addon payloads are left untouched.
+        if (addonPrefix.Length == 0)
+            text = ItemLinkTranslator.LegacyToModern(text);
+
         ChatMessageTypeModern chatTypeModern = chatType.CastEnum<ChatMessageTypeModern>();
         ChatPkt chat = new ChatPkt(GetSession(), chatTypeModern, text, language, sender, senderName, receiver, receiverName, channelName, chatFlags, addonPrefix, achievementId);
+
+        var preview = text.Length > 30 ? text.Substring(0, 30) + "…" : text;
+        Log.Print(LogType.Trace,
+            $"[ChatTrace] <- legacy SMSG_CHAT (WotLK): chatType={chatType} -> modern={chatTypeModern} " +
+            $"lang={language} sender={sender} senderName=\"{senderName}\" receiver={receiver} " +
+            $"channel=\"{channelName}\" textLen={text.Length} preview=\"{preview}\"");
+
         SendPacketToClient(chat);
     }
 
     public void SendMessageChatVanilla(ChatMessageTypeVanilla type, uint lang, string msg, string channel, string to)
     {
+        // No-op until a vanilla codec is registered — see ItemLinkTranslator.LegacyCodec.
+        // Wired here so enabling that era is a one-line change there rather than a hunt
+        // through the chat handlers. Issue 139.
+        if (lang != (uint)Language.Addon)
+            msg = ItemLinkTranslator.ModernToLegacy(msg);
+
         if (HandleHermesInternalChatCommand(msg))
         {
             return; // was handled by us
         }
-        
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_MESSAGECHAT);
         packet.WriteUInt32((uint)type);
         packet.WriteUInt32(lang);
@@ -443,8 +481,23 @@ public partial class WorldClient
 
     public void SendMessageChatWotLK(ChatMessageTypeWotLK type, uint lang, string msg, string channel, string to)
     {
+        // Modern item links use a field layout the legacy chat validator rejects, which makes
+        // it drop the entire message without a reply. Addon traffic is exempt on the server
+        // side and carries arbitrary payloads, so it is left untouched. See issue 139.
+        //
+        // Rewritten before the trace below so the log shows what is actually put on the wire.
+        // Chat commands never contain item links, so the internal-command check is unaffected.
+        if (lang != (uint)Language.Addon)
+            msg = ItemLinkTranslator.ModernToLegacy(msg);
+
+        var preview = msg.Length > 30 ? msg.Substring(0, 30) + "…" : msg;
+        Log.Print(LogType.Trace,
+            $"[ChatTrace] -> legacy CMSG_MESSAGECHAT (WotLK): type={type} lang={lang} " +
+            $"textLen={msg.Length} channel=\"{channel}\" to=\"{to}\" preview=\"{preview}\"");
+
         if (HandleHermesInternalChatCommand(msg))
         {
+            Log.Print(LogType.Trace, $"[ChatTrace] handled internally as Hermes command, no legacy send");
             return; // was handled by us
         }
 

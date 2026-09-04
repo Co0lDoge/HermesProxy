@@ -15,11 +15,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using System;
 using System.Text;
 using HermesProxy.World.Objects;
 using Framework.Constants;
+using Framework.Logging;
 using System.Collections.Generic;
 using Framework.IO;
 using Framework.GameMath;
@@ -151,13 +153,42 @@ public class QueryPlayerNames : ClientPacket
 
 public class QueryPlayerNameResponse : ServerPacket, ISpanWritable
 {
-    public QueryPlayerNameResponse() : base(Opcode.SMSG_QUERY_PLAYER_NAME_RESPONSE)
+    // V3_4_3 dropped the singular SMSG_QUERY_PLAYER_NAME_RESPONSE opcode and
+    // expects everything via SMSG_QUERY_PLAYER_NAMES_RESPONSE (plural, with a
+    // Count + array). Per WPP V3_4_0_45166 QueryHandler.cs:517 the per-entry
+    // shape is { byte Result, PackedGuid128 Player, bit HasPlayerGuidLookupData,
+    // bit HasNameCacheUnused920, FlushBits, optional PlayerGuidLookupData }.
+    // Without this branch the packet was sent with no V3_4_3 wire opcode at
+    // all, the modern client never resolved the player's name, and the
+    // character panel + chat sender both rendered "Unknown".
+    public QueryPlayerNameResponse() : base(GetResponseOpcode())
     {
         Data = new PlayerGuidLookupData();
     }
 
+    private static Opcode GetResponseOpcode()
+    {
+        return ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            ? Opcode.SMSG_QUERY_PLAYER_NAMES_RESPONSE
+            : Opcode.SMSG_QUERY_PLAYER_NAME_RESPONSE;
+    }
+
     public override void Write()
     {
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            _worldPacket.WriteUInt32(1);   // Count: we always carry exactly one
+                                           // legacy SMSG_NAME_QUERY_RESPONSE.
+            _worldPacket.WriteUInt8(Result);
+            _worldPacket.WritePackedGuid128(Player);
+            _worldPacket.WriteBit(Result == 0);   // HasPlayerGuidLookupData
+            _worldPacket.WriteBit(false);          // HasNameCacheUnused920
+            _worldPacket.FlushBits();
+            if (Result == 0)
+                Data.Write(_worldPacket);
+            return;
+        }
+
         _worldPacket.WriteInt8((sbyte)Result);
         _worldPacket.WritePackedGuid128(Player);
 
@@ -166,42 +197,62 @@ public class QueryPlayerNameResponse : ServerPacket, ISpanWritable
     }
 
     // Result byte(1) + GUID(18) + Data: bits(6) + 5 declined names(120) + 3 GUIDs(54) + ulong(8) + uint(4) + 5 bytes(5) + name(24) = 240 bytes max
-    public int MaxSize => 1 + PackedGuidHelper.MaxPackedGuid128Size + 6 +
+    // V3_4_3 adds Count(4) + 1 byte for the two extra bits, all within margin.
+    public int MaxSize => 4 + 1 + PackedGuidHelper.MaxPackedGuid128Size + 6 +
         (PlayerConst.MaxDeclinedNameCases * GameLimits.MaxPlayerNameBytes) +
         PackedGuidHelper.MaxPackedGuid128Size * 3 + 8 + 4 + 5 + GameLimits.MaxPlayerNameBytes;
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
+
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            writer.WriteUInt32(1);
+            writer.WriteUInt8(Result);
+            writer.WritePackedGuid128(Player.Low, Player.High);
+            writer.WriteBit(Result == 0);
+            writer.WriteBit(false);
+            writer.FlushBits();
+
+            if (Result == 0)
+                WritePlayerGuidLookupDataInline(ref writer);
+
+            return writer.Position;
+        }
+
         writer.WriteInt8((sbyte)Result);
         writer.WritePackedGuid128(Player.Low, Player.High);
 
         if (Result == 0)
-        {
-            // Inline PlayerGuidLookupData.Write
-            writer.WriteBit(Data.IsDeleted);
-            writer.WriteBits((uint)Encoding.UTF8.GetByteCount(Data.Name), 6);
+            WritePlayerGuidLookupDataInline(ref writer);
 
-            for (byte i = 0; i < PlayerConst.MaxDeclinedNameCases; ++i)
-                writer.WriteBits((uint)Encoding.UTF8.GetByteCount(Data.DeclinedNames.name[i]), 7);
-
-            writer.FlushBits();
-            for (byte i = 0; i < PlayerConst.MaxDeclinedNameCases; ++i)
-                writer.WriteString(Data.DeclinedNames.name[i]);
-
-            writer.WritePackedGuid128(Data.AccountID.Low, Data.AccountID.High);
-            writer.WritePackedGuid128(Data.BnetAccountID.Low, Data.BnetAccountID.High);
-            writer.WritePackedGuid128(Data.GuidActual.Low, Data.GuidActual.High);
-            writer.WriteUInt64(Data.GuildClubMemberID);
-            writer.WriteUInt32(Data.VirtualRealmAddress);
-            writer.WriteUInt8((byte)Data.RaceID);
-            writer.WriteUInt8((byte)Data.Sex);
-            writer.WriteUInt8((byte)Data.ClassID);
-            writer.WriteUInt8(Data.Level);
-            writer.WriteUInt8(Data.Unused915);
-            writer.WriteString(Data.Name);
-        }
         return writer.Position;
+    }
+
+    private void WritePlayerGuidLookupDataInline(ref SpanPacketWriter writer)
+    {
+        writer.WriteBit(Data.IsDeleted);
+        writer.WriteBits((uint)Encoding.UTF8.GetByteCount(Data.Name), 6);
+
+        for (byte i = 0; i < PlayerConst.MaxDeclinedNameCases; ++i)
+            writer.WriteBits((uint)Encoding.UTF8.GetByteCount(Data.DeclinedNames.name[i]), 7);
+
+        writer.FlushBits();
+        for (byte i = 0; i < PlayerConst.MaxDeclinedNameCases; ++i)
+            writer.WriteString(Data.DeclinedNames.name[i]);
+
+        writer.WritePackedGuid128(Data.AccountID.Low, Data.AccountID.High);
+        writer.WritePackedGuid128(Data.BnetAccountID.Low, Data.BnetAccountID.High);
+        writer.WritePackedGuid128(Data.GuidActual.Low, Data.GuidActual.High);
+        writer.WriteUInt64(Data.GuildClubMemberID);
+        writer.WriteUInt32(Data.VirtualRealmAddress);
+        writer.WriteUInt8((byte)Data.RaceID);
+        writer.WriteUInt8((byte)Data.Sex);
+        writer.WriteUInt8((byte)Data.ClassID);
+        writer.WriteUInt8(Data.Level);
+        writer.WriteUInt8(Data.Unused915);
+        writer.WriteString(Data.Name);
     }
 
     public WowGuid128 Player;
@@ -349,11 +400,30 @@ public class QueryQuestInfoResponse : ServerPacket
             _worldPacket.WriteUInt32(Info.RewardSkillLineID);
             _worldPacket.WriteUInt32(Info.RewardNumSkillUps);
 
-            _worldPacket.WriteUInt32(Info.PortraitGiver);
-            _worldPacket.WriteUInt32(Info.PortraitGiverMount);
-            _worldPacket.WriteUInt32(Info.PortraitTurnIn);
+            // V3_4_3 layout (fork QueryQuestInfoResponse:82-112): adds
+            // PortraitGiverModelSceneID between Mount and TurnIn, uses INT32 for
+            // portrait fields (instead of UINT32), promotes TimeAllowed from
+            // UINT32 to INT64, treats AllowableRaces as UINT64, and appends
+            // ManagedWorldStateID/QuestSessionBonus/QuestGiverCreatureID. Without
+            // these, the V3_4_3 client mis-parses the title-length bits at line
+            // ~113 of the writer, then reads garbage as a ConditionalQuestText
+            // length prefix → ~5 TB allocation crash (?AUConditionalQuestText@@).
+            bool isV343 = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261;
+            if (isV343)
+            {
+                _worldPacket.WriteInt32((int)Info.PortraitGiver);
+                _worldPacket.WriteInt32((int)Info.PortraitGiverMount);
+                _worldPacket.WriteInt32((int)Info.PortraitGiverModelSceneID);
+                _worldPacket.WriteInt32((int)Info.PortraitTurnIn);
+            }
+            else
+            {
+                _worldPacket.WriteUInt32(Info.PortraitGiver);
+                _worldPacket.WriteUInt32(Info.PortraitGiverMount);
+                _worldPacket.WriteUInt32(Info.PortraitTurnIn);
 
-            _worldPacket.WriteInt32(0); // Unk 2.5.2
+                _worldPacket.WriteInt32(0); // Unk 2.5.2
+            }
 
             for (uint i = 0; i < QuestConst.QuestRewardReputationsCount; ++i)
             {
@@ -374,13 +444,31 @@ public class QueryQuestInfoResponse : ServerPacket
             _worldPacket.WriteUInt32(Info.AcceptedSoundKitID);
             _worldPacket.WriteUInt32(Info.CompleteSoundKitID);
 
-            _worldPacket.WriteUInt32(Info.AreaGroupID);
-            _worldPacket.WriteUInt32(Info.TimeAllowed);
+            if (isV343)
+            {
+                _worldPacket.WriteInt32((int)Info.AreaGroupID);
+                _worldPacket.WriteInt64(Info.TimeAllowed);
+            }
+            else
+            {
+                _worldPacket.WriteUInt32(Info.AreaGroupID);
+                _worldPacket.WriteUInt32(Info.TimeAllowed);
+            }
 
             _worldPacket.WriteInt32(Info.Objectives.Count);
-            _worldPacket.WriteInt64(Info.AllowableRaces);
+            if (isV343)
+                _worldPacket.WriteUInt64((ulong)Info.AllowableRaces);
+            else
+                _worldPacket.WriteInt64(Info.AllowableRaces);
             _worldPacket.WriteInt32(Info.TreasurePickerID);
             _worldPacket.WriteInt32(Info.Expansion);
+
+            if (isV343)
+            {
+                _worldPacket.WriteInt32(Info.ManagedWorldStateID);
+                _worldPacket.WriteInt32(Info.QuestSessionBonus);
+                _worldPacket.WriteInt32((int)Info.QuestGiverCreatureID);
+            }
 
             _worldPacket.WriteBits(Info.LogTitle.GetByteCount(), 9);
             _worldPacket.WriteBits(Info.LogDescription.GetByteCount(), 12);
@@ -522,6 +610,17 @@ public class QueryCreatureResponse : ServerPacket
             foreach (var questItem in Stats.QuestItems)
                 _worldPacket.WriteUInt32(questItem);
         }
+
+        if (Allow)
+        {
+            Log.Print(LogType.Trace,
+                $"[CreatureQueryTrace][write] entry={CreatureID} allow=true packetBytes={_worldPacket.GetSize()} healthScalingExp={Stats.HealthScalingExpansion} reqExp={Stats.RequiredExpansion} creatureClass={Stats.Class} displays={Stats.Display.CreatureDisplay.Count} totalProb={Stats.Display.TotalProbability}");
+        }
+        else
+        {
+            Log.Print(LogType.Trace,
+                $"[CreatureQueryTrace][write] entry={CreatureID} allow=false packetBytes={_worldPacket.GetSize()}");
+        }
     }
 
     public bool Allow;
@@ -603,6 +702,20 @@ public class GameObjectStats
     public uint Type;
     public uint DisplayID;
     public int[] Data = new int[35];
+
+    /// <summary>
+    /// gameobject_template.data index of destructibleBuilding.DestructibleModelRec. Same slot
+    /// on 3.3.5a and 3.4.3.
+    /// </summary>
+    private const int DestructibleModelRecIndex = 18;
+
+    /// <summary>
+    /// DestructibleModelData.db2 id for a GAMEOBJECT_TYPE_DESTRUCTIBLE_BUILDING. The V3_4_3
+    /// client resolves the object's model through this record rather than through DisplayID,
+    /// and draws nothing without it — see UpdateHandler.SetDestructibleParentRotation and
+    /// issue #184. Meaningless for any other GameObject type.
+    /// </summary>
+    public int DestructibleModelRec => Data[DestructibleModelRecIndex];
     public float Size = 1;
     public List<uint> QuestItems = new();
     public uint ContentTuningId;
@@ -853,4 +966,38 @@ public class WhoEntry
     public string GuildName = "";
     public int AreaID;
     public bool IsGM;
+}
+
+class ItemTextQuery : ClientPacket
+{
+    public ItemTextQuery(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        Id = _worldPacket.ReadPackedGuid128();
+    }
+
+    public WowGuid128 Id = WowGuid128.Empty;
+}
+
+class QueryItemTextResponse : ServerPacket
+{
+    public QueryItemTextResponse() : base(Opcode.SMSG_QUERY_ITEM_TEXT_RESPONSE) { }
+
+    public override void Write()
+    {
+        _worldPacket.WriteBit(Valid);
+        _worldPacket.FlushBits();
+
+        // ItemTextCache is written unconditionally, even when Valid is false.
+        _worldPacket.WriteBits(Text.GetByteCount(), 13);
+        _worldPacket.FlushBits();
+        _worldPacket.WriteString(Text);
+
+        _worldPacket.WritePackedGuid128(Id);
+    }
+
+    public WowGuid128 Id = WowGuid128.Empty;
+    public bool Valid;
+    public string Text = string.Empty;
 }

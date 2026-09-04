@@ -28,18 +28,21 @@ public sealed class BnetRestApiSession : SSLSocket
     private readonly IOptions<LegacyServerOptions> _legacyServerOptions;
     private readonly IOptions<ProxyNetworkOptions> _networkOptions;
     private readonly IOptions<DiagnosticsOptions> _diagnosticsOptions;
+    private readonly IOptions<ThrottlingOptions> _throttlingOptions;
 
     public BnetRestApiSession(
         Socket socket,
         IOptions<ClientOptions> clientOptions,
         IOptions<LegacyServerOptions> legacyServerOptions,
         IOptions<ProxyNetworkOptions> networkOptions,
-        IOptions<DiagnosticsOptions> diagnosticsOptions) : base(socket)
+        IOptions<DiagnosticsOptions> diagnosticsOptions,
+        IOptions<ThrottlingOptions> throttlingOptions) : base(socket)
     {
         _clientOptions = clientOptions;
         _legacyServerOptions = legacyServerOptions;
         _networkOptions = networkOptions;
         _diagnosticsOptions = diagnosticsOptions;
+        _throttlingOptions = throttlingOptions;
     }
 
     public override void Accept()
@@ -91,7 +94,7 @@ public sealed class BnetRestApiSession : SSLSocket
         if (loginForm == null)
             return SendEmptyResponse(HttpCode.InternalServerError);
 
-        HermesProxy.GlobalSessionData globalSession = new(_clientOptions.Value, _legacyServerOptions.Value, _networkOptions.Value, _diagnosticsOptions.Value);
+        HermesProxy.GlobalSessionData globalSession = new(_clientOptions.Value, _legacyServerOptions.Value, _networkOptions.Value, _diagnosticsOptions.Value, _throttlingOptions.Value);
 
         // Format: "login/$platform/$build/$locale/"
         globalSession.OS = pathElements[1];

@@ -6,6 +6,7 @@ using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using static HermesProxy.World.Server.Packets.QueryPageTextResponse;
 
 namespace HermesProxy.World.Client;
@@ -28,6 +29,9 @@ public partial class WorldClient
         QueryQuestInfoResponse response = new QueryQuestInfoResponse();
         var id = packet.ReadEntry();
         response.QuestID = (uint)id.Key;
+        // The query is answered either way. Dropping it here keeps a masked or
+        // rejected reply from blocking every later retry for that quest.
+        GetSession().GameState.RequestedQuestTemplateIds.Remove(response.QuestID);
         if (id.Value) // entry is masked
         {
             response.Allow = false;
@@ -202,6 +206,7 @@ public partial class WorldClient
                 // Modern client reads ObjectiveProgress[StorageIndex], so a compacted index
                 // mis-points whenever the quest has a gap (e.g. Ferocitas 2459 — Mystic at column 1).
                 objective.StorageIndex = (sbyte)i;
+                objective.LegacyPoiIndex = (sbyte)i;
                 if (objectiveCounter <= i)
                     objectiveCounter = (sbyte)(i + 1);
                 objective.Type = isGo ? QuestObjectiveType.GameObject : QuestObjectiveType.Monster;
@@ -240,6 +245,9 @@ public partial class WorldClient
                 objective.QuestID = response.QuestID;
                 objective.Id = QuestObjective.QuestObjectiveCounter++;
                 objective.StorageIndex = objectiveCounter++;
+                // Legacy POI blobs address required items as column 4+N, never the
+                // compacted StorageIndex, so keep the raw column for the POI binder.
+                objective.LegacyPoiIndex = (sbyte)(4 + i);
                 objective.Type = QuestObjectiveType.Item;
                 objective.ObjectID = requiredItemID[i];
                 objective.Amount = requiredItemCount[i];
@@ -266,7 +274,29 @@ public partial class WorldClient
         quest.CompleteSoundKitID = 878;
 
         GameData.StoreQuestTemplate(response.QuestID, quest);
+
         SendPacketToClient(response);
+
+        bool inLog = false;
+        foreach (int logId in GetSession().GameState.QuestLogQuestIDs)
+        {
+            if (logId == (int)response.QuestID)
+            {
+                inLog = true;
+                break;
+            }
+        }
+        if (inLog)
+        {
+            WorldPacket poi = new WorldPacket(Opcode.CMSG_QUEST_POI_QUERY);
+            poi.WriteInt32(1);
+            poi.WriteInt32((int)response.QuestID);
+            SendPacketToServer(poi);
+        }
+
+        // A newly cached template can resolve item objectives that earlier loot could
+        // not match. The resync only emits credits whose count actually changed.
+        ResyncItemQuestCredits();
     }
 
     [PacketHandler(Opcode.SMSG_QUERY_CREATURE_RESPONSE)]
@@ -278,6 +308,8 @@ public partial class WorldClient
         if (id.Value) // entry is masked
         {
             response.Allow = false;
+            Log.Print(LogType.Trace,
+                $"[CreatureQueryTrace][resp] entry={response.CreatureID} allow=false (masked)");
             SendPacketToClient(response);
             return;
         }
@@ -316,7 +348,7 @@ public partial class WorldClient
         {
             uint displayId = packet.ReadUInt32();
             if (displayId != 0)
-                creature.Display.CreatureDisplay.Add(new CreatureXDisplay(displayId, 1, 0));
+                creature.Display.CreatureDisplay.Add(new CreatureXDisplay(displayId, 1, 100));
         }
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
@@ -348,11 +380,17 @@ public partial class WorldClient
         }
 
         // Placeholders
-        creature.Flags[0] |= 134217728;
         creature.MovementInfoID = 1693;
         creature.Class = 1;
 
         GameData.StoreCreatureTemplate(response.CreatureID, creature);
+
+        uint firstDisplayId = creature.Display.CreatureDisplay.Count > 0
+            ? creature.Display.CreatureDisplay[0].CreatureDisplayID
+            : 0;
+        Log.Print(LogType.Trace,
+            $"[CreatureQueryTrace][resp] entry={response.CreatureID} allow=true name=\"{creature.Name[0]}\" type={creature.Type} family={creature.Family} classif={creature.Classification} flags=0x{creature.Flags[0]:X8}/0x{creature.Flags[1]:X8} displays={creature.Display.CreatureDisplay.Count} firstDisplay={firstDisplayId} healthScalingExp={creature.HealthScalingExpansion} reqExp={creature.RequiredExpansion} creatureClass={creature.Class} movementInfo={creature.MovementInfoID}");
+
         SendPacketToClient(response);
     }
     [PacketHandler(Opcode.SMSG_QUERY_GAME_OBJECT_RESPONSE)]
@@ -389,6 +427,20 @@ public partial class WorldClient
 
         for (int i = 0; i < 24; i++)
             gameObject.Data[i] = packet.ReadInt32();
+
+        // A V3_4_3 client takes a destructible building's model from DestructibleModelData
+        // rather than from DisplayID, and draws nothing at all without a resolvable record id.
+        // This response is the only place that id crosses the wire, so remember it for the
+        // create path. See UpdateHandler.SetDestructibleParentRotation. Issue #184.
+        //
+        // This handler is shared by every client version; only V3_4_3 consumes the cache, and
+        // type 33 does not exist before WotLK, so gate the bookkeeping to match its one reader.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            && gameObject.Type == (uint)GameObjectTypeModern.DestructibleBuilding)
+        {
+            GetSession().GameState.DestructibleModelIdByEntry[response.GameObjectID] =
+                gameObject.DestructibleModelRec;
+        }
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             gameObject.Size = packet.ReadFloat();
@@ -532,13 +584,308 @@ public partial class WorldClient
 
         foreach (var entry in toFlush)
         {
+            // V3_4_3-only: if this is the player's deferred CreateObject batch and we
+            // held any pet UpdateObject batches while waiting (login race — pet's
+            // CreateObject arrived before player's), merge their ObjectUpdates into
+            // the player's batch so the SAME SMSG_UPDATE_OBJECT carries both. Pet
+            // before player would leave the V3_4_3 client unable to bind the pet UI
+            // (pet's SummonedBy references a player object that doesn't exist yet).
+            bool mergedPetBatchHasPetCreate = false;
+            WowGuid128 mergedPetGuid = WowGuid128.Empty;
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                var currentPlayerGuidForMerge = session.GameState.CurrentPlayerGuid;
+                bool playerInThisBatch = false;
+                foreach (var u in entry.UpdateObject.ObjectUpdates)
+                {
+                    if (u.CreateData != null && u.Guid == currentPlayerGuidForMerge &&
+                        (u.Type == UpdateTypeModern.CreateObject1 || u.Type == UpdateTypeModern.CreateObject2))
+                    {
+                        playerInThisBatch = true;
+                        break;
+                    }
+                }
+                if (playerInThisBatch)
+                {
+                    var pendingPet = session.GameState.PendingPetUpdateBatches;
+                    if (pendingPet.Count > 0)
+                    {
+                        int merged = 0;
+                        foreach (var petBatch in pendingPet)
+                        {
+                            foreach (var u in petBatch.ObjectUpdates)
+                            {
+                                entry.UpdateObject.ObjectUpdates.Add(u);
+                                merged++;
+                                if (u.CreateData != null && u.Guid.GetHighType() == HighGuidType.Pet)
+                                {
+                                    mergedPetBatchHasPetCreate = true;
+                                    mergedPetGuid = u.Guid;
+                                }
+                            }
+                        }
+                        pendingPet.Clear();
+                        Log.Print(LogType.Trace,
+                            $"[PlayerEnterTrace] merged {merged} held pet ObjectUpdate(s) into player deferred batch (petGuid={mergedPetGuid})");
+                    }
+
+                    // Stamp the pet/player binding explicitly. The legacy 3.3.5 server
+                    // (TC repack at least) does NOT include UNIT_FIELD_SUMMON in the
+                    // player's CreateObject UnitData — it sends Summon in a separate
+                    // Values update that arrives AFTER the world-enter handshake, which
+                    // is too late for the V3_4_3 client to bind the pet UI. CypherCore
+                    // native ALSO sends Summon in a Values update (sniff line 1551), but
+                    // 8ms after the CreateObject, before any "world-ready" state.
+                    // Inject the binding directly into the merged batch's UnitData so
+                    // it ships in the SAME atomic SMSG_UPDATE_OBJECT — no race possible.
+                    if (mergedPetBatchHasPetCreate)
+                    {
+                        foreach (var u in entry.UpdateObject.ObjectUpdates)
+                        {
+                            if (u.UnitData == null || u.CreateData == null) continue;
+                            if (u.Guid == currentPlayerGuidForMerge && (u.UnitData.Summon == null || u.UnitData.Summon.Value.IsEmpty()))
+                            {
+                                u.UnitData.Summon = mergedPetGuid;
+                                Log.Print(LogType.Trace,
+                                    $"[PlayerEnterTrace] stamped player.UnitData.Summon={mergedPetGuid} (legacy server omitted UNIT_FIELD_SUMMON in CreateObject)");
+
+                                // Phase 10 attempts (both reverted):
+                                // a) PetSpellPower=1: every pet stat became 1.
+                                // b) PetSpellPower=50 (computed): Spell Bonus correctly read +50,
+                                //    but the V3_4_3 client switched the pet sheet into "scaling
+                                //    mode" — Damage went 20-26 → 1-1, Armor 623 → 0 (the
+                                //    creature_template-backed values regressed).
+                                // The V3_4_3 retail design expects ALL pet stats from
+                                // owner-driven scaling fields PLUS the pet's own
+                                // UnitData.Resistances[] / MinDamage / MaxDamage / Stats[]
+                                // written via the (currently IsOwner-gated) sections of
+                                // WriteCreateUnitData. A proper fix needs to also extend
+                                // ObjectUpdateBuilder to write these fields for pets owned by
+                                // the active player — an architectural change deferred from
+                                // this fix. Pet character sheet stats remain 0 / from
+                                // creature_template until then.
+                            }
+                            else if (u.Guid == mergedPetGuid && (u.UnitData.SummonedBy == null || u.UnitData.SummonedBy.Value.IsEmpty()))
+                            {
+                                u.UnitData.SummonedBy = currentPlayerGuidForMerge;
+                                Log.Print(LogType.Trace,
+                                    $"[PlayerEnterTrace] stamped pet.UnitData.SummonedBy={currentPlayerGuidForMerge}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Re-resolve pet-pointing UnitData fields against the now-populated pet
+            // map. The player's UnitData.Summon was set at *read* time (before the
+            // pet batch arrived) so its entry slot is pet_number; reseat to realEntry
+            // here, otherwise player.Summon won't match the pet's CreateObject GUID
+            // and the V3_4_3 client can't bind the pet UI. No-op on TC native repacks.
+            UpdateObject.ReseatStalePetGuids(entry.UpdateObject, session.GameState);
+
+            // Pre-filter Values updates BEFORE the emptiness check (mirrors the
+            // UpdateHandler.HandleUpdateObject path) so we don't ship empty
+            // SMSG_UPDATE_OBJECT packets to the V3_4_3 client.
+            UpdateObject.FilterV3_4_3Values(entry.UpdateObject, session.GameState);
+
             if (entry.UpdateObject.ObjectUpdates.Count != 0 ||
                 entry.UpdateObject.DestroyedGuids.Count != 0 ||
                 entry.UpdateObject.OutOfRangeGuids.Count != 0)
                 SendPacketToClient(entry.UpdateObject);
 
+            // After the merged player+pet batch shipped, synthesize a follow-up
+            // Values update for the pet carrying its server-populated stats
+            // (Stats[5], AttackPower, MinDamage/MaxDamage, Resistances, BaseHealth).
+            // WriteCreateUnitData skips these fields when IsOwner=false (which is
+            // true for pets, since IsOwner is gated to ActivePlayer/Item/Container).
+            // The Values write path uses bit-mask dispatch (no IsOwner gate), so a
+            // follow-up Values update with these fields set ships them correctly
+            // without disturbing the wire format of the CreateObject. Without this,
+            // the V3_4_3 pet character sheet shows Stats=0/Power=0/etc. even though
+            // the legacy 3.3.5a server already computed and sent the values.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 && mergedPetBatchHasPetCreate)
+            {
+                ObjectUpdate? petCreateOu = null;
+                foreach (var u in entry.UpdateObject.ObjectUpdates)
+                {
+                    if (u.Guid == mergedPetGuid && u.UnitData != null)
+                    {
+                        petCreateOu = u;
+                        break;
+                    }
+                }
+                if (petCreateOu != null)
+                {
+                    var srcUnit = petCreateOu.UnitData;
+                    var statsUpdateObject = new UpdateObject(session.GameState);
+                    var petValuesOu = new ObjectUpdate(mergedPetGuid, UpdateTypeModern.Values, session);
+                    var dstUnit = petValuesOu.UnitData;
+
+                    bool any = false;
+                    if (srcUnit.Stats != null)
+                    {
+                        for (int i = 0; i < 5; i++)
+                            if (srcUnit.Stats[i].HasValue)
+                            {
+                                dstUnit.Stats[i] = srcUnit.Stats[i];
+                                any = true;
+                            }
+                    }
+                    if (srcUnit.AttackPower.HasValue) { dstUnit.AttackPower = srcUnit.AttackPower; any = true; }
+                    if (srcUnit.AttackPowerModPos.HasValue) { dstUnit.AttackPowerModPos = srcUnit.AttackPowerModPos; any = true; }
+                    if (srcUnit.AttackPowerModNeg.HasValue) { dstUnit.AttackPowerModNeg = srcUnit.AttackPowerModNeg; any = true; }
+                    if (srcUnit.AttackPowerMultiplier.HasValue) { dstUnit.AttackPowerMultiplier = srcUnit.AttackPowerMultiplier; any = true; }
+                    if (srcUnit.MinDamage.HasValue) { dstUnit.MinDamage = srcUnit.MinDamage; any = true; }
+                    if (srcUnit.MaxDamage.HasValue) { dstUnit.MaxDamage = srcUnit.MaxDamage; any = true; }
+                    if (srcUnit.BaseHealth.HasValue) { dstUnit.BaseHealth = srcUnit.BaseHealth; any = true; }
+                    if (srcUnit.Resistances != null)
+                    {
+                        for (int i = 0; i < 7; i++)
+                            if (srcUnit.Resistances[i].HasValue)
+                            {
+                                dstUnit.Resistances[i] = srcUnit.Resistances[i];
+                                any = true;
+                            }
+                    }
+                    if (any)
+                    {
+                        statsUpdateObject.ObjectUpdates.Add(petValuesOu);
+                        Log.Print(LogType.Trace,
+                            $"[PetStatsValuesSynth] sending follow-up Values for pet {mergedPetGuid} with Stats={(srcUnit.Stats != null ? "[" + string.Join(",", new[] { srcUnit.Stats[0], srcUnit.Stats[1], srcUnit.Stats[2], srcUnit.Stats[3], srcUnit.Stats[4] }) + "]" : "n")} AP={srcUnit.AttackPower} minDmg={srcUnit.MinDamage} maxDmg={srcUnit.MaxDamage} armor={srcUnit.Resistances?[0]} baseHP={srcUnit.BaseHealth}");
+                        SendPacketToClient(statsUpdateObject);
+                    }
+                }
+            }
+
+            // After the merged player+pet batch shipped, flush the cached
+            // SMSG_PET_SPELLS_MESSAGE (Phase 1 cache) — re-translate PetGUID via the
+            // legacy guid since the map is now fully populated. Without this, the
+            // login scenario's spells message either was forwarded too early (pet
+            // wasn't bound to the player yet) or got cached and never released.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 && mergedPetBatchHasPetCreate)
+            {
+                var pendingSpells = session.GameState.PendingPetSpells;
+                var pendingLegacy = session.GameState.PendingPetSpellsLegacyGuid;
+                if (pendingSpells != null && pendingLegacy.HasValue)
+                {
+                    var corrected = pendingLegacy.Value.To128(session.GameState);
+                    if (corrected == mergedPetGuid)
+                    {
+                        var stale = pendingSpells.PetGUID;
+                        pendingSpells.PetGUID = corrected;
+
+                        // No LEARNED synthesis here — real LEARNED is forwarded from
+                        // the legacy server only on actual learn events (see
+                        // PetHandler.HandlePetLearnedSpells). Specialization stays at
+                        // its default -1 to match native TC 3.4.3 wire.
+                        Log.Print(LogType.Trace,
+                            $"[PetSpellsFlush] (deferred) sending cached SMSG_PET_SPELLS_MESSAGE — stale={stale} corrected={corrected} spec={pendingSpells.Specialization}");
+                        SendPacketToClient(pendingSpells);
+                        session.GameState.PendingPetSpells = null;
+                        session.GameState.PendingPetSpellsLegacyGuid = null;
+                    }
+                }
+            }
+
             foreach (var auraUpdate in entry.AuraUpdates)
                 SendPacketToClient(auraUpdate);
+
+            // V3_4_3-only: when this deferred batch contained any CreateObject for
+            // the player, immediately follow it with an empty SMSG_AURA_UPDATE_ALL.
+            // Mirrors the in-line trigger in UpdateHandler.HandleUpdateObject — the
+            // deferred path bypasses that code, but the V3_4_3 client requires the
+            // post-Create AURA_UPDATE handshake regardless of which path delivered
+            // the player object. Without this, the player CreateObject2 ships to the
+            // client but the client never sends CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE
+            // and the loading screen never dismisses.
+            if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            {
+                var currentPlayerGuid = session.GameState.CurrentPlayerGuid;
+                bool playerCreateInBatch = false;
+                foreach (var u in entry.UpdateObject.ObjectUpdates)
+                {
+                    if (u.CreateData != null && u.Guid == currentPlayerGuid &&
+                        (u.Type == UpdateTypeModern.CreateObject1 || u.Type == UpdateTypeModern.CreateObject2))
+                    {
+                        playerCreateInBatch = true;
+                        break;
+                    }
+                }
+
+                Log.Print(LogType.Trace,
+                    $"[PlayerEnterTrace] deferred-flush: objects={entry.UpdateObject.ObjectUpdates.Count} " +
+                    $"playerCreateMatched={playerCreateInBatch} playerGuid={currentPlayerGuid} " +
+                    $"types=[{string.Join(",", entry.UpdateObject.ObjectUpdates.Select(o => $"{o.Guid.Low}:{o.Type}"))}]");
+
+                if (playerCreateInBatch)
+                {
+                    // TC reference packet #141 is an EMPTY SMSG_UPDATE_OBJECT (NumObjUpdates=0,
+                    // Data size=0, 11 bytes total) sent immediately after the player+items
+                    // batch and BEFORE the post-Create handshake (PhaseShiftChange, etc.).
+                    // The V3_4_3 client may use this empty marker as a "create burst
+                    // complete" signal that transitions its state from "loading-screen"
+                    // to "in-world" — at TC #143 the client emits CMSG_REQUEST_PLAYED_TIME
+                    // unprompted, which never happens in our flow without this empty
+                    // packet. Without this marker, the post-Create handshake arrives but
+                    // the client never enters the in-world state machine, and so never
+                    // fires CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE.
+                    var emptyUpdateMarker = new UpdateObject(session.GameState);
+                    SendPacketToClient(emptyUpdateMarker);
+                    Log.Print(LogType.Trace,
+                        $"[PlayerEnterTrace] deferred-flush empty SMSG_UPDATE_OBJECT marker sent (mirrors TC #141)");
+
+                    // Post-CreateObject world-ready handshake. Order matches TC reference
+                    // (`World_login_parsed.txt` packets #142–#151): AURA_UPDATE_ALL →
+                    // PHASE_SHIFT_CHANGE → INIT_WORLD_STATES → UPDATE_ACTION_BUTTONS.
+                    // UPDATE_ACTION_BUTTONS must be LAST: TC's parse shows it as the final
+                    // server packet, with CMSG_MOVE_INIT_ACTIVE_MOVER_COMPLETE arriving
+                    // 1ms later — the client uses that last packet of the world-entry
+                    // burst as its "world ready" trigger.
+                    //
+                    // SMSG_MOVE_SET_ACTIVE_MOVER is not synthesized at login — the V3_4_3
+                    // client defaults its active mover to the player itself on world entry.
+                    // It is synthesized mid-session in WorldClient.HandleControlUpdate when
+                    // the legacy server transfers control (vehicle / charm / Eye of Acherus).
+                    var playerAuraSync = session.WorldClient!.BuildPlayerAuraSync(currentPlayerGuid);
+                    SendPacketToClient(playerAuraSync);
+                    Log.Print(LogType.Trace,
+                        $"[PlayerEnterTrace] deferred-flush post-CreateObject AURA_UPDATE_ALL sent for player guid={currentPlayerGuid} populatedAuras={playerAuraSync.Auras.Count}");
+
+                    var phaseShiftAfter = new PhaseShiftChange
+                    {
+                        Client = currentPlayerGuid,
+                    };
+                    SendPacketToClient(phaseShiftAfter);
+                    Log.Print(LogType.Trace,
+                        $"[PlayerEnterTrace] deferred-flush post-CreateObject SMSG_PHASE_SHIFT_CHANGE resent for player guid={currentPlayerGuid}");
+
+                    var cachedWorldStates = session.GameState.LastInitWorldStates;
+                    if (cachedWorldStates != null)
+                    {
+                        SendPacketToClient(cachedWorldStates);
+                        Log.Print(LogType.Trace,
+                            $"[PlayerEnterTrace] deferred-flush post-CreateObject SMSG_INIT_WORLD_STATES resent (mapId={cachedWorldStates.MapID} zoneId={cachedWorldStates.ZoneID})");
+                    }
+
+                    // LAST packet — TC's canary trigger. cmangos sends action buttons
+                    // BEFORE the player CreateObject; the early forward in
+                    // CharacterHandler.HandleUpdateActionButtons reaches the client too
+                    // soon to bind to a not-yet-existing player. Re-emit here so the
+                    // client gets a second copy AFTER the player object — this is the
+                    // emission TC's last server packet maps to.
+                    var cachedButtons = session.GameState.ActionButtons;
+                    if (cachedButtons != null && cachedButtons.Count > 0)
+                    {
+                        // UpdateActionButtons.Write pads to PlayerConst.MaxActionButtonsModern (180)
+                        // internally — no need to pad the list ourselves.
+                        var modern = new UpdateActionButtons { Reason = 0 };
+                        modern.ActionButtons.AddRange(cachedButtons);
+                        SendPacketToClient(modern);
+                        Log.Print(LogType.Trace,
+                            $"[PlayerEnterTrace] deferred-flush post-CreateObject SMSG_UPDATE_ACTION_BUTTONS resent LAST ({modern.ActionButtons.Count} legacy entries, Reason=0)");
+                    }
+                }
+            }
         }
     }
 
@@ -553,10 +900,12 @@ public partial class WorldClient
         reply = GameData.GenerateItemSparseUpdateIfNeeded(item);
         if (reply != null)
         {
-            // TODO!!! Something might be wrong here.
-            // TODO: When I send the ItemSpare entry with HotFixMessage it does not work
-
-            SendPacketToClient(reply); // TODO: <-- Optional??
+            // The V3_4_3 ItemSparse layout has been brought into alignment with
+            // WPP's ItemSparseHandler341 expectations (StartQuestID/ItemRange split,
+            // MinReputation Int32, three new Int32 fields between FactionRelated and
+            // MaxDurability, no trailing MinReputation byte, removed duplicate
+            // StartQuestId UInt16). The HotFixMessage path is safe to send again.
+            SendPacketToClient(reply);
 
             Server.Packets.DBReply replyA = new();
             replyA.Status = HotfixStatus.Valid;

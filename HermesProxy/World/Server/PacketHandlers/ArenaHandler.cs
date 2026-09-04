@@ -1,8 +1,8 @@
 ﻿using Framework.Constants;
-using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -58,12 +58,48 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BATTLEMASTER_JOIN_ARENA)]
     void HandleBattlematerJoinArena(BattlemasterJoinArena join)
     {
+        // 3.4.3 has no invite opcode, so rated Join as Group injects CMSG_ARENA_TEAM_INVITE.
+        uint teamId = join.TeamIndex < GetSession().GameState.CurrentArenaTeamIds.Length
+            ? GetSession().GameState.CurrentArenaTeamIds[join.TeamIndex]
+            : 0;
+        if (teamId != 0)
+            InvitePartyToArenaTeam(teamId);
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEMASTER_JOIN_ARENA);
         packet.WriteGuid(join.Guid.To64());
         packet.WriteUInt8(join.TeamIndex);
         packet.WriteBool(true); // As Group
         packet.WriteBool(true); // Is Rated
+        WorldSocketLogMessages.BattlemasterJoinArena(
+            _melLog, _sourceFile, _netDirSend, join.TeamIndex, teamId);
         SendPacketToServer(packet);
+    }
+
+    void InvitePartyToArenaTeam(uint teamId)
+    {
+        var group = GetSession().GameState.GetCurrentGroup();
+        if (group == null)
+            return;
+
+        var self = GetSession().GameState.CurrentPlayerGuid;
+        foreach (var member in group.PlayerList)
+        {
+            if (member.GUID == self)
+                continue;
+
+            string name = member.Name;
+            if (string.IsNullOrEmpty(name))
+                name = GetSession().GameState.GetPlayerName(member.GUID);
+            if (string.IsNullOrEmpty(name))
+                continue;
+
+            WorldPacket invite = new WorldPacket(Opcode.CMSG_ARENA_TEAM_INVITE);
+            invite.WriteUInt32(teamId);
+            invite.WriteCString(name);
+            SendPacketToServer(invite);
+            WorldSocketLogMessages.ArenaTeamPartyInvite(
+                _melLog, _sourceFile, _netDirSend, teamId, name);
+        }
     }
 
     [PacketHandler(Opcode.CMSG_BATTLEMASTER_JOIN_SKIRMISH)]
@@ -74,6 +110,8 @@ public partial class WorldSocket
         packet.WriteUInt8(join.TeamSize);
         packet.WriteBool(join.AsGroup);
         packet.WriteBool(false); // Is Rated
+        WorldSocketLogMessages.BattlemasterJoinSkirmish(
+            _melLog, _sourceFile, _netDirSend, join.TeamSize, join.AsGroup);
         SendPacketToServer(packet);
     }
 

@@ -1,8 +1,10 @@
-﻿using System;
+using System;
 using Framework.Constants;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 
@@ -186,6 +188,14 @@ public partial class WorldSocket
         SendPacketToServer(packet);
     }
 
+    [PacketHandler(Opcode.CMSG_TABARD_VENDOR_ACTIVATE)]
+    void HandleTabardVendorActivate(InteractWithNPC interact)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.MSG_TABARDVENDOR_ACTIVATE);
+        packet.WriteGuid(interact.CreatureGUID.To64());
+        SendPacketToServer(packet);
+    }
+
     [PacketHandler(Opcode.CMSG_SAVE_GUILD_EMBLEM)]
     void HandleSaveGuildEmblem(SaveGuildEmblem emblem)
     {
@@ -202,11 +212,18 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_DECLINE_GUILD_INVITES)]
     void HandleDeclineGuildInvites(SetAutoDeclineGuildInvites packet)
     {
-        GetSession().GameState.CurrentPlayerStorage.Settings.SetAutoBlockGuildInvites(packet.GuildInvitesShouldGetBlocked);
+        var settings = GetSession().GameState.CurrentPlayerStorage.Settings;
+        if (settings == null)
+        {
+            Log.Print(LogType.Error, "CMSG_DECLINE_GUILD_INVITES received before the player was loaded, ignoring.");
+            return;
+        }
+
+        settings.SetAutoBlockGuildInvites(packet.GuildInvitesShouldGetBlocked);
 
         // Send update to client
         ObjectUpdate updateData = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
-        PlayerFlags flags = GetSession().GameState.CurrentPlayerStorage.Settings.CreateNewFlags();
+        PlayerFlags flags = settings.CreateNewFlags();
         updateData.PlayerData.PlayerFlags = (uint) flags;
         UpdateObject updatePacket = new UpdateObject(GetSession().GameState);
         updatePacket.ObjectUpdates.Add(updateData);
@@ -227,16 +244,39 @@ public partial class WorldSocket
         packet.WriteGuid(activate.BankGuid.To64());
         packet.WriteBool(activate.FullUpdate);
         SendPacketToServer(packet);
+
+        // A client-sent activate subscribes us just the same. V3_4_3 never sends one,
+        // but older modern builds do, and it saves a redundant injected activate.
+        GetSession().GameState.GuildBankSubscribed = true;
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_QUERY_TAB)]
     void HandleGuildBankQueryTab(GuildBankQueryTab query)
     {
-        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_QUERY_TAB);
-        packet.WriteGuid(query.BankGuid.To64());
-        packet.WriteUInt8(query.Tab);
-        packet.WriteBool(query.FullUpdate);
-        SendPacketToServer(packet);
+        // 3.4.3 often sends FullUpdate=0 when switching tabs. AC _SendBankList
+        // only fills ItemInfo when sendAllSlots is true (or a slot set is
+        // passed). A false query therefore comes back with items=0 and the
+        // vault looks empty even after a successful deposit.
+        //
+        // The activate is only re-sent when the server has actually unsubscribed us
+        // (see GameSessionData.GuildBankSubscribed). Sending it on every query made the
+        // server answer with a full tab-0 list that arrived before the reply for the tab
+        // the client asked for, dragging the UI back to tab 0 — which made the
+        // "Buy new guild bank tab" slot impossible to open. Issue #157.
+        // Never spend the activate on the purchase slot: the server answers an activate
+        // with a full tab-0 list, which arrives before the reply for the tab the client
+        // asked for and drags the UI back to tab 0. That made the "Buy new guild bank tab"
+        // window close the moment it opened. Buying a tab makes AzerothCore call
+        // SendPermissions (its "hack to force client to update permissions"), which
+        // unsubscribes us, so without this the first click after every purchase was eaten.
+        var state = GetSession().GameState;
+        bool isPurchaseSlot = state.GuildBankPurchasedTabs > 0
+            && query.Tab >= state.GuildBankPurchasedTabs;
+
+        if (!state.GuildBankSubscribed && !isPurchaseSlot)
+            SendGuildBankActivate(query.BankGuid);
+
+        SendGuildBankQueryTab(query.BankGuid, query.Tab);
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_DEPOSIT_MONEY)]
@@ -265,6 +305,9 @@ public partial class WorldSocket
         packet.WriteCString(update.Name);
         packet.WriteCString(update.Icon);
         SendPacketToServer(packet);
+        // Tab list lives on tab 0 FullUpdate. Refresh it so the strip
+        // does not wait for a relog after GE_BANK_TAB_UPDATED.
+        SendGuildBankQueryTab(update.BankGuid, 0);
     }
 
     [PacketHandler(Opcode.CMSG_GUILD_BANK_LOG_QUERY)]
@@ -303,6 +346,7 @@ public partial class WorldSocket
     }
 
     [PacketHandler(Opcode.CMSG_AUTO_GUILD_BANK_ITEM)]
+    [PacketHandler(Opcode.CMSG_SWAP_ITEM_WITH_GUILD_BANK_ITEM)]
     void HandleGuildBankItem(AutoGuildBankItem item)
     {
         // moves an item from the player to the bank
@@ -313,22 +357,14 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(false); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(0); // splitted amount
         else
             packet.WriteUInt8(0); // splitted amount
         SendPacketToServer(packet);
+        SendGuildBankQueryTab(item.BankGuid, item.BankTab);
     }
 
     [PacketHandler(Opcode.CMSG_SPLIT_ITEM_TO_GUILD_BANK)]
@@ -343,22 +379,14 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(false); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(item.StackCount);
         else
             packet.WriteUInt8((byte)item.StackCount);
         SendPacketToServer(packet);
+        SendGuildBankQueryTab(item.BankGuid, item.BankTab);
     }
 
     [PacketHandler(Opcode.CMSG_AUTO_STORE_GUILD_BANK_ITEM)]
@@ -392,16 +420,7 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(true); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(0); // splitted amount
@@ -422,16 +441,7 @@ public partial class WorldSocket
         packet.WriteUInt8(item.BankSlot);
         packet.WriteUInt32(0); // item id
         packet.WriteBool(false); // auto store
-        if (item.ContainerSlot != null)
-        {
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot((byte)item.ContainerSlot));
-            packet.WriteUInt8(item.ContainerItemSlot);
-        }
-        else
-        {
-            packet.WriteUInt8(Enums.Classic.InventorySlots.Bag0);
-            packet.WriteUInt8(ModernVersion.AdjustInventorySlot(item.ContainerItemSlot));
-        }
+        WritePlayerBagAndSlot(packet, item.ContainerSlot, item.ContainerItemSlot, item.BankTab, item.BankSlot);
         packet.WriteBool(true); // to char
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt32(item.StackCount);
@@ -481,5 +491,57 @@ public partial class WorldSocket
         else
             packet.WriteUInt8((byte)item.StackCount);
         SendPacketToServer(packet);
+    }
+
+    void SendGuildBankActivate(WowGuid128 bankGuid)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_ACTIVATE);
+        packet.WriteGuid(bankGuid.To64());
+        packet.WriteBool(true);
+        SendPacketToServer(packet);
+
+        // Guild::SendBankTabsInfo subscribes us to bank deltas on the legacy side.
+        GetSession().GameState.GuildBankSubscribed = true;
+    }
+
+    void SendGuildBankQueryTab(WowGuid128 bankGuid, byte tab)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_GUILD_BANK_QUERY_TAB);
+        packet.WriteGuid(bankGuid.To64());
+        packet.WriteUInt8(tab);
+        packet.WriteBool(true);
+        SendPacketToServer(packet);
+    }
+
+    // V3_4_3 CMSG slots are InvSlots descriptor indexes (backpack 35-58),
+    // not WotLK 23-38. AdjustInventorySlot only remaps bank/buyback/keyring
+    // between Classic/TBC/WotLK and leaves 35 as 35. AC then looks in an
+    // empty backpack cell and SwapItemsWithInventory is a silent no-op.
+    void WritePlayerBagAndSlot(WorldPacket packet, byte? containerSlot, byte containerItemSlot, byte bankTab, byte bankSlot)
+    {
+        byte srcBag;
+        byte srcSlot;
+        byte legacyBag;
+        byte legacySlot;
+        if (containerSlot != null)
+        {
+            srcBag = containerSlot.Value;
+            srcSlot = containerItemSlot;
+            legacyBag = ModernVersion.AdjustModernInventorySlotToLegacy(srcBag);
+            legacySlot = srcSlot;
+        }
+        else
+        {
+            srcBag = Enums.Classic.InventorySlots.Bag0;
+            srcSlot = containerItemSlot;
+            legacyBag = srcBag;
+            legacySlot = ModernVersion.AdjustModernInventorySlotToLegacy(srcSlot);
+        }
+
+        WorldSocketLogMessages.GuildBankPlayerToBank(
+            _melLog, _sourceFile, "C P>S", bankTab, bankSlot, srcBag, legacyBag, srcSlot, legacySlot);
+
+        packet.WriteUInt8(legacyBag);
+        packet.WriteUInt8(legacySlot);
     }
 }

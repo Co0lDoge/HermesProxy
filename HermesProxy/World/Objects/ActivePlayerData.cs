@@ -49,6 +49,10 @@ public class ActivePlayerData
     public WowGuid128? SummonedBattlePetGUID;
     public uint?[] KnownTitles = new uint?[12];
     public ulong? Coinage;
+    // Purchased stable slots. 3.3.5a has no update field for this — the count only ever
+    // arrives inside MSG_LIST_STABLED_PETS — so the proxy pushes it as a Values update
+    // once a stable master is visited, or the client renders every slot locked (#224).
+    public byte? NumStableSlots;
     public int? XP;
     public int? NextLevelXP;
     public int? TrialXP;
@@ -148,8 +152,10 @@ public class ActivePlayerData
     public uint? PvPLastWeeksTierMaxFromWins;
     public bool? InsertItemsLeftToRight;
     public byte? PvPRankProgress;
+    public byte? GlyphsEnabled;
 
     // Dynamic Fields
     public List<uint> SelfResSpells = null!;
     public bool HasDailyQuestsUpdate;
+    public List<int>? Toys;
 }

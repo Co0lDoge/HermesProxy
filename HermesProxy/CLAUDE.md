@@ -22,7 +22,7 @@ dotnet run --project HermesProxy -- --metrics
 | `--config <path>` | Config file path (default: `HermesProxy.config`) |
 | `--set Key=Value` | Override config values (repeatable) |
 | `--no-version-check` | Skip update check on startup |
-| `--metrics` | Enable per-opcode latency metrics |
+| `--metrics` | Per-opcode latency + allocated-bytes metrics and a GC delta line every 60 s |
 
 ## Directories
 

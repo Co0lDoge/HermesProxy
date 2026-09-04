@@ -16,6 +16,7 @@
  */
 
 
+using HermesProxy.Enums;
 using System;
 using Framework.Constants;
 using Framework.GameMath;
@@ -28,56 +29,83 @@ namespace HermesProxy.World.Server.Packets;
 
 public class InitializeFactions : ServerPacket, ISpanWritable
 {
-    const ushort FactionCount = 400;
+    // Per-build entry count. WotLK Classic 3.4.3 expects 1000; legacy modern builds (V1_14, V2_5) keep 400.
+    // Reference: HermesProxy-WOTLK fork InitializeFactions.cs:16-19, WPP V3_4_0 ReputationHandler.cs:9.
+    private const ushort MaxFactionCount = 1000;
 
     public InitializeFactions() : base(Opcode.SMSG_INITIALIZE_FACTIONS, ConnectionType.Instance) { }
 
+    private static ushort GetFactionCount() =>
+        (ushort)(ModernVersion.ExpansionVersion >= 3 ? 1000 : 400);
+
     public override void Write()
     {
-        for (ushort i = 0; i < FactionCount; ++i)
+        ushort count = GetFactionCount();
+        bool wide = ModernVersion.ExpansionVersion >= 3;
+        for (ushort i = 0; i < count; ++i)
         {
-            _worldPacket.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));
+            if (wide)
+                _worldPacket.WriteUInt16((ushort)FactionFlags[i]);
+            else
+                _worldPacket.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));
             _worldPacket.WriteInt32(FactionStandings[i]);
         }
 
-        for (ushort i = 0; i < FactionCount; ++i)
+        for (ushort i = 0; i < count; ++i)
             _worldPacket.WriteBit(FactionHasBonus[i]);
 
         _worldPacket.FlushBits();
     }
 
-    // Fixed size: 400 factions × (byte + int) + 400 bits = 2000 + 50 = 2050 bytes
-    public int MaxSize => FactionCount * 5 + 50;
+    // V3_4_3: 1000 × (UInt16 + Int32) + 1000 bits = 6000 + 125 = 6125 bytes max.
+    public int MaxSize => MaxFactionCount * 6 + (MaxFactionCount + 7) / 8;
 
     public int WriteToSpan(Span<byte> buffer)
     {
         var writer = new SpanPacketWriter(buffer);
 
-        for (ushort i = 0; i < FactionCount; ++i)
+        ushort count = GetFactionCount();
+        bool wide = ModernVersion.ExpansionVersion >= 3;
+        for (ushort i = 0; i < count; ++i)
         {
-            writer.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));
+            if (wide)
+                writer.WriteUInt16((ushort)FactionFlags[i]);
+            else
+                writer.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));
             writer.WriteInt32(FactionStandings[i]);
         }
 
-        for (ushort i = 0; i < FactionCount; ++i)
+        for (ushort i = 0; i < count; ++i)
             writer.WriteBit(FactionHasBonus[i]);
 
         writer.FlushBits();
         return writer.Position;
     }
 
-    public int[] FactionStandings = new int[FactionCount];
-    public bool[] FactionHasBonus = new bool[FactionCount]; //@todo: implement faction bonus
-    public ReputationFlags[] FactionFlags = new ReputationFlags[FactionCount];
+    public int[] FactionStandings = new int[MaxFactionCount];
+    public bool[] FactionHasBonus = new bool[MaxFactionCount]; //@todo: implement faction bonus
+    public ReputationFlags[] FactionFlags = new ReputationFlags[MaxFactionCount];
 }
 
 class SetFactionStanding : ServerPacket, ISpanWritable
 {
     public SetFactionStanding() : base(Opcode.SMSG_SET_FACTION_STANDING, ConnectionType.Instance) { }
 
+    /// <summary>
+    /// V3_4_3 dropped the leading ReferAFriendBonus float - native writes only
+    /// BonusFromAchievementSystem before the count (Wrathion SetFactionStanding::Write, whose
+    /// packet class has no such field; WowPacketParser's V3_4_0 parser agrees). Writing both made
+    /// the client read the second float as the faction count, i.e. zero, so a live reputation gain
+    /// updated nothing and only appeared after a relog re-seeded standings from
+    /// SMSG_INITIALIZE_FACTIONS. Older builds still carry it - WPP's V6_0_2 parser, which covers
+    /// V1_14 and V2_5, reads both.
+    /// </summary>
+    private static bool HasReferAFriendBonus => ModernVersion.Build != ClientVersionBuild.V3_4_3_54261;
+
     public override void Write()
     {
-        _worldPacket.WriteFloat(ReferAFriendBonus);
+        if (HasReferAFriendBonus)
+            _worldPacket.WriteFloat(ReferAFriendBonus);
         _worldPacket.WriteFloat(BonusFromAchievementSystem);
 
         _worldPacket.WriteInt32(Factions.Count);
@@ -90,7 +118,7 @@ class SetFactionStanding : ServerPacket, ISpanWritable
 
     // Cap for faction standing changes - usually just a few at once
     private const int MaxFactions = 16;
-    // 2 floats(8) + count(4) + factions(8 each) + 1 bit
+    // up to 2 floats(8) + count(4) + factions(8 each) + 1 bit
     public int MaxSize => 8 + 4 + MaxFactions * 8 + 1;
 
     public int WriteToSpan(Span<byte> buffer)
@@ -99,7 +127,8 @@ class SetFactionStanding : ServerPacket, ISpanWritable
             return -1;
 
         var writer = new SpanPacketWriter(buffer);
-        writer.WriteFloat(ReferAFriendBonus);
+        if (HasReferAFriendBonus)
+            writer.WriteFloat(ReferAFriendBonus);
         writer.WriteFloat(BonusFromAchievementSystem);
         writer.WriteInt32(Factions.Count);
         foreach (FactionStandingData factionStanding in Factions)

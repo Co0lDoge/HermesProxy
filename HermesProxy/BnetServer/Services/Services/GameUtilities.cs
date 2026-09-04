@@ -150,8 +150,15 @@ public partial class BnetServices
         if (GetSession().GameAccountInfo == null)
             return BattlenetRpcErrorCode.UserServerBadWowAccount;
 
-        if (!GetSession().AuthClient.IsConnected())
-            return BattlenetRpcErrorCode.UtilServerMissingRealmList;
+        // Auth is closed after the first realm list. Change-realm must serve
+        // the cached list instead of demanding a live socket (or blocking
+        // forever in WaitOrRequestRealmList).
+        if (GetSession().RealmManager.GetRealms().Count == 0)
+        {
+            GetSession().AuthClient.WaitOrRequestRealmList();
+            if (GetSession().RealmManager.GetRealms().Count == 0)
+                return BattlenetRpcErrorCode.UtilServerMissingRealmList;
+        }
 
         string subRegionId = "";
         Variant? subRegion = Params.LookupByKey($"Command_RealmListRequest_v1_{GetCommandEndingForVersion()}");

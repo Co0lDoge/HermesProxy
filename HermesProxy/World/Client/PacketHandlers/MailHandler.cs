@@ -102,7 +102,7 @@ public partial class WorldClient
                     GetSession().GameState.RequestedItemTextIds.Add(mail.ItemTextId);
                     WorldPacket query = new WorldPacket(Opcode.CMSG_ITEM_TEXT_QUERY);
                     query.WriteUInt32(mail.ItemTextId);
-                    query.WriteInt32(mail.MailID);
+                    query.WriteInt32((int)mail.MailID);
                     query.WriteUInt32(0); // unk
                     SendPacket(query);
                 }
@@ -164,6 +164,23 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_QUERY_ITEM_TEXT_RESPONSE)]
     void HandleQueryItemTextResponse(WorldPacket packet)
     {
+        // 3.3.0 moved letter bodies from the item_text table onto the item itself, and the
+        // packet changed with it: a leading "no text" byte, the item GUID, then the string.
+        // Before that it was a bare item_text id and the body was only ever used to fill in
+        // a pending mail list, never sent to the client on its own.
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
+        {
+            QueryItemTextResponse response = new QueryItemTextResponse();
+            response.Valid = packet.ReadUInt8() == 0; // 0 means the item has text
+            if (response.Valid)
+            {
+                response.Id = packet.ReadGuid().To128(GetSession().GameState);
+                response.Text = packet.ReadCString();
+            }
+            SendPacketToClient(response);
+            return;
+        }
+
         uint itemTextId = packet.ReadUInt32();
         string text = packet.ReadCString();
 

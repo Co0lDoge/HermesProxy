@@ -1,5 +1,4 @@
-using System;
-using System.Diagnostics;
+﻿using System;
 using System.Security.Cryptography;
 
 namespace HermesProxy.World.Client;
@@ -9,6 +8,15 @@ public interface LegacyWorldCrypt
     void Initialize(ReadOnlySpan<byte> sessionKey);
     void Decrypt(Span<byte> data);
     void Encrypt(Span<byte> data);
+
+    /// <summary>
+    /// Advances the receive keystream over the extra size byte that WotLK cores prepend to a
+    /// server header once the packet passes 0x7FFF. <see cref="Decrypt"/> is fixed at the normal
+    /// header width and silently ignores anything shorter, so the trailing byte needs its own
+    /// call — skipping it leaves that byte as ciphertext and desyncs every packet that follows.
+    /// Vanilla and TBC never emit the wide header, so they keep the no-op default.
+    /// </summary>
+    void DecryptLargeHeaderByte(Span<byte> data) { }
 }
 
 public class VanillaWorldCrypt : LegacyWorldCrypt
@@ -18,7 +26,11 @@ public class VanillaWorldCrypt : LegacyWorldCrypt
 
     public void Initialize(ReadOnlySpan<byte> sessionKey)
     {
-        Trace.Assert(sessionKey.Length != 0);
+        // Was a Trace.Assert, which aborts the process outright wherever TRACE is defined.
+        // An empty session key means the auth handshake went wrong; throw so the caller's
+        // handler guard can log it and drop the session instead of taking the proxy down.
+        if (sessionKey.Length == 0)
+            throw new ArgumentException("Session key is empty; cannot initialize world crypt.", nameof(sessionKey));
 
         m_key = sessionKey.ToArray();
         m_send_i = m_send_j = m_recv_i = m_recv_j = 0;

@@ -10,7 +10,7 @@ There are 4 major components to the application:
 
 ## Supported Versions
 
-HermesProxy translates between modern WoW Classic clients and legacy private server emulators.
+HermesProxy translates between modern WoW Classic clients and legacy private server emulators. **WotLK Classic (3.4.3 → 3.3.5a) support is in beta** — playable end to end, with rough edges tracked in [wotlk.md](wotlk.md).
 
 ### Modern Client Versions (What You Play With)
 
@@ -23,6 +23,7 @@ These are the Blizzard WoW Classic client versions you can use:
 | 1.14.2  | Classic Era    | 41858 - 42597     |                          |
 | 2.5.2   | TBC Classic    | 39570 - 41510     |                          |
 | 2.5.3   | TBC Classic    | 41402 - 42598     |                          |
+| 3.4.3   | WotLK Classic  | 54261             | Beta — `V3_4_3_54261` is the only supported build |
 
 ### Legacy Server Versions (What Emulators Run)
 
@@ -34,6 +35,17 @@ These are the private server versions HermesProxy can connect to:
 | 1.12.2  | Vanilla   | 6005  | CMaNGOS, VMaNGOS, etc.   |
 | 1.12.3  | Vanilla   | 6141  | CMaNGOS, VMaNGOS, etc.   |
 | 2.4.3   | TBC       | 8606  | CMaNGOS, etc.            |
+| 3.3.5a  | WotLK     | 12340 | [TrinityCore](https://github.com/TrinityCore/TrinityCore/tree/3.3.5), [AzerothCore](https://github.com/azerothcore/azerothcore-wotlk), CMaNGOS |
+
+#### WotLK backend coverage
+
+The 3.4.3 work was developed and playtested against these cores, in this order of confidence:
+
+| Core | Status | Notes |
+|---|---|---|
+| TrinityCore 3.3.5a | Primary | Most tested — current upstream `3.3.5` branch. The reference backend for nearly every 3.4.3 fix. |
+| AzerothCore | Secondary | Broadly working. Corpse handling is the known weak spot — see [#190](https://github.com/Xian55/HermesProxy/issues/190). |
+| CMaNGOS WotLK | Partial | Logs in and plays, but Dungeon Finder ([#104](https://github.com/Xian55/HermesProxy/issues/104)) and MOTransports ([#101](https://github.com/Xian55/HermesProxy/issues/101)) are open. |
 
 ### Version Mapping
 
@@ -43,6 +55,7 @@ The proxy automatically selects the best legacy version based on your client:
 |---------------|----------------|
 | 1.14.x        | 1.12.x (Vanilla) |
 | 2.5.x         | 2.4.3 (TBC)    |
+| 3.4.x         | 3.3.5a (WotLK) |
 
 ## Download HermesProxy
 
@@ -55,15 +68,17 @@ Stable Downloads: [Releases](https://github.com/Xian55/HermesProxy/releases)
 - Download [Arctium Launcher](https://arctium.io/wow/) into the main game folder
    - Vanilla `--staticseed --version=ClassicEra`
    - TBC `--staticseed --version=Classic`
+   - WotLK `--staticseed --version=Classic` (Arctium reuses the same flag as TBC)
 - Start the proxy app and login through the game with your usual credentials.
 
 ## Ingame Settings
 
 Note: Keep `Optimize Network for Speed` **enabled** (it's under `System` -> `Network`), otherwise you will get kicked every now and then.
 
-## Known Issues
+## Known Issues and Limitations
 
-See [docs/known-issues.md](docs/known-issues.md) for current client/server quirks and their workarounds.
+- [docs/known-issues.md](docs/known-issues.md) — current client/server quirks and their workarounds, per client family. WotLK Classic players should read the 3.4.3 section before reporting a bug; [wotlk.md](wotlk.md) carries the full audited status.
+- [docs/known-limitations.md](docs/known-limitations.md) — what HermesProxy structurally **cannot** do. Read this first if you are trying to connect to a public server. **Warden-protected servers do not work, and that includes Warmane.**
 
 ## Chat Commands
 
@@ -109,14 +124,16 @@ HermesProxy --metrics --LoggingOptions:PacketLevel=Debug
 
 ### `--metrics` Details
 
-When enabled, HermesProxy tracks per-opcode round-trip latency for both directions (Client → Server and Server → Client) and emits a summary line every minute through the `Server` logging category. Nothing is printed when no traffic has been observed, so idle proxies stay quiet.
+When enabled, HermesProxy tracks per-opcode handler latency **and managed bytes allocated per packet** for both directions (Client → Server and Server → Client), plus process-wide GC counters, and emits a summary every minute through the `Server` logging category. The GC line is printed even when idle; the per-opcode tables only once traffic has been observed.
 
 ```
-17:42:14 | I | S | Server          | Latency Metrics: 842 C->S opcodes, 1203 S->C opcodes tracked
-17:42:14 | I | S | Server          | <top 20 opcodes with min / max / avg / p99 latency>
+17:42:14 | I | S | Server          | Proxy Metrics: 842 C->S opcodes, 1203 S->C opcodes tracked
+17:42:14 | I | S | Server          | Proxy Metrics (Uptime: 00:12:03) | C->S 18422 pkts (31.2/s) | S->C 90311 pkts (150.8/s)
+17:42:14 | I | S | Server          | GC over 60s: gen0 +14 gen1 +2 gen2 +0 | allocated 118.4 MB (1.97 MB/s) | heap 61.2 MB | pause 0.31%
+17:42:14 | I | S | Server          | <per direction: top 20 opcodes by p99 latency with avg/max/total bytes, then top 20 by total allocated bytes>
 ```
 
-Useful for: identifying slow-dispatching opcodes, spotting regressions after a packet-handler change, and validating that hot-path migrations didn't shift the latency profile. Leave it off in normal play — it has a small per-packet timestamp overhead.
+Useful for: identifying slow-dispatching opcodes, finding which opcodes drive allocation and GC pressure, spotting regressions after a packet-handler change, and validating that hot-path migrations didn't shift the profile. Leave it off in normal play — it costs a timestamp and an allocation-counter read per packet.
 
 ## Configuration Reference
 
@@ -131,7 +148,7 @@ Primary config is `appsettings.json` (loaded from the working directory, require
 
 | Key                | Default                            | Description                                                                                |
 |--------------------|------------------------------------|--------------------------------------------------------------------------------------------|
-| `ClientBuild`      | `V2_5_2_40892`                     | `ClientVersionBuild` enum value: `V1_14_0_40618`, `V1_14_1_41794`, `V1_14_2_42597`, `V2_5_2_40892`, `V2_5_3_42328`. |
+| `ClientBuild`      | `V2_5_2_40892`                     | `ClientVersionBuild` enum value: `V1_14_0_40618`, `V1_14_1_41794`, `V1_14_2_42597`, `V2_5_2_40892`, `V2_5_3_42328`, `V3_4_3_54261` (beta). |
 | `SeedHex`          | `179D3DC3235629D07113A9B3867F97A7` | 32-character hex string (16 bytes).                                                        |
 | `ReportedOS`       | `OSX`                              | OS identifier sent to the legacy server (`OSX`, `Win`, etc.).                              |
 | `ReportedPlatform` | `x86`                              | Platform identifier sent to legacy server (`x86`, `x64`).                                  |
@@ -140,7 +157,7 @@ Primary config is `appsettings.json` (loaded from the working directory, require
 
 | Key       | Default     | Description                                                                                       |
 |-----------|-------------|---------------------------------------------------------------------------------------------------|
-| `Build`   | `auto`      | Legacy server build to target. `auto`, `V1_12_1_5875`, `V2_4_3_8606`.                             |
+| `Build`   | `auto`      | Legacy server build to target. `auto`, `V1_12_1_5875`, `V2_4_3_8606`, `V3_3_5a_12340`.            |
 | `Address` | `127.0.0.1` | Address of the legacy realmd (what you'd use in `SET REALMLIST`).                                 |
 | `Port`    | `3724`      | Port of the legacy authentication server.                                                         |
 
@@ -247,3 +264,13 @@ Current coverage: **84.7%** (272 / 321 server packets converted). See [docs/ispa
 ## Acknowledgements
 
 Parts of this project's code are based on [CypherCore](https://github.com/CypherCore/CypherCore) and [BotFarm](https://github.com/jackpoz/BotFarm). I would like to extend my sincere thanks to these projects, as the creation of this app might have never happened without them. And I would also like to expressly thank [Modox](https://github.com/mdx7) for all his work on reverse engineering the classic clients and all the help he has personally given me.
+
+[WowPacketParser](https://github.com/TrinityCore/WowPacketParser) is the protocol source of truth used throughout development — every field layout, opcode definition, and version-gated change in this proxy was verified against WPP's per-build handlers before being implemented.
+
+### WotLK Classic References
+
+The 3.4.3 → 3.3.5a port leans heavily on the following projects:
+
+- [HermesProxy-WOTLK](https://github.com/advocaite/HermesProxy-WOTLK) — upstream WotLK Classic fork; reference for V3_4_3 field descriptors and packet layouts.
+- [lineagedr/3.4.3_Source](https://github.com/lineagedr/3.4.3_Source/) — native 3.4.3 server source, used as a behavioral oracle for V3_4_3 protocol semantics.
+- [RioMcBoo/CypherCoreClassicWOTLK](https://github.com/RioMcBoo/CypherCoreClassicWOTLK) — CypherCore branch targeting 3.4.3, used as a secondary oracle for server-side packet shapes.

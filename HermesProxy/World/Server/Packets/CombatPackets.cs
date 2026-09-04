@@ -339,3 +339,163 @@ class PartyKillLog : ServerPacket, ISpanWritable
     public WowGuid128 Player;
     public WowGuid128 Victim;
 }
+
+public readonly struct ThreatInfo
+{
+    public readonly WowGuid128 UnitGUID;
+    public readonly long Threat;
+
+    public ThreatInfo(WowGuid128 unitGuid, long threat)
+    {
+        UnitGUID = unitGuid;
+        Threat = threat;
+    }
+}
+
+class ThreatUpdate : ServerPacket
+{
+    public ThreatUpdate() : base(Opcode.SMSG_THREAT_UPDATE, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(UnitGUID);
+        _worldPacket.WriteInt32(ThreatList.Count);
+        foreach (ThreatInfo info in ThreatList)
+        {
+            _worldPacket.WritePackedGuid128(info.UnitGUID);
+            _worldPacket.WriteInt64(info.Threat);
+        }
+    }
+
+    public WowGuid128 UnitGUID;
+    public List<ThreatInfo> ThreatList = new();
+}
+
+class HighestThreatUpdate : ServerPacket
+{
+    public HighestThreatUpdate() : base(Opcode.SMSG_HIGHEST_THREAT_UPDATE, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(UnitGUID);
+        _worldPacket.WritePackedGuid128(HighestThreatGUID);
+        _worldPacket.WriteInt32(ThreatList.Count);
+        foreach (ThreatInfo info in ThreatList)
+        {
+            _worldPacket.WritePackedGuid128(info.UnitGUID);
+            _worldPacket.WriteInt64(info.Threat);
+        }
+    }
+
+    public WowGuid128 UnitGUID;
+    public WowGuid128 HighestThreatGUID;
+    public List<ThreatInfo> ThreatList = new();
+}
+
+class ThreatRemove : ServerPacket, ISpanWritable
+{
+    public ThreatRemove() : base(Opcode.SMSG_THREAT_REMOVE, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(UnitGUID);
+        _worldPacket.WritePackedGuid128(AboutGUID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(UnitGUID.Low, UnitGUID.High);
+        writer.WritePackedGuid128(AboutGUID.Low, AboutGUID.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 UnitGUID;
+    public WowGuid128 AboutGUID;
+}
+
+class ThreatClear : ServerPacket, ISpanWritable
+{
+    public ThreatClear() : base(Opcode.SMSG_THREAT_CLEAR, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(GUID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(GUID.Low, GUID.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 GUID;
+}
+
+class Dismount : ServerPacket, ISpanWritable
+{
+    public Dismount() : base(Opcode.SMSG_DISMOUNT, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Guid);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Guid.Low, Guid.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 Guid;
+}
+
+class BreakTarget : ServerPacket, ISpanWritable
+{
+    public BreakTarget() : base(Opcode.SMSG_BREAK_TARGET, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(UnitGUID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(UnitGUID.Low, UnitGUID.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 UnitGUID;
+}
+
+class ClearTarget : ServerPacket, ISpanWritable
+{
+    public ClearTarget() : base(Opcode.SMSG_CLEAR_TARGET, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Guid);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Guid.Low, Guid.High);
+        return writer.Position;
+    }
+
+    public WowGuid128 Guid;
+}

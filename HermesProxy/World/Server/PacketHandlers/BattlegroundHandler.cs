@@ -3,6 +3,7 @@ using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
+using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
@@ -26,23 +27,74 @@ public partial class WorldSocket
         SendPacketToServer(packet);
     }
 
+    [PacketHandler(Opcode.CMSG_BATTLEFIELD_LIST)]
+    void HandleBattlefieldList(BattlefieldListRequest request)
+    {
+        // V3_4_3-only: forwarding the PvP-UI BG-list query is part of the 54261 fix.
+        // V1_14/V2_5 keep their original behaviour (request not forwarded) — no side effect.
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LIST);
+        if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+            packet.WriteUInt32(GameData.GetMapIdFromBattlegroundId((uint)request.ListID));
+        else
+            packet.WriteUInt32((uint)request.ListID);
+
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+            packet.WriteUInt8(1); // fromWhere: 1 = PvP UI (lua RequestBattlegroundInstanceInfo)
+
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_3_11685))
+            packet.WriteUInt8(0); // xpLocked
+
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEFIELD_LIST request: client ListID={request.ListID} -> forwarding legacy bgTypeId={request.ListID} (size={packet.GetSize()}).");
+        SendPacketToServer(packet);
+    }
+
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_PORT)]
     void HandleBattlefieldPort(BattlefieldPort port)
     {
+        if (BattlefieldMgrTranslation.TryDecodeTicket(port.Ticket.Id, out uint mgrBattleId, out var mgrKind))
+        {
+            Opcode mgrOpcode = mgrKind == BattlefieldMgrTicketKind.Queue
+                ? Opcode.CMSG_BF_MGR_QUEUE_INVITE_RESPONSE
+                : Opcode.CMSG_BF_MGR_ENTRY_INVITE_RESPONSE;
+            WorldPacket mgrPacket = new WorldPacket(mgrOpcode);
+            mgrPacket.WriteUInt32(mgrBattleId);
+            mgrPacket.WriteUInt8(port.AcceptedInvite ? (byte)1 : (byte)0);
+            BattleGroundLogMessages.PortAsMgr(
+                _melLog, port.Ticket.Id, port.AcceptedInvite, mgrOpcode.ToString(), mgrBattleId);
+            SendPacketToServer(mgrPacket);
+            if (!port.AcceptedInvite)
+                GetSession().GameState.RemoveBattleFieldQueue(port.Ticket.Id);
+            return;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_PORT);
+        uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id);
+
+        // arenatype byte. The legacy server derives BattlegroundQueueTypeId from
+        // (bgTypeId, arenaType). A non-zero type on a real BG misses the queue (#102).
+        // A hardcoded 2 on arenas misses 3v3/5v5. V1_14/V2_5 keep the prior constant.
+        bool isArena = GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena;
+        byte queuedArenaType = GetSession().GameState.GetBattleFieldQueueArenaType(port.Ticket.Id);
+        byte arenaType = BattlefieldQueueArenaType.ForLegacyPort(
+            ModernVersion.Build == ClientVersionBuild.V3_4_3_54261, isArena, queuedArenaType);
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt8(2);
-            packet.WriteUInt8(0);
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id));
+            packet.WriteUInt8(arenaType);
+            packet.WriteUInt8(GetSession().GameState.GetBattleFieldQueueBracketId(port.Ticket.Id));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
             packet.WriteBool(port.AcceptedInvite);
         }
         else
         {
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteBool(port.AcceptedInvite);
         }
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEFIELD_PORT: ticketId={port.Ticket.Id} AcceptedInvite={port.AcceptedInvite} -> legacy bgTypeId={bgTypeId} arenatype={arenaType} action={(port.AcceptedInvite ? 1 : 0)} size={packet.GetSize()}.");
         SendPacketToServer(packet);
     }
 
@@ -63,12 +115,32 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_LEAVE)]
     void HandleBattlefieldLeave(BattlefieldLeave leave)
     {
+        uint entryTicket = BattlefieldMgrTranslation.TicketFor(
+            BattlefieldMgrTranslation.WintergraspBattleId, BattlefieldMgrTicketKind.Entry);
+        uint queueTicket = BattlefieldMgrTranslation.TicketFor(
+            BattlefieldMgrTranslation.WintergraspBattleId, BattlefieldMgrTicketKind.Queue);
+        bool hasMgrTicket = GetSession().GameState.GetBattleFieldQueueType(entryTicket) != 0 ||
+            GetSession().GameState.GetBattleFieldQueueType(queueTicket) != 0;
+        if (BattlefieldMgrTranslation.ShouldRouteLeaveToMgr(GetSession().GameState.CurrentZoneId, hasMgrTicket))
+        {
+            WorldPacket exit = new WorldPacket(Opcode.CMSG_BF_MGR_QUEUE_EXIT_REQUEST);
+            exit.WriteUInt32(BattlefieldMgrTranslation.WintergraspBattleId);
+            BattleGroundLogMessages.LeaveAsMgr(_melLog, BattlefieldMgrTranslation.WintergraspBattleId);
+            SendPacketToServer(exit);
+            return;
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LEAVE);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt8(2);
-            packet.WriteUInt8(0);
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(1));
+            uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(1);
+            bool isArena = GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena;
+            byte arenaType = BattlefieldQueueArenaType.ForLegacyPort(
+                ModernVersion.Build == ClientVersionBuild.V3_4_3_54261, isArena,
+                GetSession().GameState.GetBattleFieldQueueArenaType(1));
+            packet.WriteUInt8(arenaType);
+            packet.WriteUInt8(GetSession().GameState.GetBattleFieldQueueBracketId(1));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
         }
         else

@@ -299,6 +299,12 @@ public class ByteBuffer : IDisposable
         return _length - _position;
     }
 
+    /// <summary>True when at least <paramref name="count"/> more bytes can be read.</summary>
+    public bool CanRead(int count)
+    {
+        return _length - _position >= count;
+    }
+
     public uint ReadPackedTime()
     {
         return (uint)Time.GetUnixTimeFromPackedTime(ReadUInt32());
@@ -403,6 +409,22 @@ public class ByteBuffer : IDisposable
                 value |= 1u << i;
 
         return Unsafe.As<uint, T>(ref value);
+    }
+
+    /// <summary>
+    /// Discards any unread bits in the cached partial byte and forces the next bit-read
+    /// to load a fresh byte from the stream. Equivalent to WPP's <c>packet.ResetBitReader</c>.
+    /// Required between two adjacent bit-reading sections where the wire format pads the
+    /// cached byte and starts the next section on a fresh byte boundary — e.g. between
+    /// <c>SpellCastRequest</c>'s bit fields and <c>SpellTargetData</c>'s bit fields. Without
+    /// this, the second section continues consuming the cached partial byte and the byte
+    /// stream falls 1 byte behind the wire layout, corrupting subsequent byte-aligned
+    /// reads (observed: <c>IndexOutOfRangeException</c> in <c>ReadPackedGuid128</c> for
+    /// the Unit GUID of <c>CMSG_CAST_SPELL</c> on V3_4_3_54261).
+    /// </summary>
+    public void ResetBitReader()
+    {
+        _bitPosition = 8;
     }
     #endregion
 
@@ -869,6 +891,23 @@ public class ByteBuffer : IDisposable
     {
         var remaining = (uint)(_length - _position);
         return ReadBytes(remaining);
+    }
+
+    /// <summary>
+    /// Bytes written so far, flushing any pending bit pack first — the same side effect
+    /// <see cref="GetData"/> has, but without allocating and copying the whole buffer.
+    /// </summary>
+    /// <remarks>
+    /// Diagnostics that only want a length must use this rather than <c>GetData().Length</c>,
+    /// which copies the entire packet on every call. Note that the flush is deliberate and not
+    /// merely inherited: callers sit mid-write, so skipping it would move where a partial bit
+    /// pack lands and change the bytes on the wire.
+    /// </remarks>
+    public int GetWrittenLength()
+    {
+        if (_isWriteMode)
+            FlushBits();
+        return _length;
     }
 
     public byte[] GetData()

@@ -13,9 +13,45 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_PET_ACTION)]
     void HandlePetAction(PetAction act)
     {
+        // V3_4_3 client packs Action in modern slot-shifted layout; legacy 3.3.5a server
+        // expects the older state-byte layout. Translate only for V3_4_3 — V1_14 / V2_5
+        // modern clients use different/uncertain Action layouts; preserve their behavior.
+        uint legacyAction = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            ? TranslateV343PetActionToLegacy(act.Action)
+            : act.Action;
+
+        // Vehicle / pet bar spell-button clicks fail silently on the modern client when
+        // the legacy server returns SMSG_PET_CAST_FAILED — the client-side cast-fail
+        // handler dequeues PendingPetCasts by spell ID, but only CMSG_PET_CAST_SPELL
+        // enqueues there. CMSG_PET_ACTION (used for the vehicle action bar) never did,
+        // so failures were dropped and the action button locked until /reload.
+        // Enqueue here for spell-bearing slots (plain spell / manual / autocast). Skip
+        // command buttons (Attack/Stay/Follow/React) — they have no spell ID.
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            uint v343Slot = act.Action >> 23;
+            if (v343Slot == 0 || v343Slot == 0x101 || v343Slot == 0x181)
+            {
+                uint spellId = act.Action & 0x7FFFFF;
+                if (spellId != 0)
+                {
+                    ClientCastRequest castRequest = new ClientCastRequest
+                    {
+                        Timestamp = Environment.TickCount,
+                        SpellId = spellId,
+                        ClientGUID = WowGuid128.Empty,
+                        ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal,
+                            (uint)(GetSession().GameState.CurrentMapId ?? 0), spellId, 20000u + (uint)Environment.TickCount),
+                        HasStarted = true,
+                    };
+                    GetSession().GameState.PendingPetCasts.Enqueue(castRequest);
+                }
+            }
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_ACTION);
-        packet.WriteGuid(act.PetGUID.To64());
-        packet.WriteUInt32(act.Action);
+        packet.WriteGuid(act.PetGUID.To64(GetSession().GameState));
+        packet.WriteUInt32(legacyAction);
         packet.WriteGuid(act.TargetGUID.To64());
         SendPacketToServer(packet);
     }
@@ -24,7 +60,7 @@ public partial class WorldSocket
     void HandlePetStopAttack(PetStopAttack stop)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_STOP_ATTACK);
-        packet.WriteGuid(stop.PetGUID.To64());
+        packet.WriteGuid(stop.PetGUID.To64(GetSession().GameState));
         SendPacketToServer(packet);
     }
 
@@ -32,17 +68,54 @@ public partial class WorldSocket
     void HandlePetStopAttack(PetSetAction action)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_SET_ACTION);
-        packet.WriteGuid(action.PetGUID.To64());
+        packet.WriteGuid(action.PetGUID.To64(GetSession().GameState));
         packet.WriteUInt32(action.Index);
-        packet.WriteUInt32(action.Action);
+        // Same gating as CMSG_PET_ACTION above — translate only for V3_4_3.
+        uint legacyAction = ModernVersion.Build == ClientVersionBuild.V3_4_3_54261
+            ? TranslateV343PetActionToLegacy(action.Action)
+            : action.Action;
+        packet.WriteUInt32(legacyAction);
         SendPacketToServer(packet);
+    }
+
+    // Inverse of WorldClient.PetHandler.TranslateLegacyPetActionButtonToV343 — repack
+    // the V3_4_3 client's Action field (slot:9 in bits 23-31, spell:23 in bits 0-22)
+    // into the 3.3.5a legacy server's expected layout (state:8 in bits 24-31, spell:16
+    // in bits 0-15). Without this, an Attack click ships as Action=(7<<23)|2 = 0x03800002,
+    // which the legacy server reads as state_byte=0x03 (unknown) and ignores.
+    //
+    // Slot mapping mirrors the legacy ActiveStates enum (cmangos `ActiveStates`):
+    //   0x07=ACT_COMMAND, 0x06=ACT_REACTION, 0x01=ACT_PASSIVE,
+    //   0x81=ACT_DISABLED, 0xC1=ACT_ENABLED (autocast on)
+    private static uint TranslateV343PetActionToLegacy(uint v343Action)
+    {
+        if (v343Action == 0)
+            return 0;
+
+        uint v343Slot = v343Action >> 23;
+        uint spellId = v343Action & 0x7FFFFF;
+
+        byte legacyState = v343Slot switch
+        {
+            7      => 0x07, // CommandState
+            6      => 0x06, // ReactState
+            0x1    => 0x01, // PassiveSpell
+            0x181  => 0xC1, // AutoCastSpell (enabled with autocast)
+            0x101  => 0x81, // ManualSpell (active, no autocast)
+            0      => 0xC0, // plain SpellID — enabled active spell
+            _      => 0x00,
+        };
+
+        // Legacy stores spell_id in low 16 bits; clamp.
+        ushort legacySpell = (ushort)(spellId & 0xFFFF);
+        return ((uint)legacyState << 24) | legacySpell;
     }
 
     [PacketHandler(Opcode.CMSG_PET_RENAME)]
     void HandlePetRename(PetRename pet)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_RENAME);
-        packet.WriteGuid(pet.RenameData.PetGUID.To64());
+        packet.WriteGuid(pet.RenameData.PetGUID.To64(GetSession().GameState));
         packet.WriteCString(pet.RenameData.NewName);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
@@ -67,6 +140,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BUY_STABLE_SLOT)]
     void HandleBuyStableSlot(BuyStableSlot stable)
     {
+        GetSession().GameState.LastStableMaster = stable.StableMaster;
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BUY_STABLE_SLOT);
         packet.WriteGuid(stable.StableMaster.To64());
         SendPacketToServer(packet);
@@ -76,7 +150,7 @@ public partial class WorldSocket
     void HandlePetAbandon(PetAbandon pet)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_ABANDON);
-        packet.WriteGuid(pet.PetGUID.To64());
+        packet.WriteGuid(pet.PetGUID.To64(GetSession().GameState));
         SendPacketToServer(packet);
     }
 
@@ -110,7 +184,7 @@ public partial class WorldSocket
     void HandlePetCancelAura(PetCancelAura cancel)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_CANCEL_AURA);
-        packet.WriteGuid(cancel.PetGUID.To64());
+        packet.WriteGuid(cancel.PetGUID.To64(GetSession().GameState));
         packet.WriteUInt32(cancel.SpellID);
         SendPacketToServer(packet);
     }

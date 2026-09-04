@@ -10,7 +10,7 @@ There are 4 major components to the application:
 
 ## Supported Versions
 
-HermesProxy translates between modern WoW Classic clients and legacy private server emulators. **WotLK Classic (3.4.3 → 3.3.5a) support is in beta** — playable end to end, with rough edges tracked in [wotlk.md](wotlk.md).
+HermesProxy translates between modern WoW Classic clients and legacy private server emulators. **WotLK Classic (3.4.3 → 3.3.5a) support is in beta.** Most of the game works, but rather than summarise that here, what has actually been verified — and on which backend — is tracked subsystem by subsystem in the [status matrix](wotlk.md).
 
 ### Modern Client Versions (What You Play With)
 
@@ -46,6 +46,10 @@ The 3.4.3 work was developed and playtested against these cores, in this order o
 | TrinityCore 3.3.5a | Primary | Most tested — current upstream `3.3.5` branch. The reference backend for nearly every 3.4.3 fix. |
 | AzerothCore | Secondary | Broadly working. Corpse handling is the known weak spot — see [#190](https://github.com/Xian55/HermesProxy/issues/190). |
 | CMaNGOS WotLK | Partial | Logs in and plays, but Dungeon Finder ([#104](https://github.com/Xian55/HermesProxy/issues/104)) and MOTransports ([#101](https://github.com/Xian55/HermesProxy/issues/101)) are open. |
+
+**This table is about backends, not features.** For what works, read the [status matrix in wotlk.md](wotlk.md): one row per subsystem, one column per backend, marked ✅ verified / ⚠️ partial / ❌ broken / ❓ not tested on that backend.
+
+Read ❓ as "unknown", not "broken". A row that is ✅ only under AzerothCore means it has not been exercised on TrinityCore — not that it fails there. Wintergrasp, group and master loot, and the Toy Box are currently in that position.
 
 ### Version Mapping
 

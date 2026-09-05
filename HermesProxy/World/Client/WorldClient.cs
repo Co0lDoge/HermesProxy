@@ -91,14 +91,7 @@ public partial class WorldClient
         if (session == null)
             return;
 
-        var sniff = session.LegacySniff;
-        if (sniff == null)
-        {
-            sniff = new SniffFile("legacy", (ushort)LegacyVersion.Build);
-            sniff.WriteHeader();
-            session.LegacySniff = sniff;
-            Log.Print(LogType.Trace, $"Opened legacy sniff file: {sniff.FilePath}");
-        }
+        var sniff = SniffFile.EnsureOpen(ref session.LegacySniff, "legacy", (ushort)LegacyVersion.Build);
 
         ReadOnlySpan<byte> body = packet.GetData();
         uint opcode = packet.GetOpcode();

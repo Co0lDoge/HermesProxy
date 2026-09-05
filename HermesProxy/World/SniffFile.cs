@@ -52,7 +52,51 @@ public sealed class SniffFile
     readonly Lock _lock = new();
     bool _closed;
 
-    public void WriteHeader()
+    // Serialises the open-and-header sequence across every thread that can start a
+    // capture. Two hazards it closes, both of which corrupted the .pkt ordering:
+    //
+    //  * The field was published before WriteHeader ran, so a concurrent WritePacket
+    //    on the other socket could land a packet ahead of the PKT header.
+    //  * Two threads could each build a SniffFile. _sessionCounter gives them distinct
+    //    filenames, the last assignment wins, and everything written to the loser is
+    //    stranded in an orphan capture.
+    //
+    // Contended only for the first packet of a session; every call after that returns
+    // on the volatile fast-path read below without touching this lock.
+    private static readonly Lock _openLock = new();
+
+    /// <summary>
+    /// Returns the capture referenced by <paramref name="sniffFile"/>, creating it and
+    /// writing its PKT header first if it is not open yet. The field is assigned only
+    /// after the header is on disk, so a reader that observes a non-null reference is
+    /// guaranteed to be appending after a complete header.
+    /// </summary>
+    public static SniffFile EnsureOpen(ref SniffFile sniffFile, string fileName, ushort build)
+    {
+        var existing = Volatile.Read(ref sniffFile);
+        if (existing != null)
+            return existing;
+
+        lock (_openLock)
+        {
+            existing = sniffFile;
+            if (existing != null)
+                return existing;
+
+            var created = new SniffFile(fileName, build);
+            created.WriteHeader();
+
+            // Publish last. Everything above is invisible to other threads until this
+            // write lands, which is what makes the header-before-packets order hold.
+            Volatile.Write(ref sniffFile, created);
+
+            // Once per capture, so the interpolation here is not on any hot path.
+            Log.Print(LogType.Trace, $"Opened {fileName} sniff file: {created.FilePath}");
+            return created;
+        }
+    }
+
+    private void WriteHeader()
     {
         _fileWriter.Write('P');
         _fileWriter.Write('K');

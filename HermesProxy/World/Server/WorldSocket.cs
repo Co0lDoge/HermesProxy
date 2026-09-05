@@ -529,11 +529,20 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         }
 
         packet.WritePacketData();
-        if (GetSession() != null)
-            packet.LogPacket(ref GetSession().ModernSniff, GetSession().PacketLogContext);
 
         lock (_sendLock)
         {
+            // Sniff under the send lock, not ahead of it. A .pkt carries no usable
+            // ordering key of its own -- unixtime is whole seconds and TickCount is a
+            // wrapping int -- so file position *is* the order. Logging outside the lock
+            // let two concurrent senders record P1,P2 while the wire carried P2,P1,
+            // which makes the capture disagree with what the client actually saw and
+            // silently misleads any diff against a native sniff. WorldClient.SendPacket
+            // already logs the legacy stream from inside its own send lock; this is the
+            // modern side catching up. Costs a bool test when PacketsLog is off.
+            if (GetSession() != null)
+                packet.LogPacket(ref GetSession().ModernSniff, GetSession().PacketLogContext);
+
             var data = packet.GetData()!;
             Opcode universalOpcode = packet.GetUniversalOpcode();
             ushort opcode = (ushort)packet.GetOpcode();

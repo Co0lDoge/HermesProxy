@@ -64,14 +64,8 @@ public abstract class ClientPacket : IDisposable
         if (!context.PacketsLog)
             return;
 
-        if (sniffFile == null)
-        {
-            sniffFile = new SniffFile("modern", (ushort)context.ClientBuild);
-            sniffFile.WriteHeader();
-
-            Log.Print(LogType.Trace, $"Opened modern sniff file: {sniffFile.FilePath}");
-        }
-        sniffFile.WritePacket(GetOpcode(), true, _worldPacket.GetData());
+        var sniff = SniffFile.EnsureOpen(ref sniffFile, "modern", (ushort)context.ClientBuild);
+        sniff.WritePacket(GetOpcode(), true, _worldPacket.GetData());
     }
 
     protected WorldPacket _worldPacket;
@@ -130,14 +124,8 @@ public abstract class ServerPacket
         if (!context.PacketsLog)
             return;
 
-        if (sniffFile == null)
-        {
-            sniffFile = new SniffFile("modern", (ushort)context.ClientBuild);
-            sniffFile.WriteHeader();
-
-            Log.Print(LogType.Trace, $"Opened modern sniff file: {sniffFile.FilePath}");
-        }
-        sniffFile.WritePacket(GetOpcode(), false, GetData()!);
+        var sniff = SniffFile.EnsureOpen(ref sniffFile, "modern", (ushort)context.ClientBuild);
+        sniff.WritePacket(GetOpcode(), false, GetData()!);
     }
 
     public abstract void Write();

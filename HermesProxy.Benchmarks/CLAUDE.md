@@ -32,6 +32,7 @@ dotnet run --project HermesProxy.Benchmarks -c Release -- --list flat
 | `PacketDispatchBenchmarks.cs` | Inbound dispatch on real `ClientPacket`s: Activator path vs direct vs `SpanPacketReader` floor |
 | `SendPipelineBenchmarks.cs` | `ServerPacket` construct → `WritePacketData` → framed + encrypted wire bytes, per stage |
 | `PackedGuidBenchmarks.cs` | `WorldPacket` vs `PackedGuidHelper` packed-GUID encode/decode |
+| `MovementHandlerPrologueBenchmarks.cs` | `HandlePlayerMove` opcode translation: string/reflection round trip vs the prebuilt map |
 
 ## Conventions
 

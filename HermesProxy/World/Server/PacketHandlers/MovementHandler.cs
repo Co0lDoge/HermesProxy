@@ -7,6 +7,8 @@ using HermesProxy.World.Logging;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
+using System.Collections.Frozen;
+using System.Collections.Generic;
 
 namespace HermesProxy.World.Server;
 
@@ -14,6 +16,33 @@ public partial class WorldSocket
 {
     private static readonly Microsoft.Extensions.Logging.ILogger _melTransportRider =
         Log.CreateMelLogger(Log.CategoryServer);
+
+    // CMSG_MOVE_* (universal, as the modern client sends it) -> MSG_MOVE_* (universal, the name
+    // the 3.3.5a-era protocol uses for the same message). Built once from the enum names so it
+    // cannot drift from the enum, then resolved through LegacyVersion's array lookup.
+    //
+    // HandlePlayerMove used to derive this per packet: enum ToString, string Replace, then a
+    // reflection-backed Enum.TryParse against the version's opcode enum. That measured 128 B and
+    // 595 ns on every movement packet -- the highest-rate client opcode there is -- versus 0 B and
+    // 2.3 ns for the lookup below (MovementHandlerPrologueBenchmarks).
+    private static readonly FrozenDictionary<Opcode, Opcode> ClientMoveToLegacyMsg =
+        BuildClientMoveToLegacyMsg();
+
+    private static FrozenDictionary<Opcode, Opcode> BuildClientMoveToLegacyMsg()
+    {
+        const string clientPrefix = "CMSG_MOVE";
+        var map = new Dictionary<Opcode, Opcode>();
+        foreach (Opcode op in Enum.GetValues<Opcode>())
+        {
+            string name = op.ToString();
+            if (!name.StartsWith(clientPrefix, StringComparison.Ordinal))
+                continue;
+            // "CMSG_MOVE_JUMP" -> "MSG_MOVE_JUMP"; matches the old Replace("CMSG", "MSG").
+            if (Enum.TryParse(string.Concat("MSG_", name.AsSpan("CMSG_".Length)), out Opcode legacyMsg))
+                map[op] = legacyMsg;
+        }
+        return map.ToFrozenDictionary();
+    }
 
     // Handlers for CMSG opcodes coming from the modern client
     [PacketHandler(Opcode.CMSG_MOVE_CHANGE_TRANSPORT)]
@@ -48,11 +77,12 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_MOVE_DOUBLE_JUMP)]
     void HandlePlayerMove(ClientPlayerMovement movement)
     {
-        string opcodeName = movement.GetUniversalOpcode().ToString();
-        opcodeName = opcodeName.Replace("CMSG", "MSG");
-        uint opcode = Opcodes.GetOpcodeValueForVersion(opcodeName, LegacyVersion.Build);
+        Opcode universalOpcode = movement.GetUniversalOpcode();
+        uint opcode = ClientMoveToLegacyMsg.TryGetValue(universalOpcode, out Opcode legacyMsg)
+            ? LegacyVersion.GetCurrentOpcode(legacyMsg)
+            : 0u;
         if (opcode == 0)
-            opcode = Opcodes.GetOpcodeValueForVersion("MSG_MOVE_SET_FACING", LegacyVersion.Build);
+            opcode = LegacyVersion.GetCurrentOpcode(Opcode.MSG_MOVE_SET_FACING);
 
         // The client attaches itself to a transport WMO it stands on, the way a 3.3.5a
         // client does, and that is what the backend's Strand of the Ancients boarding relies
@@ -66,7 +96,7 @@ public partial class WorldSocket
             {
                 // Both halves: a HighGuid::Transport guid keeps its identity in High and
                 // has Low = 0, so Low alone reads as "0 -> 0" on AzerothCore.
-                TransportLogMessages.ClientTransportChanged(_melTransportRider, opcodeName,
+                TransportLogMessages.ClientTransportChanged(_melTransportRider, universalOpcode.ToString(),
                     gameState.LastReportedTransportGuid.Low, gameState.LastReportedTransportGuid.High,
                     moveInfo.TransportGuid.Low, moveInfo.TransportGuid.High,
                     moveInfo.StandingOnGameObjectGuid.Low,

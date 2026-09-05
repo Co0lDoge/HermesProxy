@@ -2816,9 +2816,9 @@ public partial class ObjectUpdateBuilder
     internal bool HasAnyActivePlayerFieldSet()
     {
         var src = _updateData.ActivePlayerData;
+        if (_gameState.ActiveGlyphsDirty) return true;
         if (src == null) return false;
         if (HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyInvSlotMapped(src)) return true;
-        if (_gameState.ActiveGlyphsDirty) return true;
         if (HermesProxy.World.Objects.Version.V3_4_3_54261.ObjectUpdateBuilder.HasAnyKnownTitle(src.KnownTitles)) return true;
         if (src.Toys != null && src.Toys.Count > 0) return true;
         if (src.FarsightObject != null) return true;

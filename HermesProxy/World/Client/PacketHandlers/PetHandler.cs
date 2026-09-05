@@ -183,7 +183,7 @@ public partial class WorldClient
         if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
         {
             ObjectUpdate slotUpdate = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
-            slotUpdate.ActivePlayerData.NumStableSlots = numStableSlots;
+            slotUpdate.EnsureActivePlayerData().NumStableSlots = numStableSlots;
             UpdateObject slotPacket = new UpdateObject(GetSession().GameState);
             slotPacket.ObjectUpdates.Add(slotUpdate);
             SendPacketToClient(slotPacket);

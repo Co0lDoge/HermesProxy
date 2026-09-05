@@ -73,7 +73,12 @@ public class ObjectUpdate
             case ObjectType.ActivePlayer:
                 UnitData = new UnitData();
                 PlayerData = new PlayerData();
-                ActivePlayerData = new ActivePlayerData();
+                // ActivePlayerData is deliberately not allocated here. It is owner-only data
+                // (~32 KB of nullable arrays, QuestCompleted[875] alone being 14 KB), and a
+                // 3.3.5a core never sends owner-only fields for a foreign player, so every
+                // other Player in view -- every bot in a battleground -- allocated and then
+                // discarded the whole block. EnsureActivePlayerData() materialises it on the
+                // first owner field written; every reader already treats null as "no fields".
                 break;
             case ObjectType.GameObject:
                 GameObjectData = new GameObjectData();
@@ -87,6 +92,13 @@ public class ObjectUpdate
         }
     }
 
+    /// <summary>
+    /// Materialises <see cref="ActivePlayerData"/> on demand. Call this from every write
+    /// site; read sites keep using the field so a foreign player stays at null.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ActivePlayerData EnsureActivePlayerData() => ActivePlayerData ??= new ActivePlayerData();
+
     public UpdateTypeModern Type;
     public WowGuid128 Guid;
     public GlobalSessionData GlobalSession;
@@ -96,7 +108,7 @@ public class ObjectUpdate
     public ContainerData ContainerData = null!;
     public UnitData UnitData = null!;
     public PlayerData PlayerData = null!;
-    public ActivePlayerData ActivePlayerData = null!;
+    public ActivePlayerData? ActivePlayerData;
     public GameObjectData GameObjectData = null!;
     /// <summary>
     /// Stop frame for a type 11 transport, emitted as the single PauseTimes entry. Taken

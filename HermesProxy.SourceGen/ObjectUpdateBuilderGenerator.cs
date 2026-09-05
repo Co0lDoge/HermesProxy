@@ -1236,14 +1236,30 @@ public sealed class ObjectUpdateBuilderGenerator : IIncrementalGenerator
         sb.Append("    internal bool HasAny").Append(section.SectionName).AppendLine("FieldSet()");
         sb.AppendLine("    {");
         sb.Append("        var src = ").Append(DataAccessor(section)).AppendLine(";");
-        sb.AppendLine("        if (src == null) return false;");
         // MaskMutator HasAnyPredicate: covers bits set by mutators that aren't tied
         // to any declared UpdateField presence check (e.g. ActivePlayer InvSlots fan
         // from GetModernInvSlot, GlyphsDirty from _gameState). Without these the
         // Update writer is skipped and the modern client never sees the change.
+        //
+        // Predicates that never read `src` are emitted BEFORE the null guard. They source
+        // from session state, so they hold even when the section object was never
+        // materialised -- ActivePlayerData is allocated lazily, and ordering
+        // `_gameState.ActiveGlyphsDirty` after `src == null` dropped the glyph section on
+        // any owner update that happened to set no ActivePlayerData field.
         foreach (var mm in section.MaskMutators)
         {
             if (string.IsNullOrEmpty(mm.HasAnyPredicate))
+                continue;
+            if (mm.HasAnyPredicate!.Contains("src"))
+                continue;
+            sb.Append("        if (").Append(mm.HasAnyPredicate).AppendLine(") return true;");
+        }
+        sb.AppendLine("        if (src == null) return false;");
+        foreach (var mm in section.MaskMutators)
+        {
+            if (string.IsNullOrEmpty(mm.HasAnyPredicate))
+                continue;
+            if (!mm.HasAnyPredicate!.Contains("src"))
                 continue;
             sb.Append("        if (").Append(mm.HasAnyPredicate).AppendLine(") return true;");
         }

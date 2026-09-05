@@ -23,6 +23,9 @@ public partial class WorldClient
     private static readonly Microsoft.Extensions.Logging.ILogger _melGoFields =
         Log.CreateMelLogger(Log.CategoryServer);
 
+    private static readonly Microsoft.Extensions.Logging.ILogger _melUpdateValues =
+        Log.CreateMelLogger(Log.CategoryServer);
+
     /// <summary>
     /// Writes a quaternion into GameObjectData's pre-allocated ParentRotation buffer. This runs
     /// once per GameObject create, so it must not allocate.
@@ -268,38 +271,50 @@ public partial class WorldClient
                     PowerUpdate powerUpdate = new PowerUpdate(guid);
                     ReadValuesUpdateBlock(packet, ref guid, updateData, auraUpdate, powerUpdate, i);
 
-                    // Trace per-Values-update so we can correlate legacy-side reads with
-                    // the modern-side WriteValuesUpdate output. We log:
-                    // - legacy GUID type (Transport, MOTransport, ItemContainer, GameObject,
-                    //   Player, Unit, etc.) and its 32-bit "entry/counter" — explains why
-                    //   client may never have a CreateObject for repeating guids
-                    // - which modern descriptor sections have ANY concrete field set (a
-                    //   non-empty delta is what would actually transmit data)
-                    bool isPlayer = guid == GetSession().GameState.CurrentPlayerGuid;
                     // Bag contents and stack counts arrive as Item/Container Values
                     // updates, which is how a sold or destroyed quest item shows up.
-                    if (guid.GetObjectType() == ObjectType.Item ||
-                        guid.GetObjectType() == ObjectType.Container)
+                    var valuesObjectType = guid.GetObjectType();
+                    if (valuesObjectType == ObjectType.Item ||
+                        valuesObjectType == ObjectType.Container)
                         GetSession().GameState.InventoryChangedSinceQuestResync = true;
-                    var valuesLegacyHigh = oldGuid.GetHighGuidTypeLegacy();
-                    uint legacyEntry = oldGuid.GetEntry();
-                    ulong legacyCounter = oldGuid.GetCounter();
-                    var u = updateData.UnitData;
-                    var o = updateData.ObjectData;
-                    var p = updateData.PlayerData;
-                    var a = updateData.ActivePlayerData;
-                    bool unitHasAnyField = u != null && (
-                        u.Health.HasValue || u.MaxHealth.HasValue || u.DisplayID.HasValue ||
-                        u.Level.HasValue || u.Flags.HasValue || u.AuraState.HasValue ||
-                        u.Charm != null || u.Summon != null || u.Target != null ||
-                        u.Power != null || u.MaxPower != null || u.Stats != null);
-                    bool playerHasAnyField = p != null && (
-                        p.PlayerFlags.HasValue || p.NativeSex.HasValue ||
-                        p.GuildRankID.HasValue || p.HonorLevel.HasValue ||
-                        p.DuelArbiter != null || p.WowAccount != null);
-                    bool activeHasAnyField = a != null && (
-                        a.Coinage.HasValue || a.XP.HasValue || a.NextLevelXP.HasValue ||
-                        ActivePlayerHasAnySlot(a));
+
+                    // Correlates legacy-side reads with the modern-side WriteValuesUpdate
+                    // output: the legacy GUID type and entry/counter (which explains why the
+                    // client may never have had a CreateObject for a repeating guid), and
+                    // which modern descriptor sections carry any concrete field -- a non-empty
+                    // delta being what actually transmits. Every argument below walks arrays
+                    // or reads through nullables, and this runs on every Values block of every
+                    // SMSG_UPDATE_OBJECT, so the whole thing sits behind an explicit gate
+                    // rather than relying on the LoggerMessage IsEnabled check.
+                    if (Log.IsTraceEnabled)
+                    {
+                        var u = updateData.UnitData;
+                        var o = updateData.ObjectData;
+                        var pd = updateData.PlayerData;
+                        var a = updateData.ActivePlayerData;
+                        bool unitHasAnyField = u != null && (
+                            u.Health.HasValue || u.MaxHealth.HasValue || u.DisplayID.HasValue ||
+                            u.Level.HasValue || u.Flags.HasValue || u.AuraState.HasValue ||
+                            u.Charm != null || u.Summon != null || u.Target != null ||
+                            u.Power != null || u.MaxPower != null || u.Stats != null);
+                        bool playerHasAnyField = pd != null && (
+                            pd.PlayerFlags.HasValue || pd.NativeSex.HasValue ||
+                            pd.GuildRankID.HasValue || pd.HonorLevel.HasValue ||
+                            pd.DuelArbiter != null || pd.WowAccount != null);
+                        bool activeHasAnyField = a != null && (
+                            a.Coinage.HasValue || a.XP.HasValue || a.NextLevelXP.HasValue ||
+                            ActivePlayerHasAnySlot(a));
+
+                        UpdateHandlerLogMessages.ValuesUpdateIn(
+                            _melUpdateValues, i, guid.Low, guid.High,
+                            oldGuid.GetHighGuidTypeLegacy(), oldGuid.GetEntry(), oldGuid.GetCounter(),
+                            guid == GetSession().GameState.CurrentPlayerGuid,
+                            o != null && (o.EntryID.HasValue || o.DynamicFlags.HasValue || o.Scale.HasValue),
+                            u != null, unitHasAnyField, u?.Health, u?.MaxHealth, u?.Flags ?? 0,
+                            pd != null, playerHasAnyField,
+                            a != null, activeHasAnyField,
+                            auraUpdate.Auras.Count, powerUpdate.Powers.Count);
+                    }
 
                     static bool ActivePlayerHasAnySlot(ActivePlayerData a)
                     {
@@ -323,15 +338,6 @@ public partial class WorldClient
                                 if (a.KeyringSlots[i] != null) return true;
                         return false;
                     }
-
-                    Log.Print(LogType.Trace,
-                        $"[UpdateValuesTrace][in] i={i} guid={guid} legacyHigh={valuesLegacyHigh} legacyEntry={legacyEntry} legacyCounter={legacyCounter} " +
-                        $"isPlayer={isPlayer} " +
-                        $"hasObj={(o != null && (o.EntryID.HasValue || o.DynamicFlags.HasValue || o.Scale.HasValue))} " +
-                        $"hasUnit={u != null} unitAnyField={unitHasAnyField} hp={u?.Health} maxHp={u?.MaxHealth} flags=0x{(u?.Flags ?? 0):X} " +
-                        $"hasPlayer={p != null} playerAnyField={playerHasAnyField} " +
-                        $"hasActive={a != null} activeAnyField={activeHasAnyField} " +
-                        $"auras={auraUpdate.Auras.Count} powers={powerUpdate.Powers.Count}");
 
                     if (powerUpdate.Powers.Count != 0)
                         SendPacketToClient(powerUpdate);
@@ -380,7 +386,7 @@ public partial class WorldClient
                     {
                         UpdateObject updateObject2 = new UpdateObject(GetSession().GameState);
                         ObjectUpdate updateData2 = new ObjectUpdate(guid, UpdateTypeModern.Values, GetSession());
-                        updateData2.ActivePlayerData.FarsightObject = WowGuid128.Empty;
+                        updateData2.EnsureActivePlayerData().FarsightObject = WowGuid128.Empty;
                         updateObject2.ObjectUpdates.Add(updateData2);
                         SendPacketToClient(updateObject2);
                     }
@@ -404,7 +410,7 @@ public partial class WorldClient
 
                     if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
                     {
-                        GetSession().GameState.CurrentPlayerStorage.CompletedQuests.WriteAllCompletedIntoArray(updateData.ActivePlayerData.QuestCompleted);
+                        GetSession().GameState.CurrentPlayerStorage.CompletedQuests.WriteAllCompletedIntoArray(updateData.EnsureActivePlayerData().QuestCompleted);
                         HermesProxy.World.Server.CollectionSync.StampSummonedBattlePet(updateData, GetSession().GameState);
                     }
 
@@ -1102,6 +1108,12 @@ public partial class WorldClient
             });
     }
 
+    // [Conditional] rather than an #if body: the symbol is defined in no build, so with a
+    // live signature every call site still interpolated its string, allocated a params
+    // object[] and boxed the indexes into it before calling a method that does nothing.
+    // ReadValuesUpdateBlock alone hits these eleven times per field block. Conditional makes
+    // the compiler drop the call and its arguments outright.
+    [System.Diagnostics.Conditional("DEBUG_UPDATES")]
     private void PrintString(string txt, params object[] indexes)
     {
 #if DEBUG_UPDATES
@@ -1109,12 +1121,12 @@ public partial class WorldClient
 #endif
     }
 
-    private T PrintValue<T>(string name, T obj, params object[] indexes)
+    [System.Diagnostics.Conditional("DEBUG_UPDATES")]
+    private void PrintValue<T>(string name, T obj, params object[] indexes)
     {
 #if DEBUG_UPDATES
         Console.WriteLine("{0}{1}: {2}", GetIndexString(indexes), name, obj);
 #endif
-        return obj;
     }
 
     private Dictionary<int, UpdateField> ReadValuesUpdateBlock(WorldPacket packet, ref ObjectType type, object index, bool isCreating, Dictionary<int, UpdateField>? oldValues, out BitArray outUpdateMaskArray, out BitArray outActuallyChangedValuesMaskArray)
@@ -3331,11 +3343,11 @@ public partial class WorldClient
                     if (updateMaskArray[PLAYER_FIELD_INV_SLOT_HEAD + i * 2])
                     {
                         var slotGuid = GetSlotGuidValue(updates, PLAYER_FIELD_INV_SLOT_HEAD + i * 2);
-                        updateData.ActivePlayerData.InvSlots[i] = slotGuid;
+                        updateData.EnsureActivePlayerData().InvSlots[i] = slotGuid;
                         GetSession().GameState.InventoryChangedSinceQuestResync = true;
                         if (tracePlayer)
-                            Log.Print(LogType.Debug,
-                                $"[V343Trace][InvSlot] player slot={i} guid={slotGuid}");
+                            UpdateHandlerLogMessages.OwnerInvSlot(
+                                _melUpdateValues, i, slotGuid.Low, slotGuid.High);
                     }
                 }
             }
@@ -3346,7 +3358,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_PACK_SLOT_1 + i * 2])
                     {
-                        updateData.ActivePlayerData.PackSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_PACK_SLOT_1 + i * 2);
+                        updateData.EnsureActivePlayerData().PackSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_PACK_SLOT_1 + i * 2);
                         GetSession().GameState.InventoryChangedSinceQuestResync = true;
                     }
                 }
@@ -3373,7 +3385,7 @@ public partial class WorldClient
                 for (int i = 0; i < bankSlots; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_BANK_SLOT_1 + i * 2])
-                        updateData.ActivePlayerData.BankSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_BANK_SLOT_1 + i * 2);
+                        updateData.EnsureActivePlayerData().BankSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_BANK_SLOT_1 + i * 2);
                 }
             }
             int PLAYER_FIELD_BANKBAG_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BANKBAG_SLOT_1);
@@ -3383,7 +3395,7 @@ public partial class WorldClient
                 for (int i = 0; i < bankBagSlots; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_BANKBAG_SLOT_1 + i * 2])
-                        updateData.ActivePlayerData.BankBagSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_BANKBAG_SLOT_1 + i * 2);
+                        updateData.EnsureActivePlayerData().BankBagSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_BANKBAG_SLOT_1 + i * 2);
                 }
             }
             int PLAYER_FIELD_VENDORBUYBACK_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_VENDORBUYBACK_SLOT_1);
@@ -3392,7 +3404,7 @@ public partial class WorldClient
                 for (int i = 0; i < 12; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + i * 2])
-                        updateData.ActivePlayerData.BuyBackSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + i * 2);
+                        updateData.EnsureActivePlayerData().BuyBackSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_VENDORBUYBACK_SLOT_1 + i * 2);
                 }
             }
             int PLAYER_FIELD_KEYRING_SLOT_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KEYRING_SLOT_1);
@@ -3401,7 +3413,7 @@ public partial class WorldClient
                 for (int i = 0; i < 32; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_KEYRING_SLOT_1 + i * 2])
-                        updateData.ActivePlayerData.KeyringSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_KEYRING_SLOT_1 + i * 2);
+                        updateData.EnsureActivePlayerData().KeyringSlots[i] = GetSlotGuidValue(updates, PLAYER_FIELD_KEYRING_SLOT_1 + i * 2);
                 }
             }
 
@@ -3476,7 +3488,7 @@ public partial class WorldClient
             }
 
             if (restInfo != null)
-                updateData.ActivePlayerData.RestInfo[(byte)RestType.XP] = restInfo;
+                updateData.EnsureActivePlayerData().RestInfo[(byte)RestType.XP] = restInfo;
 
             int PLAYER_BYTES_3 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_BYTES_3);
             if (PLAYER_BYTES_3 >= 0 && updateMaskArray[PLAYER_BYTES_3])
@@ -3504,13 +3516,14 @@ public partial class WorldClient
             int PLAYER_FARSIGHT = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FARSIGHT);
             if (PLAYER_FARSIGHT >= 0 && updateMaskArray[PLAYER_FARSIGHT])
             {
-                updateData.ActivePlayerData.FarsightObject = GetGuidValue(updates, PlayerField.PLAYER_FARSIGHT).To128(GetSession().GameState);
+                updateData.EnsureActivePlayerData().FarsightObject = GetGuidValue(updates, PlayerField.PLAYER_FARSIGHT).To128(GetSession().GameState);
             }
             int PLAYER_FIELD_COMBO_TARGET = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_COMBO_TARGET);
             if (PLAYER_FIELD_COMBO_TARGET >= 0 && updateMaskArray[PLAYER_FIELD_COMBO_TARGET])
             {
-                updateData.ActivePlayerData.ComboTarget = GetGuidValue(updates, PlayerField.PLAYER_FIELD_COMBO_TARGET).To128(GetSession().GameState);
-                updateData.UnitData.ComboTarget = updateData.ActivePlayerData.ComboTarget;
+                var comboTarget = GetGuidValue(updates, PlayerField.PLAYER_FIELD_COMBO_TARGET).To128(GetSession().GameState);
+                updateData.EnsureActivePlayerData().ComboTarget = comboTarget;
+                updateData.UnitData.ComboTarget = comboTarget;
             }
             int PLAYER_FIELD_KNOWN_TITLES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KNOWN_TITLES);
             if (PLAYER_FIELD_KNOWN_TITLES >= 0)
@@ -3520,18 +3533,18 @@ public partial class WorldClient
                 for (int i = 0; i < count; i++)
                 {
                     if (updateMaskArray[PLAYER_FIELD_KNOWN_TITLES + i])
-                        updateData.ActivePlayerData.KnownTitles[i] = updates[PLAYER_FIELD_KNOWN_TITLES + i].UInt32Value;
+                        updateData.EnsureActivePlayerData().KnownTitles[i] = updates[PLAYER_FIELD_KNOWN_TITLES + i].UInt32Value;
                 }
             }
             int PLAYER_XP = LegacyVersion.GetUpdateField(PlayerField.PLAYER_XP);
             if (PLAYER_XP >= 0 && updateMaskArray[PLAYER_XP])
             {
-                updateData.ActivePlayerData.XP = updates[PLAYER_XP].Int32Value;
+                updateData.EnsureActivePlayerData().XP = updates[PLAYER_XP].Int32Value;
             }
             int PLAYER_NEXT_LEVEL_XP = LegacyVersion.GetUpdateField(PlayerField.PLAYER_NEXT_LEVEL_XP);
             if (PLAYER_NEXT_LEVEL_XP >= 0 && updateMaskArray[PLAYER_NEXT_LEVEL_XP])
             {
-                updateData.ActivePlayerData.NextLevelXP = updates[PLAYER_NEXT_LEVEL_XP].Int32Value;
+                updateData.EnsureActivePlayerData().NextLevelXP = updates[PLAYER_NEXT_LEVEL_XP].Int32Value;
             }
             int PLAYER_SKILL_INFO_1_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SKILL_INFO_1_1);
             if (PLAYER_SKILL_INFO_1_1 >= 0)
@@ -3541,27 +3554,27 @@ public partial class WorldClient
                     int idIndex = PLAYER_SKILL_INFO_1_1 + i * 3;
                     if (updateMaskArray[idIndex])
                     {
-                        updateData.ActivePlayerData.Skill.SkillLineID[i] = (ushort)(updates[idIndex].UInt32Value & 0xFFFF);
-                        updateData.ActivePlayerData.Skill.SkillStep[i] = (ushort)((updates[idIndex].UInt32Value >> 16) & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillLineID[i] = (ushort)(updates[idIndex].UInt32Value & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillStep[i] = (ushort)((updates[idIndex].UInt32Value >> 16) & 0xFFFF);
             }
                     int valueIndex = idIndex + 1;
                     if (updateMaskArray[valueIndex])
                     {
-                        updateData.ActivePlayerData.Skill.SkillRank[i] = (ushort)(updates[valueIndex].UInt32Value & 0xFFFF);
-                        updateData.ActivePlayerData.Skill.SkillMaxRank[i] = (ushort)((updates[valueIndex].UInt32Value >> 16) & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillRank[i] = (ushort)(updates[valueIndex].UInt32Value & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillMaxRank[i] = (ushort)((updates[valueIndex].UInt32Value >> 16) & 0xFFFF);
                     }
                     int bonusIndex = valueIndex + 1;
                     if (updateMaskArray[bonusIndex])
                     {
-                        updateData.ActivePlayerData.Skill.SkillTempBonus[i] = (short)(updates[bonusIndex].Int32Value & 0xFFFF);
-                        updateData.ActivePlayerData.Skill.SkillPermBonus[i] = (ushort)((updates[bonusIndex].UInt32Value >> 16) & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillTempBonus[i] = (short)(updates[bonusIndex].Int32Value & 0xFFFF);
+                        updateData.EnsureActivePlayerData().Skill.SkillPermBonus[i] = (ushort)((updates[bonusIndex].UInt32Value >> 16) & 0xFFFF);
                     }
                 }
             }
             int PLAYER_CHARACTER_POINTS1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHARACTER_POINTS1);
             if (PLAYER_CHARACTER_POINTS1 >= 0 && updateMaskArray[PLAYER_CHARACTER_POINTS1])
             {
-                updateData.ActivePlayerData.CharacterPoints = updates[PLAYER_CHARACTER_POINTS1].Int32Value;
+                updateData.EnsureActivePlayerData().CharacterPoints = updates[PLAYER_CHARACTER_POINTS1].Int32Value;
             }
             // Glyph slot unlock bitmask. Bit N = slot N is unlocked. Legacy 3.3.5a server
             // sets bits as the player levels through 15/30/50/70/80 (final two slots both
@@ -3572,7 +3585,7 @@ public partial class WorldClient
             {
                 byte mask = (byte)(updates[PLAYER_GLYPHS_ENABLED].UInt32Value & 0xFF);
                 GetSession().GameState.GlyphsEnabled = mask;
-                updateData.ActivePlayerData.GlyphsEnabled = mask;
+                updateData.EnsureActivePlayerData().GlyphsEnabled = mask;
                 Log.Print(LogType.Network, $"[Glyphs] PLAYER_GLYPHS_ENABLED bitmask=0x{mask:X2}");
             }
             // PLAYER_FIELD_GLYPHS_1..6 (uint32 each). Legacy server sends these as Values
@@ -3629,52 +3642,52 @@ public partial class WorldClient
             int PLAYER_TRACK_CREATURES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_TRACK_CREATURES);
             if (PLAYER_TRACK_CREATURES >= 0 && updateMaskArray[PLAYER_TRACK_CREATURES])
             {
-                updateData.ActivePlayerData.TrackCreatureMask = updates[PLAYER_TRACK_CREATURES].UInt32Value;
+                updateData.EnsureActivePlayerData().TrackCreatureMask = updates[PLAYER_TRACK_CREATURES].UInt32Value;
             }
             int PLAYER_TRACK_RESOURCES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_TRACK_RESOURCES);
             if (PLAYER_TRACK_RESOURCES >= 0 && updateMaskArray[PLAYER_TRACK_RESOURCES])
             {
-                updateData.ActivePlayerData.TrackResourceMask[0] = updates[PLAYER_TRACK_RESOURCES].UInt32Value;
+                updateData.EnsureActivePlayerData().TrackResourceMask[0] = updates[PLAYER_TRACK_RESOURCES].UInt32Value;
             }
             int PLAYER_BLOCK_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_BLOCK_PERCENTAGE);
             if (PLAYER_BLOCK_PERCENTAGE >= 0 && updateMaskArray[PLAYER_BLOCK_PERCENTAGE])
             {
-                updateData.ActivePlayerData.BlockPercentage = updates[PLAYER_BLOCK_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().BlockPercentage = updates[PLAYER_BLOCK_PERCENTAGE].FloatValue;
             }
             int PLAYER_DODGE_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_DODGE_PERCENTAGE);
             if (PLAYER_DODGE_PERCENTAGE >= 0 && updateMaskArray[PLAYER_DODGE_PERCENTAGE])
             {
-                updateData.ActivePlayerData.DodgePercentage = updates[PLAYER_DODGE_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().DodgePercentage = updates[PLAYER_DODGE_PERCENTAGE].FloatValue;
             }
             int PLAYER_PARRY_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_PARRY_PERCENTAGE);
             if (PLAYER_PARRY_PERCENTAGE >= 0 && updateMaskArray[PLAYER_PARRY_PERCENTAGE])
             {
-                updateData.ActivePlayerData.ParryPercentage = updates[PLAYER_PARRY_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().ParryPercentage = updates[PLAYER_PARRY_PERCENTAGE].FloatValue;
             }
             int PLAYER_EXPERTISE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_EXPERTISE);
             if (PLAYER_EXPERTISE >= 0 && updateMaskArray[PLAYER_EXPERTISE])
             {
-                updateData.ActivePlayerData.MainhandExpertise = updates[PLAYER_EXPERTISE].Int32Value;
+                updateData.EnsureActivePlayerData().MainhandExpertise = updates[PLAYER_EXPERTISE].Int32Value;
             }
             int PLAYER_OFFHAND_EXPERTISE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_OFFHAND_EXPERTISE);
             if (PLAYER_OFFHAND_EXPERTISE >= 0 && updateMaskArray[PLAYER_OFFHAND_EXPERTISE])
             {
-                updateData.ActivePlayerData.OffhandExpertise = updates[PLAYER_OFFHAND_EXPERTISE].Int32Value;
+                updateData.EnsureActivePlayerData().OffhandExpertise = updates[PLAYER_OFFHAND_EXPERTISE].Int32Value;
             }
             int PLAYER_CRIT_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CRIT_PERCENTAGE);
             if (PLAYER_CRIT_PERCENTAGE >= 0 && updateMaskArray[PLAYER_CRIT_PERCENTAGE])
             {
-                updateData.ActivePlayerData.CritPercentage = updates[PLAYER_CRIT_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().CritPercentage = updates[PLAYER_CRIT_PERCENTAGE].FloatValue;
             }
             int PLAYER_RANGED_CRIT_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_RANGED_CRIT_PERCENTAGE);
             if (PLAYER_RANGED_CRIT_PERCENTAGE >= 0 && updateMaskArray[PLAYER_RANGED_CRIT_PERCENTAGE])
             {
-                updateData.ActivePlayerData.RangedCritPercentage = updates[PLAYER_RANGED_CRIT_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().RangedCritPercentage = updates[PLAYER_RANGED_CRIT_PERCENTAGE].FloatValue;
             }
             int PLAYER_OFFHAND_CRIT_PERCENTAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_OFFHAND_CRIT_PERCENTAGE);
             if (PLAYER_OFFHAND_CRIT_PERCENTAGE >= 0 && updateMaskArray[PLAYER_OFFHAND_CRIT_PERCENTAGE])
             {
-                updateData.ActivePlayerData.OffhandCritPercentage = updates[PLAYER_OFFHAND_CRIT_PERCENTAGE].FloatValue;
+                updateData.EnsureActivePlayerData().OffhandCritPercentage = updates[PLAYER_OFFHAND_CRIT_PERCENTAGE].FloatValue;
             }
             int PLAYER_SPELL_CRIT_PERCENTAGE1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SPELL_CRIT_PERCENTAGE1);
             if (PLAYER_SPELL_CRIT_PERCENTAGE1 >= 0)
@@ -3682,13 +3695,13 @@ public partial class WorldClient
                 for (int i = 0; i < 7; i++)
                 {
                     if (updateMaskArray[PLAYER_SPELL_CRIT_PERCENTAGE1 + i])
-                        updateData.ActivePlayerData.SpellCritPercentage[i] = updates[PLAYER_SPELL_CRIT_PERCENTAGE1 + i].FloatValue;
+                        updateData.EnsureActivePlayerData().SpellCritPercentage[i] = updates[PLAYER_SPELL_CRIT_PERCENTAGE1 + i].FloatValue;
                 }
             }
             int PLAYER_SHIELD_BLOCK = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SHIELD_BLOCK);
             if (PLAYER_SHIELD_BLOCK >= 0 && updateMaskArray[PLAYER_SHIELD_BLOCK])
             {
-                updateData.ActivePlayerData.ShieldBlock = updates[PLAYER_SHIELD_BLOCK].Int32Value;
+                updateData.EnsureActivePlayerData().ShieldBlock = updates[PLAYER_SHIELD_BLOCK].Int32Value;
             }
             int PLAYER_EXPLORED_ZONES_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_EXPLORED_ZONES_1);
             if (PLAYER_EXPLORED_ZONES_1 >= 0)
@@ -3700,18 +3713,18 @@ public partial class WorldClient
                     {
                         if ((i & 1) != 0)
                         {
-                            ulong oldValue = updateData.ActivePlayerData.ExploredZones[i / 2] != null ? (ulong)updateData.ActivePlayerData.ExploredZones[i / 2]! : 0;
-                            updateData.ActivePlayerData.ExploredZones[i / 2] = oldValue | ((ulong)updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value << 32);
+                            ulong oldValue = updateData.EnsureActivePlayerData().ExploredZones[i / 2] != null ? (ulong)updateData.EnsureActivePlayerData().ExploredZones[i / 2]! : 0;
+                            updateData.EnsureActivePlayerData().ExploredZones[i / 2] = oldValue | ((ulong)updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value << 32);
                         }
                         else
-                            updateData.ActivePlayerData.ExploredZones[i / 2] = updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value;
+                            updateData.EnsureActivePlayerData().ExploredZones[i / 2] = updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value;
                     }
                 }
             }
             int PLAYER_FIELD_COINAGE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_COINAGE);
             if (PLAYER_FIELD_COINAGE >= 0 && updateMaskArray[PLAYER_FIELD_COINAGE])
             {
-                updateData.ActivePlayerData.Coinage = updates[PLAYER_FIELD_COINAGE].UInt32Value;
+                updateData.EnsureActivePlayerData().Coinage = updates[PLAYER_FIELD_COINAGE].UInt32Value;
                 if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261 &&
                     guid == GetSession().GameState.CurrentPlayerGuid)
                 {
@@ -3770,7 +3783,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_POS + i])
                     {
-                        updateData.ActivePlayerData.ModDamageDonePos[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_POS + i].Int32Value;
+                        updateData.EnsureActivePlayerData().ModDamageDonePos[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_POS + i].Int32Value;
                     }
                 }
             }
@@ -3781,7 +3794,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + i])
                     {
-                        updateData.ActivePlayerData.ModDamageDoneNeg[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + i].Int32Value;
+                        updateData.EnsureActivePlayerData().ModDamageDoneNeg[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_NEG + i].Int32Value;
                     }
                 }
             }
@@ -3792,29 +3805,29 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + i])
                     {
-                        updateData.ActivePlayerData.ModDamageDonePercent[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + i].FloatValue;
+                        updateData.EnsureActivePlayerData().ModDamageDonePercent[i] = updates[PLAYER_FIELD_MOD_DAMAGE_DONE_PCT + i].FloatValue;
                     }
                 }
             }
             int PLAYER_FIELD_MOD_HEALING_DONE_POS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_HEALING_DONE_POS);
             if (PLAYER_FIELD_MOD_HEALING_DONE_POS >= 0 && updateMaskArray[PLAYER_FIELD_MOD_HEALING_DONE_POS])
             {
-                updateData.ActivePlayerData.ModHealingDonePos = updates[PLAYER_FIELD_MOD_HEALING_DONE_POS].Int32Value;
+                updateData.EnsureActivePlayerData().ModHealingDonePos = updates[PLAYER_FIELD_MOD_HEALING_DONE_POS].Int32Value;
             }
             int PLAYER_FIELD_MOD_TARGET_RESISTANCE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_TARGET_RESISTANCE);
             if (PLAYER_FIELD_MOD_TARGET_RESISTANCE >= 0 && updateMaskArray[PLAYER_FIELD_MOD_TARGET_RESISTANCE])
             {
-                updateData.ActivePlayerData.ModTargetResistance = updates[PLAYER_FIELD_MOD_TARGET_RESISTANCE].Int32Value;
+                updateData.EnsureActivePlayerData().ModTargetResistance = updates[PLAYER_FIELD_MOD_TARGET_RESISTANCE].Int32Value;
             }
             int PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE);
             if (PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE >= 0 && updateMaskArray[PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE])
             {
-                updateData.ActivePlayerData.ModTargetPhysicalResistance = updates[PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE].Int32Value;
+                updateData.EnsureActivePlayerData().ModTargetPhysicalResistance = updates[PLAYER_FIELD_MOD_TARGET_PHYSICAL_RESISTANCE].Int32Value;
             }
             int PLAYER_FIELD_BYTES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BYTES);
             if (PLAYER_FIELD_BYTES >= 0 && updateMaskArray[PLAYER_FIELD_BYTES])
             {
-                updateData.ActivePlayerData.LocalFlags = (byte)(updates[PLAYER_FIELD_BYTES].UInt32Value & 0xFF);
+                updateData.EnsureActivePlayerData().LocalFlags = (byte)(updates[PLAYER_FIELD_BYTES].UInt32Value & 0xFF);
 
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
@@ -3833,30 +3846,31 @@ public partial class WorldClient
                     }
                 }
                 else
-                    updateData.ActivePlayerData.GrantableLevels = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 8) & 0xFF);
+                    updateData.EnsureActivePlayerData().GrantableLevels = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 8) & 0xFF);
                 
-                updateData.ActivePlayerData.MultiActionBars = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 16) & 0xFF);
-                updateData.ActivePlayerData.LifetimeMaxRank = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 24) & 0xFF);
-                Log.Print(LogType.Trace,
-                    $"[ActionBarTrace] PLAYER_FIELD_BYTES extracted: MultiActionBars=0x{updateData.ActivePlayerData.MultiActionBars:X2} " +
-                    $"({System.Convert.ToString(updateData.ActivePlayerData.MultiActionBars.Value, 2).PadLeft(8, '0')}b) raw32=0x{updates[PLAYER_FIELD_BYTES].UInt32Value:X8} guid={guid}");
+                updateData.EnsureActivePlayerData().MultiActionBars = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 16) & 0xFF);
+                updateData.EnsureActivePlayerData().LifetimeMaxRank = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 24) & 0xFF);
+                UpdateHandlerLogMessages.ActionBarBytes(
+                    _melUpdateValues,
+                    (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 16) & 0xFF),
+                    updates[PLAYER_FIELD_BYTES].UInt32Value, guid.Low, guid.High);
             }
             int PLAYER_AMMO_ID = LegacyVersion.GetUpdateField(PlayerField.PLAYER_AMMO_ID);
             if (PLAYER_AMMO_ID >= 0 && updateMaskArray[PLAYER_AMMO_ID])
             {
-                updateData.ActivePlayerData.AmmoID = updates[PLAYER_AMMO_ID].UInt32Value;
+                updateData.EnsureActivePlayerData().AmmoID = updates[PLAYER_AMMO_ID].UInt32Value;
             }
             int PLAYER_SELF_RES_SPELL = LegacyVersion.GetUpdateField(PlayerField.PLAYER_SELF_RES_SPELL);
             if (PLAYER_SELF_RES_SPELL >= 0 && updateMaskArray[PLAYER_SELF_RES_SPELL])
             {
                 uint spellId = updates[PLAYER_SELF_RES_SPELL].UInt32Value;
-                updateData.ActivePlayerData.SelfResSpells = new List<uint>();
-                updateData.ActivePlayerData.SelfResSpells.Add(spellId);
+                updateData.EnsureActivePlayerData().SelfResSpells = new List<uint>();
+                updateData.EnsureActivePlayerData().SelfResSpells.Add(spellId);
             }
             int PLAYER_FIELD_PVP_MEDALS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_PVP_MEDALS);
             if (PLAYER_FIELD_PVP_MEDALS >= 0 && updateMaskArray[PLAYER_FIELD_PVP_MEDALS])
             {
-                updateData.ActivePlayerData.PvpMedals = updates[PLAYER_FIELD_PVP_MEDALS].UInt32Value;
+                updateData.EnsureActivePlayerData().PvpMedals = updates[PLAYER_FIELD_PVP_MEDALS].UInt32Value;
             }
             int PLAYER_FIELD_BUYBACK_PRICE_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BUYBACK_PRICE_1);
             if (PLAYER_FIELD_BUYBACK_PRICE_1 >= 0)
@@ -3865,7 +3879,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_BUYBACK_PRICE_1 + i])
                     {
-                        updateData.ActivePlayerData.BuybackPrice[i] = updates[PLAYER_FIELD_BUYBACK_PRICE_1 + i].UInt32Value;
+                        updateData.EnsureActivePlayerData().BuybackPrice[i] = updates[PLAYER_FIELD_BUYBACK_PRICE_1 + i].UInt32Value;
                     }
                 }
             }
@@ -3876,82 +3890,82 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + i])
                     {
-                        updateData.ActivePlayerData.BuybackTimestamp[i] = updates[PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + i].UInt32Value;
+                        updateData.EnsureActivePlayerData().BuybackTimestamp[i] = updates[PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + i].UInt32Value;
                     }
                 }
             }
             int PLAYER_FIELD_SESSION_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_SESSION_KILLS);
             if (PLAYER_FIELD_SESSION_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_SESSION_KILLS]) // vanilla
             {
-                updateData.ActivePlayerData.TodayHonorableKills = (ushort)(updates[PLAYER_FIELD_SESSION_KILLS].UInt32Value & 0xFFFF);
-                updateData.ActivePlayerData.TodayDishonorableKills = (ushort)((updates[PLAYER_FIELD_SESSION_KILLS].UInt32Value >> 16) & 0xFFFF);
+                updateData.EnsureActivePlayerData().TodayHonorableKills = (ushort)(updates[PLAYER_FIELD_SESSION_KILLS].UInt32Value & 0xFFFF);
+                updateData.EnsureActivePlayerData().TodayDishonorableKills = (ushort)((updates[PLAYER_FIELD_SESSION_KILLS].UInt32Value >> 16) & 0xFFFF);
             }
             int PLAYER_FIELD_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KILLS);
             if (PLAYER_FIELD_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_KILLS]) // tbc
             {
-                updateData.ActivePlayerData.TodayHonorableKills = (ushort)(updates[PLAYER_FIELD_KILLS].UInt32Value & 0xFFFF);
-                updateData.ActivePlayerData.YesterdayHonorableKills = (ushort)((updates[PLAYER_FIELD_KILLS].UInt32Value >> 16) & 0xFFFF);
+                updateData.EnsureActivePlayerData().TodayHonorableKills = (ushort)(updates[PLAYER_FIELD_KILLS].UInt32Value & 0xFFFF);
+                updateData.EnsureActivePlayerData().YesterdayHonorableKills = (ushort)((updates[PLAYER_FIELD_KILLS].UInt32Value >> 16) & 0xFFFF);
             }
             int PLAYER_FIELD_YESTERDAY_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_YESTERDAY_KILLS);
             if (PLAYER_FIELD_YESTERDAY_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_YESTERDAY_KILLS]) // vanilla
             {
-                updateData.ActivePlayerData.YesterdayHonorableKills = (ushort)(updates[PLAYER_FIELD_YESTERDAY_KILLS].UInt32Value & 0xFFFF);
-                updateData.ActivePlayerData.YesterdayDishonorableKills = (ushort)((updates[PLAYER_FIELD_YESTERDAY_KILLS].UInt32Value >> 16) & 0xFFFF);
+                updateData.EnsureActivePlayerData().YesterdayHonorableKills = (ushort)(updates[PLAYER_FIELD_YESTERDAY_KILLS].UInt32Value & 0xFFFF);
+                updateData.EnsureActivePlayerData().YesterdayDishonorableKills = (ushort)((updates[PLAYER_FIELD_YESTERDAY_KILLS].UInt32Value >> 16) & 0xFFFF);
             }
             int PLAYER_FIELD_LAST_WEEK_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_LAST_WEEK_KILLS);
             if (PLAYER_FIELD_LAST_WEEK_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_LAST_WEEK_KILLS]) // vanilla
             {
-                updateData.ActivePlayerData.LastWeekHonorableKills = (ushort)(updates[PLAYER_FIELD_LAST_WEEK_KILLS].UInt32Value & 0xFFFF);
-                updateData.ActivePlayerData.LastWeekDishonorableKills = (ushort)((updates[PLAYER_FIELD_LAST_WEEK_KILLS].UInt32Value >> 16) & 0xFFFF);
+                updateData.EnsureActivePlayerData().LastWeekHonorableKills = (ushort)(updates[PLAYER_FIELD_LAST_WEEK_KILLS].UInt32Value & 0xFFFF);
+                updateData.EnsureActivePlayerData().LastWeekDishonorableKills = (ushort)((updates[PLAYER_FIELD_LAST_WEEK_KILLS].UInt32Value >> 16) & 0xFFFF);
             }
             int PLAYER_FIELD_THIS_WEEK_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_THIS_WEEK_KILLS);
             if (PLAYER_FIELD_THIS_WEEK_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_THIS_WEEK_KILLS]) // vanilla
             {
-                updateData.ActivePlayerData.ThisWeekHonorableKills = (ushort)(updates[PLAYER_FIELD_THIS_WEEK_KILLS].UInt32Value & 0xFFFF);
-                updateData.ActivePlayerData.ThisWeekDishonorableKills = (ushort)((updates[PLAYER_FIELD_THIS_WEEK_KILLS].UInt32Value >> 16) & 0xFFFF);
+                updateData.EnsureActivePlayerData().ThisWeekHonorableKills = (ushort)(updates[PLAYER_FIELD_THIS_WEEK_KILLS].UInt32Value & 0xFFFF);
+                updateData.EnsureActivePlayerData().ThisWeekDishonorableKills = (ushort)((updates[PLAYER_FIELD_THIS_WEEK_KILLS].UInt32Value >> 16) & 0xFFFF);
             }
             int PLAYER_FIELD_THIS_WEEK_CONTRIBUTION = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_THIS_WEEK_CONTRIBUTION); // vanilla
             if (PLAYER_FIELD_THIS_WEEK_CONTRIBUTION < 0)
                 PLAYER_FIELD_THIS_WEEK_CONTRIBUTION = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_TODAY_CONTRIBUTION); // tbc
             if (PLAYER_FIELD_THIS_WEEK_CONTRIBUTION >= 0 && updateMaskArray[PLAYER_FIELD_THIS_WEEK_CONTRIBUTION])
             {
-                updateData.ActivePlayerData.ThisWeekContribution = updates[PLAYER_FIELD_THIS_WEEK_CONTRIBUTION].UInt32Value;
+                updateData.EnsureActivePlayerData().ThisWeekContribution = updates[PLAYER_FIELD_THIS_WEEK_CONTRIBUTION].UInt32Value;
             }
             int PLAYER_FIELD_LIFETIME_HONORABLE_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_LIFETIME_HONORABLE_KILLS);
             if (PLAYER_FIELD_LIFETIME_HONORABLE_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_LIFETIME_HONORABLE_KILLS])
             {
-                updateData.ActivePlayerData.LifetimeHonorableKills = updates[PLAYER_FIELD_LIFETIME_HONORABLE_KILLS].UInt32Value;
+                updateData.EnsureActivePlayerData().LifetimeHonorableKills = updates[PLAYER_FIELD_LIFETIME_HONORABLE_KILLS].UInt32Value;
             }
             int PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS);
             if (PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS >= 0 && updateMaskArray[PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS]) // vanilla
             {
-                updateData.ActivePlayerData.LifetimeDishonorableKills = updates[PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS].UInt32Value;
+                updateData.EnsureActivePlayerData().LifetimeDishonorableKills = updates[PLAYER_FIELD_LIFETIME_DISHONORABLE_KILLS].UInt32Value;
             }
             int PLAYER_FIELD_YESTERDAY_CONTRIBUTION = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_YESTERDAY_CONTRIBUTION);
             if (PLAYER_FIELD_YESTERDAY_CONTRIBUTION >= 0 && updateMaskArray[PLAYER_FIELD_YESTERDAY_CONTRIBUTION])
             {
-                updateData.ActivePlayerData.YesterdayContribution = updates[PLAYER_FIELD_YESTERDAY_CONTRIBUTION].UInt32Value;
+                updateData.EnsureActivePlayerData().YesterdayContribution = updates[PLAYER_FIELD_YESTERDAY_CONTRIBUTION].UInt32Value;
             }
             int PLAYER_FIELD_LAST_WEEK_CONTRIBUTION = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_LAST_WEEK_CONTRIBUTION);
             if (PLAYER_FIELD_LAST_WEEK_CONTRIBUTION >= 0 && updateMaskArray[PLAYER_FIELD_LAST_WEEK_CONTRIBUTION]) // vanilla
             {
-                updateData.ActivePlayerData.LastWeekContribution = updates[PLAYER_FIELD_LAST_WEEK_CONTRIBUTION].UInt32Value;
+                updateData.EnsureActivePlayerData().LastWeekContribution = updates[PLAYER_FIELD_LAST_WEEK_CONTRIBUTION].UInt32Value;
             }
             int PLAYER_FIELD_LAST_WEEK_RANK = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_LAST_WEEK_RANK);
             if (PLAYER_FIELD_LAST_WEEK_RANK >= 0 && updateMaskArray[PLAYER_FIELD_LAST_WEEK_RANK]) // vanilla
             {
-                updateData.ActivePlayerData.LastWeekRank = updates[PLAYER_FIELD_LAST_WEEK_RANK].UInt32Value;
+                updateData.EnsureActivePlayerData().LastWeekRank = updates[PLAYER_FIELD_LAST_WEEK_RANK].UInt32Value;
             }
             int PLAYER_FIELD_BYTES2 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_BYTES2);
             if (PLAYER_FIELD_BYTES2 >= 0 && updateMaskArray[PLAYER_FIELD_BYTES2])
             {
-                updateData.ActivePlayerData.PvPRankProgress = (byte)(updates[PLAYER_FIELD_BYTES2].UInt32Value & 0xFF);
-                updateData.ActivePlayerData.AuraVision = (byte)((updates[PLAYER_FIELD_BYTES2].UInt32Value >> 8) & 0xFF);
+                updateData.EnsureActivePlayerData().PvPRankProgress = (byte)(updates[PLAYER_FIELD_BYTES2].UInt32Value & 0xFF);
+                updateData.EnsureActivePlayerData().AuraVision = (byte)((updates[PLAYER_FIELD_BYTES2].UInt32Value >> 8) & 0xFF);
             }
             int PLAYER_FIELD_WATCHED_FACTION_INDEX = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_WATCHED_FACTION_INDEX);
             if (PLAYER_FIELD_WATCHED_FACTION_INDEX >= 0 && updateMaskArray[PLAYER_FIELD_WATCHED_FACTION_INDEX])
             {
-                updateData.ActivePlayerData.WatchedFactionIndex = updates[PLAYER_FIELD_WATCHED_FACTION_INDEX].Int32Value;
+                updateData.EnsureActivePlayerData().WatchedFactionIndex = updates[PLAYER_FIELD_WATCHED_FACTION_INDEX].Int32Value;
             }
             int PLAYER_FIELD_COMBAT_RATING_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_COMBAT_RATING_1);
             if (PLAYER_FIELD_COMBAT_RATING_1 >= 0)
@@ -3960,7 +3974,7 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_FIELD_COMBAT_RATING_1 + i])
                     {
-                        updateData.ActivePlayerData.CombatRatings[i] = updates[PLAYER_FIELD_COMBAT_RATING_1 + i].Int32Value;
+                        updateData.EnsureActivePlayerData().CombatRatings[i] = updates[PLAYER_FIELD_COMBAT_RATING_1 + i].Int32Value;
                     }
                 }
             }
@@ -4004,39 +4018,39 @@ public partial class WorldClient
                     /*
                     if (updateMaskArray[startOffset + teamMemberOffset])
                     {
-                        if (updateData.ActivePlayerData.PvpInfo[i] == null)
-                            updateData.ActivePlayerData.PvpInfo[i] = new PVPInfo();
+                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
 
-                        updateData.ActivePlayerData.PvpInfo[i].Captain = updates[startOffset + teamMemberOffset].Int32Value;
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Captain = updates[startOffset + teamMemberOffset].Int32Value;
                     }
                     */
                     if (updateMaskArray[startOffset + teamGamesWeekOffset])
                     {
-                        if (updateData.ActivePlayerData.PvpInfo[i] == null)
-                            updateData.ActivePlayerData.PvpInfo[i] = new PVPInfo();
+                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
 
-                        updateData.ActivePlayerData.PvpInfo[i].WeeklyPlayed = updates[startOffset + teamGamesWeekOffset].UInt32Value;
+                        updateData.EnsureActivePlayerData().PvpInfo[i].WeeklyPlayed = updates[startOffset + teamGamesWeekOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamGamesSeasonOffset])
                     {
-                        if (updateData.ActivePlayerData.PvpInfo[i] == null)
-                            updateData.ActivePlayerData.PvpInfo[i] = new PVPInfo();
+                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
 
-                        updateData.ActivePlayerData.PvpInfo[i].SeasonPlayed = updates[startOffset + teamGamesSeasonOffset].UInt32Value;
+                        updateData.EnsureActivePlayerData().PvpInfo[i].SeasonPlayed = updates[startOffset + teamGamesSeasonOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamWinsSeasonOffset])
                     {
-                        if (updateData.ActivePlayerData.PvpInfo[i] == null)
-                            updateData.ActivePlayerData.PvpInfo[i] = new PVPInfo();
+                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
 
-                        updateData.ActivePlayerData.PvpInfo[i].SeasonWon = updates[startOffset + teamWinsSeasonOffset].UInt32Value;
+                        updateData.EnsureActivePlayerData().PvpInfo[i].SeasonWon = updates[startOffset + teamWinsSeasonOffset].UInt32Value;
                     }
                     if (updateMaskArray[startOffset + teamPersonalRatingOffset])
                     {
-                        if (updateData.ActivePlayerData.PvpInfo[i] == null)
-                            updateData.ActivePlayerData.PvpInfo[i] = new PVPInfo();
+                        if (updateData.EnsureActivePlayerData().PvpInfo[i] == null)
+                            updateData.EnsureActivePlayerData().PvpInfo[i] = new PVPInfo();
 
-                        updateData.ActivePlayerData.PvpInfo[i].Rating = updates[startOffset + teamPersonalRatingOffset].UInt32Value;
+                        updateData.EnsureActivePlayerData().PvpInfo[i].Rating = updates[startOffset + teamPersonalRatingOffset].UInt32Value;
                     }
                 }
             }
@@ -4060,7 +4074,7 @@ public partial class WorldClient
             int PLAYER_FIELD_MAX_LEVEL = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MAX_LEVEL);
             if (PLAYER_FIELD_MAX_LEVEL >= 0 && updateMaskArray[PLAYER_FIELD_MAX_LEVEL])
             {
-                updateData.ActivePlayerData.MaxLevel = updates[PLAYER_FIELD_MAX_LEVEL].Int32Value;
+                updateData.EnsureActivePlayerData().MaxLevel = updates[PLAYER_FIELD_MAX_LEVEL].Int32Value;
             }
             int PLAYER_FIELD_DAILY_QUESTS_1 = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_DAILY_QUESTS_1);
             if (PLAYER_FIELD_DAILY_QUESTS_1 >= 0 && guid == GetSession().GameState.CurrentPlayerGuid)
@@ -4070,7 +4084,7 @@ public partial class WorldClient
                     if (updateMaskArray[PLAYER_FIELD_DAILY_QUESTS_1 + i])
                     {
                         GetSession().GameState.SetDailyQuestSlot((uint)i, updates[PLAYER_FIELD_DAILY_QUESTS_1 + i].UInt32Value);
-                        updateData.ActivePlayerData.HasDailyQuestsUpdate = true;
+                        updateData.EnsureActivePlayerData().HasDailyQuestsUpdate = true;
                     }
                 }
             }

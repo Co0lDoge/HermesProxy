@@ -64,10 +64,17 @@ public class MoveUpdate : ServerPacket, ISpanWritable
 public class MonsterMove : ServerPacket, ISpanWritable
 {
     // Practical cap for spline points - covers real-world movement patterns
-    // Real usage: Points=0-2 (next destination), PackedDeltas=0-15 (obstacle smoothing)
-    // Reduced from 64 to 16 based on actual usage data (74-116 bytes observed)
-    // If exceeded, WriteToSpan returns -1 to trigger fallback to Write()
-    private const int MaxSplinePoints = 16;
+    // Corruption guard, not a sizing cap. SplineCount is read straight off the legacy wire
+    // (MovementHandler.cs:563) and is unbounded, so a garbage count must not turn into a
+    // huge ArrayPool rent; beyond this WriteToSpan bails to the ByteBuffer path. MaxSize
+    // below sizes the rent from the spline this packet actually carries, so a normal path
+    // of any length still takes the span path.
+    //
+    // A previous fixed cap of 16 (reduced from 64 "based on actual usage data") was measured
+    // against light traffic. Under a bot-populated battleground it missed 370 times in ten
+    // minutes, and every miss rented a pooled buffer it discarded, re-wrote the packet through
+    // ByteBuffer, and emitted a Warn-level log on a per-packet path.
+    private const int MaxSplinePoints = 4096;
 
     public MonsterMove(WowGuid128 guid, ServerSideMovement moveSpline) : base(Opcode.SMSG_ON_MONSTER_MOVE, ConnectionType.Instance)
     {
@@ -182,17 +189,20 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 $"wire={_worldPacket.GetSize()}B");
     }
 
-    // MaxSize computed from MaxSplinePoints:
     // Fixed: GUID(18) + StartPos(12) + SplineId(4) + Dest(12) + flags/times(36) + bits(6) = 88
     // SplineType FacingTarget (worst case, V2_5+): float(4) + GUID(18) = 22
-    // Points: MaxSplinePoints * Vector3(12)
-    // PackedDeltas: MaxSplinePoints * PackedXYZ(4)
     private const int FixedSize = 88 + 22; // 110 bytes
-    public int MaxSize => FixedSize + MaxSplinePoints * 12 + MaxSplinePoints * 4;
+
+    // Sized from this packet's own spline: Points write as Vector3 (12 B), PackedDeltas as
+    // PackXYZ (4 B) -- see WriteToSpan. Both lists are filled in the constructor, so the count
+    // is known before WritePacketData rents. ArrayPool rounds the rent up to its bucket, so
+    // exact sizing costs nothing versus a constant and never under-provisions.
+    public int MaxSize => FixedSize + Points.Count * 12 + PackedDeltas.Count * 4;
 
     public int WriteToSpan(Span<byte> buffer)
     {
-        // Check if we exceed the cap - if so, return -1 to trigger fallback
+        // Only a corrupt or hostile SplineCount should land here; MaxSize already sized the
+        // buffer for this spline's real length.
         if (Points.Count > MaxSplinePoints || PackedDeltas.Count > MaxSplinePoints)
             return -1;
 

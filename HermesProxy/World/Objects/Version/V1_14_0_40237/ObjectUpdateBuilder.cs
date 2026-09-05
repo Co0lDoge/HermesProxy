@@ -1187,7 +1187,7 @@ public class ObjectUpdateBuilder
             }
         }
 
-        ActivePlayerData activeData = m_updateData.ActivePlayerData;
+        ActivePlayerData? activeData = m_updateData.ActivePlayerData;
         if (activeData != null && m_objectType == Enums.ObjectTypeBCC.ActivePlayer)
         {
             for (int i = 0; i < 23; i++)

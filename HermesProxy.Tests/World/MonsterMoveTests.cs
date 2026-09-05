@@ -160,22 +160,54 @@ public class MonsterMoveWriteTests
         Assert.Equal(byteBufferData, spanBuffer[..written]);
     }
 
+    /// <summary>
+    /// A 20-point spline used to exceed the fixed cap of 16 and fall back to the ByteBuffer
+    /// path. MaxSize is now sized from the spline the packet actually carries, so this takes
+    /// the span path -- which makes byte-for-byte equivalence with Write() load-bearing for
+    /// long splines, not just short ones. Bot pathing in a battleground produces these
+    /// constantly (370 fallbacks in ten minutes before the change).
+    /// </summary>
     [Fact]
-    public void WriteToSpan_ExceedsMaxPoints_ReturnsMinus1()
+    public void WriteToSpan_LongSpline_TakesSpanPathAndMatchesWrite()
     {
         var spline = CreateSpline(SplineTypeModern.None);
         spline.SplineFlags = SplineFlagModern.UncompressedPath;
-        // Create more than MaxSplinePoints (16) points
         spline.SplinePoints = new List<Vector3>();
         for (int i = 0; i < 20; i++)
+            spline.SplinePoints.Add(new Vector3(i, i * 2f, i * 3f));
+
+        var packet1 = new MonsterMove(TestGuid, spline);
+        var packet2 = new MonsterMove(TestGuid, spline);
+
+        packet1.Write();
+        packet1.WritePacketData();
+        byte[] byteBufferData = packet1.GetData()!;
+
+        byte[] spanBuffer = new byte[packet2.MaxSize];
+        int written = packet2.WriteToSpan(spanBuffer);
+
+        Assert.True(written > 0, "a 20-point spline must no longer fall back");
+        Assert.Equal(byteBufferData.Length, written);
+        Assert.Equal(byteBufferData, spanBuffer[..written]);
+    }
+
+    /// <summary>
+    /// The -1 bail survives as a corruption guard: SplineCount is read unbounded off the
+    /// legacy wire, and a garbage count must fall back rather than drive a huge pooled rent.
+    /// </summary>
+    [Fact]
+    public void WriteToSpan_AbsurdSplineCount_FallsBack()
+    {
+        var spline = CreateSpline(SplineTypeModern.None);
+        spline.SplineFlags = SplineFlagModern.UncompressedPath;
+        spline.SplinePoints = new List<Vector3>();
+        for (int i = 0; i < 5000; i++)
             spline.SplinePoints.Add(new Vector3(i, i, i));
 
         var packet = new MonsterMove(TestGuid, spline);
 
-        byte[] spanBuffer = new byte[2048];
-        int written = packet.WriteToSpan(spanBuffer);
-
-        Assert.Equal(-1, written);
+        byte[] spanBuffer = new byte[packet.MaxSize];
+        Assert.Equal(-1, packet.WriteToSpan(spanBuffer));
     }
 
     [Fact]

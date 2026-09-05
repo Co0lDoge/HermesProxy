@@ -14,7 +14,7 @@ public static class CollectionSync
     {
         if (!state.SummonedBattlePetGuid.IsEmpty())
         {
-            update.ActivePlayerData.SummonedBattlePetGUID = state.SummonedBattlePetGuid;
+            update.EnsureActivePlayerData().SummonedBattlePetGUID = state.SummonedBattlePetGuid;
             if (!state.SummonedCompanionCreatureGuid.IsEmpty())
                 update.UnitData.Critter = state.SummonedCompanionCreatureGuid;
         }
@@ -60,7 +60,7 @@ public static class CollectionSync
 
         var state = session.GameState;
         var updateData = new ObjectUpdate(state.CurrentPlayerGuid, UpdateTypeModern.Values, session);
-        updateData.ActivePlayerData.SummonedBattlePetGUID = state.SummonedBattlePetGuid;
+        updateData.EnsureActivePlayerData().SummonedBattlePetGUID = state.SummonedBattlePetGuid;
         updateData.UnitData.Critter = state.SummonedCompanionCreatureGuid;
         var updatePacket = new UpdateObject(state);
         updatePacket.ObjectUpdates.Add(updateData);
@@ -129,9 +129,10 @@ public static class CollectionSync
         var usable = state.GetUsableToysOrdered();
         state.LastSentUsableToys = usable;
         var updateData = new ObjectUpdate(state.CurrentPlayerGuid, UpdateTypeModern.Values, session);
-        updateData.ActivePlayerData.Toys = new List<int>(usable.Length);
+        var toys = new List<int>(usable.Length);
         for (int i = 0; i < usable.Length; i++)
-            updateData.ActivePlayerData.Toys.Add((int)usable[i]);
+            toys.Add((int)usable[i]);
+        updateData.EnsureActivePlayerData().Toys = toys;
         var updatePacket = new UpdateObject(state);
         updatePacket.ObjectUpdates.Add(updateData);
         session.WorldClient.SendPacketToClient(updatePacket);

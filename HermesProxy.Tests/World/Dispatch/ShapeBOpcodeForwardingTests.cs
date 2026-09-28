@@ -31,6 +31,19 @@ public class ShapeBOpcodeForwardingTests
             Opcodes.GetOpcodeValueForVersion(universal, ClientVersionBuild.V3_3_5a_12340));
     }
 
+    [Theory]
+    [InlineData(13672u, Opcode.CMSG_PLAYER_SHOWING_HELM, 0x2B9u)]
+    [InlineData(13673u, Opcode.CMSG_PLAYER_SHOWING_CLOAK, 0x2BAu)]
+    public void VisibleEquipmentToggles_ReachTheHandlerAndRetainTheirLegacyOpcode(
+        uint modernWire, Opcode expectedUniversal, uint expectedLegacy)
+    {
+        Opcode dispatched = Opcodes.GetUniversalOpcode(modernWire, ClientVersionBuild.V3_4_3_54261);
+
+        Assert.Equal(expectedUniversal, dispatched);
+        Assert.Equal(expectedLegacy,
+            Opcodes.GetOpcodeValueForVersion(dispatched, ClientVersionBuild.V3_3_5a_12340));
+    }
+
     /// <summary>
     /// The two opcodes that share <c>HandleDelFriend</c> must not collapse onto one legacy value —
     /// that is the specific way a shape-B body can silently do the wrong thing.
